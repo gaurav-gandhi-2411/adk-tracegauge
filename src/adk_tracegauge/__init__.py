@@ -28,7 +28,7 @@ DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
     evaluator=CostEfficiencyEvaluator,
 )
 
-__version__ = "0.1.0rc1"
+__version__ = "0.1.0"
 
 __all__ = [
     "CostEfficiencyEvaluator",
