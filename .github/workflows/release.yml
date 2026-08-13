@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # required for PyPI Trusted Publishing (OIDC) -- no token/password used
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Explicit: build from the tag that triggered this workflow, never a
+          # branch head. For a `push: tags:` event, github.ref IS the tag ref
+          # (refs/tags/vX.Y.Z) -- stated explicitly here so this can't silently
+          # drift to a branch checkout if the trigger config ever changes.
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv --quiet
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: twine check
+        run: uvx twine check dist/*.whl dist/*.tar.gz
+
+      - name: Publish to PyPI (Trusted Publishing -- OIDC, no token)
+        uses: pypa/gh-action-pypi-publish@release/v1
