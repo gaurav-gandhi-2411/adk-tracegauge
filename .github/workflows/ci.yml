@@ -27,21 +27,17 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install package (with google-adk[eval] and dev deps)
-        run: |
-          uv pip install --system -e .
-          uv pip install --system "google-adk[eval]>=2.6.0,<2.7.0"
-          uv pip install --system "ruff>=0.15,<1" "mypy>=1.14,<2" "pytest>=8.3,<9" \
-            "pytest-asyncio>=0.25,<1" "pytest-cov>=6.0,<7" pytest-mock
+      - name: Install dependencies
+        run: uv sync --frozen
 
       - name: Lint (ruff check)
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Format check (ruff format)
-        run: ruff format --check .
+        run: uv run ruff format --check .
 
       - name: Type check (mypy)
-        run: mypy src/
+        run: uv run mypy src/
 
       - name: Unit tests
-        run: pytest tests/ -v
+        run: uv run pytest tests/ -v
