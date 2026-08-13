@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adk-tracegauge"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Per-invocation cost-in-USD evaluator for Google's Agent Development Kit (ADK), built on tracegauge's cost engine. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models."
 authors = [{ name = "Gaurav Gandhi", email = "gaurav.gandhi2411@gmail.com" }]
 requires-python = ">=3.10"
