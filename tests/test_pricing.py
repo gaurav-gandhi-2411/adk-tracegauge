@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from adk_tracegauge._pricing import known_model_keys, load_gemini_prices, resolve_model
+from dataclasses import replace
+from datetime import date, timedelta
+
+from adk_tracegauge._pricing import (
+    STALE_THRESHOLD_DAYS,
+    known_model_keys,
+    load_gemini_prices,
+    resolve_model,
+)
 
 
 def test_load_gemini_prices_has_required_schema_keys():
@@ -68,3 +76,52 @@ def test_cache_write_multipliers_are_zero_not_anthropic_defaults():
     prices = load_gemini_prices()
     assert prices["cache_multipliers"]["write_5min"] == 0.0
     assert prices["cache_multipliers"]["write_1hr"] == 0.0
+
+
+def test_resolved_model_carries_provenance_for_staleness_checks():
+    resolved = resolve_model("gemini-2.5-flash")
+    assert resolved is not None
+    assert resolved.fetched_on
+    assert resolved.source_url == "https://ai.google.dev/gemini-api/docs/pricing"
+
+
+def test_is_stale_false_for_a_recent_date():
+    resolved = resolve_model("gemini-2.5-flash")
+    recent = replace(resolved, fetched_on=date.today().isoformat())
+    assert not recent.is_stale
+
+
+def test_is_stale_true_past_the_threshold():
+    resolved = resolve_model("gemini-2.5-flash")
+    old_date = date.today() - timedelta(days=STALE_THRESHOLD_DAYS + 1)
+    stale = replace(resolved, fetched_on=old_date.isoformat())
+    assert stale.is_stale
+
+
+def test_is_stale_false_exactly_at_the_threshold_boundary():
+    resolved = resolve_model("gemini-2.5-flash")
+    boundary_date = date.today() - timedelta(days=STALE_THRESHOLD_DAYS)
+    boundary = replace(resolved, fetched_on=boundary_date.isoformat())
+    assert not boundary.is_stale
+
+
+def test_is_stale_fails_closed_on_unparseable_date():
+    # An unparseable date is itself a staleness signal, not a reason to skip
+    # the check silently -- fail closed, not open.
+    resolved = resolve_model("gemini-2.5-flash")
+    garbled = replace(resolved, fetched_on="not-a-date")
+    assert garbled.is_stale
+
+
+def test_bundled_table_is_not_currently_stale():
+    # The live signal item 2 asks for: once every entry in the shipped table
+    # crosses STALE_THRESHOLD_DAYS, this test starts failing in CI, forcing
+    # a human to either refresh the table or consciously widen the
+    # threshold -- rather than the table quietly aging out unnoticed.
+    prices = load_gemini_prices()
+    stale = [key for key in prices["models"] if resolve_model(key, prices).is_stale]
+    assert not stale, (
+        f"these price table entries are past the {STALE_THRESHOLD_DAYS}-day "
+        f"staleness threshold and need a refresh: {stale}. See README "
+        "'Updating the price table'."
+    )

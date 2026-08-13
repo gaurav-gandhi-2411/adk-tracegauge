@@ -143,3 +143,42 @@ def test_mixed_priced_and_unpriced_invocations_sums_only_the_priced_ones():
 
     assert result.overall_score == 0.30
     assert result.per_invocation_results[1].score is None
+
+
+def test_stale_price_table_entry_warns_in_rationale_and_via_python_warnings(monkeypatch):
+    import adk_tracegauge._pricing as pricing
+
+    # Force every entry to read as stale without needing to fabricate a
+    # multi-year-old bundled table. -1 forces staleness even for an entry
+    # fetched today (age 0 days > -1) -- 0 would not, since "0 days old" is
+    # not ">  0 days old".
+    monkeypatch.setattr(pricing, "STALE_THRESHOLD_DAYS", -1)
+
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=1_000_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    import warnings as warnings_module
+
+    with warnings_module.catch_warnings(record=True) as caught:
+        warnings_module.simplefilter("always")
+        result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == 0.30, "staleness must not block the score, only warn about it"
+    assert "PRICE TABLE STALE" in pir.rubric_scores[0].rationale
+    assert "gemini-2.5-flash" in pir.rubric_scores[0].rationale
+    assert any("PRICE TABLE STALE" in str(w.message) for w in caught), (
+        "staleness must also surface as a real Python warning, not only in "
+        "the rationale text -- that's the only channel visible to someone "
+        "watching logs rather than reading individual eval results"
+    )

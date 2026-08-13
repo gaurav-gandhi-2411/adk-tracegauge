@@ -26,15 +26,18 @@ Design notes, because they're load-bearing and not obvious from the code:
 
 from __future__ import annotations
 
+import warnings
+from typing import Any
+
 from google.adk.evaluation.eval_case import ConversationScenario, Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric, Interval, MetricInfo, MetricValueInfo
 from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvaluationResult, Evaluator, PerInvocationResult
 from tes._digest import SessionDigest
-from tes.cost import compute_session_cost
+from tes.cost import SessionCost, compute_session_cost
 
 from ._adapter import build_session_digest, unknown_model_message
-from ._pricing import load_gemini_prices
+from ._pricing import STALE_THRESHOLD_DAYS, load_gemini_prices, resolve_model
 from ._store import DEFAULT_USAGE_STORE, UsageStore
 
 METRIC_NAME = "adk_tracegauge_cost_usd"
@@ -93,20 +96,60 @@ def _unresolved_model_result(
     )
 
 
+def _price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
+    """The only call site for tracegauge's compute_session_cost in this package.
+
+    `prices` is required with no default -- deliberately, not by convention.
+    tracegauge's own compute_session_cost(digest, prices=None, ...) silently
+    falls back to its bundled Claude price table when prices is omitted, and
+    that fallback bug actually happened here during development: omitting
+    `prices=` priced a $2.80 gemini-2.5-flash call at $18.00 (Claude Sonnet's
+    rate), no error, just a buried `approximate` flag. Our own adapter's
+    pre-check (build_session_digest) only guards against *unresolvable*
+    models -- it does nothing to stop the wrong price *table* being passed
+    for an otherwise-valid model, which is exactly what happened. Routing
+    every call through this one function, with `prices` required, converts
+    "forgot the argument" from a silent wrong number into a TypeError. A
+    regression test (test_pricing_call_site.py) asserts this is the only
+    place compute_session_cost is called in src/, so a future call site
+    added elsewhere can't reintroduce the same bug by skipping this wrapper.
+    """
+    return compute_session_cost(digest, prices=prices)
+
+
+def _stale_price_warning(session_cost: SessionCost) -> str | None:
+    """Returns a warning line if any priced turn's table entry is stale, else None.
+
+    Also emits a Python warning (deduplicated by the stdlib's default
+    once-per-location filter) so a stale table is visible in logs, not only
+    to whoever happens to read this invocation's rationale text.
+    """
+    stale_keys = sorted(
+        {
+            tc.model_key
+            for tc in session_cost.turn_costs
+            if (resolved := resolve_model(tc.model_key)) is not None and resolved.is_stale
+        }
+    )
+    if not stale_keys:
+        return None
+
+    message = (
+        f"PRICE TABLE STALE: {', '.join(stale_keys)} priced from an entry "
+        f"fetched more than {STALE_THRESHOLD_DAYS} days ago. Verify against "
+        "https://ai.google.dev/gemini-api/docs/pricing before trusting this "
+        "number -- see README 'Updating the price table'."
+    )
+    warnings.warn(message, stacklevel=3)
+    return f"WARNING: {message}"
+
+
 def _priced_result(
     invocation: Invocation,
     expected: Invocation | None,
     digest: SessionDigest,
 ) -> PerInvocationResult:
-    # Explicit: without this, compute_session_cost defaults to tracegauge's
-    # own bundled Claude price table (tes/data/prices.json), not ours -- our
-    # adapter already resolved every turn.model to a Gemini table key, but
-    # tracegauge's internal _resolve_model would fail to find that key in
-    # the Claude table and silently default to a Claude rate. Confirmed by
-    # this bug actually happening during test development: omitting this
-    # argument priced a $2.80 gemini-2.5-flash call at $18.00 (Claude
-    # Sonnet's rate) with no error, only a buried "approximate" flag.
-    session_cost = compute_session_cost(digest, prices=load_gemini_prices())
+    session_cost = _price_digest(digest, prices=load_gemini_prices())
 
     breakdown_lines = [
         f"cost_usd={session_cost.total_usd:.6f}",
@@ -123,6 +166,8 @@ def _priced_result(
         breakdown_lines.append(
             f"WARNING: approximate -- {'; '.join(session_cost.approximate_reasons)}"
         )
+    if (stale_warning := _stale_price_warning(session_cost)) is not None:
+        breakdown_lines.append(stale_warning)
 
     return PerInvocationResult(
         actual_invocation=invocation,

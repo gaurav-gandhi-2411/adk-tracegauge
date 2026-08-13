@@ -17,10 +17,17 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from importlib import resources
 from typing import Any
 
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
+STALE_THRESHOLD_DAYS = 180
+"""A price entry older than this is flagged, not silently trusted. Gemini
+pricing has no published change cadence to derive this number from
+precisely -- 180 days is a deliberately conservative round number, not a
+measured constant. Tune down if you have evidence prices move faster."""
 
 _PRICE_TABLE_CACHE: dict[str, Any] | None = None
 
@@ -42,6 +49,30 @@ class ResolvedModel:
     input_usd_per_mtok: float
     output_usd_per_mtok: float
     note: str
+    fetched_on: str
+    source_url: str
+
+    @property
+    def is_stale(self) -> bool:
+        """True when this entry's fetched_on is older than STALE_THRESHOLD_DAYS."""
+        try:
+            fetched = date.fromisoformat(self.fetched_on)
+        except ValueError:
+            # An unparseable date is itself a staleness signal -- treat it
+            # as stale rather than silently skipping the check.
+            return True
+        return (date.today() - fetched).days > STALE_THRESHOLD_DAYS
+
+
+def _entry_to_resolved(model_key: str, entry: dict[str, Any]) -> ResolvedModel:
+    return ResolvedModel(
+        model_key=model_key,
+        input_usd_per_mtok=entry["input_usd_per_mtok"],
+        output_usd_per_mtok=entry["output_usd_per_mtok"],
+        note=entry.get("note", ""),
+        fetched_on=entry.get("fetched_on", ""),
+        source_url=entry.get("source_url", ""),
+    )
 
 
 def resolve_model(model_version: str, prices: dict[str, Any] | None = None) -> ResolvedModel | None:
@@ -58,24 +89,12 @@ def resolve_model(model_version: str, prices: dict[str, Any] | None = None) -> R
     models: dict[str, Any] = prices["models"]
 
     if cleaned in models:
-        entry = models[cleaned]
-        return ResolvedModel(
-            model_key=cleaned,
-            input_usd_per_mtok=entry["input_usd_per_mtok"],
-            output_usd_per_mtok=entry["output_usd_per_mtok"],
-            note=entry.get("note", ""),
-        )
+        return _entry_to_resolved(cleaned, models[cleaned])
 
     for pattern in prices.get("model_patterns", []):
         if cleaned.startswith(pattern["prefix"]):
             model_key = pattern["model_key"]
-            entry = models[model_key]
-            return ResolvedModel(
-                model_key=model_key,
-                input_usd_per_mtok=entry["input_usd_per_mtok"],
-                output_usd_per_mtok=entry["output_usd_per_mtok"],
-                note=entry.get("note", ""),
-            )
+            return _entry_to_resolved(model_key, models[model_key])
 
     return None
 

@@ -9,16 +9,16 @@ Per-invocation dollar cost for [Google ADK](https://github.com/google/adk-python
 
 ## Required: wrap your agent in an App with the plugin
 
-**This is a hard requirement, not a caveat.** ADK's `Invocation` objects — what an evaluator normally receives — never carry token usage or model identity; ADK strips that down to author+content before an evaluator ever sees it. The only place ADK exposes real usage data is `BasePlugin.after_model_callback`, which only fires when your agent runs through an `App` wrapper. If you evaluate against a bare `root_agent`, ADK's `LocalEvalService` uses a "legacy bare-agent path" that **never fires plugins at all** — this package will report `no usage captured` for every single invocation, silently, not an error.
+**This is a hard requirement, not a caveat.** ADK's `Invocation` objects — what an evaluator normally receives — never carry token usage or model identity; ADK strips that down to author+content before an evaluator ever sees it. The real data lives on the `LlmResponse` passed to `BasePlugin.after_model_callback` during inference. That part fires for any real ADK run, App or not — but ADK's **eval harness specifically** (`LocalEvalService`, which `AgentEvaluator` and the `adk eval` CLI both sit on top of) only pulls plugins from `app.plugins` when you pass it an `App`. Evaluate against a bare `root_agent` with no `App`, and `LocalEvalService` builds its Runner with only its own internal eval plugins — **your plugins, including this one, are silently never included.** This package will report `no usage captured` for every single invocation, not an error.
 
 ```python
 from adk_tracegauge import TraceGaugeUsagePlugin
 from google.adk.apps import App
 
-app = App(agent=root_agent, plugins=[TraceGaugeUsagePlugin()])
+app = App(name="my_app", root_agent=root_agent, plugins=[TraceGaugeUsagePlugin()])
 ```
 
-Then reference `adk_tracegauge_cost_usd` as a `metric_name` in your eval config, and make sure `AgentEvaluator` picks up this `app` (it looks for an `app` attribute in your agent module automatically).
+`App`'s constructor requires `name` — there's no default, and there's no `agent=` alias for `root_agent=`, easy typos to make since other ADK APIs use `agent`. Then reference `adk_tracegauge_cost_usd` as a `metric_name` in your eval config, and make sure `AgentEvaluator` picks up this `app` (it looks for an `app` attribute in your agent module automatically).
 
 ## Install
 
@@ -49,6 +49,15 @@ ADK's built-in pass/fail convention is `PASSED if score >= threshold else FAILED
 - Cache-read discount is `0.1x` the model's fresh input rate for every model (verified against the published rate for each model individually, not assumed from tracegauge's Claude convention — it happens to match). Cache-*write* multipliers are `0.0`: Gemini's default automatic caching has no write-time surcharge and no `cache_creation` token field in its usage metadata at all, unlike Anthropic's explicit cache-write billing.
 
 **An invocation whose model isn't in this table is never priced with a fallback rate.** `score` reports `None`, and the rationale names exactly which model string didn't resolve and lists every model this package knows how to price. A cost number for the wrong model is worse than no number, so this package doesn't produce one.
+
+### Staleness — what happens when Gemini's prices change and the table doesn't
+
+A per-entry `source_url`/`fetched_on` date is provenance, not a freshness guarantee — nothing stops the table from silently aging out unless something actually checks it. Two independent things do:
+
+- **At use time**: every `ResolvedModel.is_stale` check compares `fetched_on` against today; past 180 days (`STALE_THRESHOLD_DAYS` in `_pricing.py`), a priced result's `rationale` gets a `PRICE TABLE STALE` line naming the model and threshold, and a real `warnings.warn(...)` fires alongside it — visible to anyone watching logs, not only whoever reads that one invocation's output. Staleness never blocks the number; it warns and still reports it, on the position that a flagged-possibly-wrong number beats no number for something you already computed.
+- **In CI**: `test_bundled_table_is_not_currently_stale` (`tests/test_pricing.py`) re-checks every bundled entry against the same 180-day threshold on every run. Once the table crosses it, this test starts failing on its own — not only when someone happens to notice a suspicious dollar figure.
+
+**Updating the price table**: edit `src/adk_tracegauge/data/gemini_prices.json` — update `input_usd_per_mtok`/`output_usd_per_mtok` against the current values at the `source_url` already on each entry, and bump `fetched_on` to today. Run `pytest tests/test_pricing.py` to confirm the staleness test goes green and nothing else broke, then open a PR. There's no automated price-scraping here by design — a human should look at the actual pricing page before a dollar figure changes.
 
 ## Compatibility risk
 

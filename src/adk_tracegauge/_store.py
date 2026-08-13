@@ -48,6 +48,11 @@ class UsageStore:
         with self._lock:
             return list(self._calls.get(invocation_id, []))
 
+    def invocation_ids(self) -> list[str]:
+        """Every invocation_id with at least one captured call, in record order."""
+        with self._lock:
+            return list(self._calls.keys())
+
     def clear(self) -> None:
         with self._lock:
             self._calls.clear()
