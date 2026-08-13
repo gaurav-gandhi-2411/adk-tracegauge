@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adk-tracegauge"
+version = "0.1.0"
+description = "Per-invocation cost-in-USD evaluator for Google's Agent Development Kit (ADK), built on tracegauge's cost engine. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models."
+authors = [{ name = "Gaurav Gandhi", email = "gaurav.gandhi2411@gmail.com" }]
+requires-python = ">=3.10"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Utilities",
+    "Intended Audience :: Developers",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+]
+keywords = ["adk", "agent-development-kit", "google-adk", "evaluation", "cost", "token-efficiency"]
+dependencies = [
+    # [eval] is required, not optional: google-adk's own
+    # metric_evaluator_registry.py unconditionally imports every built-in
+    # evaluator at module import time, including the Vertex AI eval facade,
+    # which transitively needs pandas/jinja2/rouge-score/tabulate/gepa --
+    # gated behind this extra. Without it, `import adk_tracegauge` fails
+    # with ModuleNotFoundError: No module named 'pandas', even though this
+    # package uses none of those libraries itself. Confirmed by reading
+    # google-adk's own pyproject.toml requires list.
+    "google-adk[eval]>=2.6.0,<2.7.0",
+    "tracegauge>=0.10.0,<0.11.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15,<1",
+    "mypy>=1.14,<2",
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.25,<1",
+    "pytest-cov>=6.0,<7",
+]
+
+[project.urls]
+Repository = "https://github.com/gaurav-gandhi-2411/adk-tracegauge"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["adk_tracegauge*"]
+
+[tool.setuptools.package-data]
+"adk_tracegauge" = ["data/gemini_prices.json"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v"
+pythonpath = [".", "src"]
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 0
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

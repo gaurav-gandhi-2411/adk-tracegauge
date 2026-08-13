@@ -1,0 +1,48 @@
+name: PyPI canary (latest google-adk)
+
+# adk-tracegauge pins google-adk[eval]>=2.6.0,<2.7.0 because it registers
+# against google-adk's @experimental MetricEvaluatorRegistry API, which
+# carries no SemVer guarantee. This workflow deliberately installs the
+# *latest* google-adk[eval] release, ignoring that pin, so a breaking
+# change surfaces here on a weekly schedule instead of via a user's own
+# import failing with no warning. A red run here does not mean this repo
+# is broken -- it means the current pin needs re-validating (and likely
+# bumping) against a new google-adk release.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install this package's non-google-adk dependencies, then latest google-adk[eval]
+        run: |
+          uv pip install --system -e . --no-deps
+          uv pip install --system "tracegauge>=0.10.0,<0.11.0"
+          uv pip install --system --upgrade "google-adk[eval]"
+          uv pip install --system "pytest>=8.3,<9" "pytest-asyncio>=0.25,<1" pytest-mock
+
+      - name: Report the installed google-adk version
+        run: python -c "import importlib.metadata as m; print('google-adk', m.version('google-adk'))"
+
+      - name: Run the test suite against latest google-adk
+        run: pytest tests/ -v

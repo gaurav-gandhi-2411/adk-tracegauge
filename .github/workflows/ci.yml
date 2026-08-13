@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install package (with google-adk[eval] and dev deps)
+        run: |
+          uv pip install --system -e .
+          uv pip install --system "google-adk[eval]>=2.6.0,<2.7.0"
+          uv pip install --system "ruff>=0.15,<1" "mypy>=1.14,<2" "pytest>=8.3,<9" \
+            "pytest-asyncio>=0.25,<1" "pytest-cov>=6.0,<7" pytest-mock
+
+      - name: Lint (ruff check)
+        run: ruff check .
+
+      - name: Format check (ruff format)
+        run: ruff format --check .
+
+      - name: Type check (mypy)
+        run: mypy src/
+
+      - name: Unit tests
+        run: pytest tests/ -v
