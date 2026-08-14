@@ -30,8 +30,38 @@ significant cost regression.
       180->90. price_as_of now in every rationale. 67->97 tests passing, 99% coverage. Full diff table and
       per-row verification tags in the session report (not yet written to docs/audit/PHASE2_REPORT.md --
       that's the final wrap-up item at the bottom of this file, still open).
-- [ ] W2 — Threshold gate (fixes P0/D1): CostEfficiencyEvaluator redesigned to return real PASSED/FAILED,
-      no path resolves to NOT_EVALUATED. Depends on W1 (price_as_of in rationale).
+- [x] W2 — Threshold gate (fixes P0/D1): CostEfficiencyEvaluator redesigned to return real PASSED/FAILED,
+      no path resolves to NOT_EVALUATED for a priceable model. Depends on W1 (price_as_of in rationale).
+      DONE 2026-08-14, commit PENDING_W2_SHA. New `CostThresholdCriterion(BaseCriterion)` (reuses
+      `threshold`, opposite comparison direction: PASSED iff cost<=threshold). Constructor now requires a
+      threshold (criterion= preferred, deprecated eval_metric.threshold= supported) -- raises ValueError if
+      neither set, no silent always-PASS default (rejected as a gate that looks green while checking
+      nothing). Unpriceable invocations (no usage, unresolved model, streaming anomaly, unpriced component)
+      still correctly report NOT_EVALUATED -- a distinct, legitimate "couldn't verify" case, not the old bug.
+      Per-case overall_eval_status: FAILED dominates; else PASSED if >=1 invocation passed (deliberately
+      NOT "PASSED only if all passed" -- source-confirmed LocalEvalService blanks every per-invocation
+      result for a case whenever overall_eval_status is NOT_EVALUATED, so a stricter rule would destroy
+      real per-invocation data in any case mixing a priced+passing invocation with an unpriceable one).
+      Proven end to end against the real installed google-adk==2.6.3 (not reimplemented): `adk eval` CLI run
+      twice (threshold=5.00 -> PASSED, score=2.8, non-null; threshold=1.00 -> FAILED, score=2.8) with real
+      persisted `eval_history/*.evalset_result.json` (score/eval_status/criterion all correct, verified by
+      reading the JSON directly) -- this was the literal Phase 1 regression (score:null), now fixed. Two new
+      persistent tests (tests/test_agent_evaluator_integration.py) drive the real `AgentEvaluator.evaluate()`
+      end to end: one proves the P0 (unconditional AssertionError, "no threshold avoids this") is fixed --
+      a threshold now exists where it completes cleanly; the other documents a real, source-confirmed
+      residual ADK-side limitation this package cannot fix from its own code -- `agent_evaluator.py::
+      _process_metrics_and_get_failures` recomputes PASSED/FAILED itself from raw scores and the deprecated
+      legacy threshold field via `mean(scores)>=threshold` (hardcoded higher-is-better, ignoring this
+      evaluator's own eval_status), always populated the same way by `get_eval_metrics_from_config`
+      regardless of plain-float-vs-criterion-object config shape -- so it can still misclassify a
+      genuinely-under-budget run as FAILED. A permissive legacy-field sentinel (e.g. 0.0) was considered and
+      rejected: it would make that one harness's gate permanently PASS regardless of real cost, which is
+      worse than the original bug. `adk eval`/LocalEvalService are unaffected (read real eval_status
+      directly) -- that's the primary target per this phase's reframe and is fully, correctly fixed with no
+      caveats. Neither of GG's two open upstream PRs (adk-python#6682, #6710) touches this function --
+      independent finding, not blocking. 97->107 tests passing, 99% coverage (one pre-existing uncovered
+      line, `approximate` branch, unrelated to W2). README's "Read this first" and 4 other sections
+      corrected (were actively false after this fix) -- full rewrite remains W5 scope.
 - [ ] W3 — Multi-provider pricing (promoted): Claude/GPT price entries, local models → cost 0.0 + PASSED,
       LiteLlm-prefix resolution, actionable unknown-model error. Depends on W1 schema + W2 PASSED framing.
 - [ ] W4 — CI regression gate (the differentiator): `tracegauge check --baseline`, bootstrap CI,

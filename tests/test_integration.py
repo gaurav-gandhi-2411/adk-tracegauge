@@ -29,7 +29,7 @@ async def test_plugin_capture_flows_through_to_evaluator_score():
     store = UsageStore()
     plugin = TraceGaugeUsagePlugin(store=store)
     evaluator = CostEfficiencyEvaluator(
-        eval_metric=EvalMetric(metric_name=METRIC_NAME), store=store
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1_000.0), store=store
     )
 
     callback_context = type("Ctx", (), {"invocation_id": "inv-1"})()
@@ -54,7 +54,7 @@ async def test_two_calls_in_one_invocation_sum_correctly_end_to_end():
     store = UsageStore()
     plugin = TraceGaugeUsagePlugin(store=store)
     evaluator = CostEfficiencyEvaluator(
-        eval_metric=EvalMetric(metric_name=METRIC_NAME), store=store
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1_000.0), store=store
     )
     callback_context = type("Ctx", (), {"invocation_id": "inv-1"})()
 

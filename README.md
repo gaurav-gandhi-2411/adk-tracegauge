@@ -7,20 +7,15 @@ A cost evaluator for **custom** [Google ADK](https://github.com/google/adk-pytho
 
 ---
 
-## Read this first: `adk eval` and `AgentEvaluator.evaluate()` cannot surface this metric's output
+## Read this first: this metric now gates `adk eval` / `AgentEvaluator.evaluate()` — with one caveat
 
-**This is not a drop-in metric for your normal ADK eval runs.** Confirmed against `google-adk==2.6.3`:
+**As of Phase 2 W2, this is a real threshold-based metric with a real PASSED/FAILED verdict, like ADK's other built-in metrics.** It requires a max-USD-per-invocation threshold at construction time: `EvalMetric(metric_name=METRIC_NAME, criterion=CostThresholdCriterion(threshold=<max_usd>))`. A priceable invocation always resolves to a real verdict; there is no path back to the old permanent `NOT_EVALUATED` for a model this package can price. Confirmed live against `google-adk==2.6.3` (see `docs/audit/` and the Phase 2 W2 commit for the full proof, including real `adk eval` CLI output and the persisted `eval_history/*.evalset_result.json`).
 
-- `AgentEvaluator.evaluate()` **raises `AssertionError` unconditionally** whenever `adk_tracegauge_cost_usd` is present in your eval config's `criteria` — regardless of the actual computed cost or the threshold you configure. There is no threshold that avoids this.
-- `adk eval` (the CLI) does not raise, but discards the per-invocation score and rationale entirely — both the printed per-invocation table and the persisted `eval_history/*.evalset_result.json` show `score: null`. Only one coarse, un-persisted console line (the run's aggregate score) carries a real number.
-
-The root cause is in ADK itself, not in this package: `LocalEvalService._evaluate_metric_for_eval_case` (`local_eval_service.py:428-436`) discards a metric's real per-invocation result and substitutes an empty one whenever that metric's `eval_status` is `EvalStatus.NOT_EVALUATED` — and `NOT_EVALUATED` is this metric's permanent status, by design: cost is lower-is-better, and misusing ADK's `score >= threshold -> PASSED` convention to force a pass/fail verdict on a dollar figure would misrepresent the number to anyone reading it. ADK's `Evaluator` contract currently has no shape for "measures something real, but isn't pass/fail" — filed upstream as a design question: **[google/adk-python#6725](https://github.com/google/adk-python/issues/6725)**.
-
-Until that's resolved, this package works through a **hand-rolled Runner harness you build and drive yourself** — not through `adk eval` or `AgentEvaluator`. That's a smaller claim than earlier versions of this README made, and it's the honest one. See below for what that actually looks like, and for a documented (but not supported) partial workaround.
+One real caveat, found while proving this end to end and **not fixable from this package**: `AgentEvaluator.evaluate()`'s pytest-style helper (`agent_evaluator.py::_process_metrics_and_get_failures`) recomputes PASSED/FAILED itself from raw scores and the deprecated `EvalMetric.threshold` scalar via `mean(scores) >= threshold` — hardcoded higher-is-better, ignoring this evaluator's own `eval_status`, and always populated the same way regardless of whether you configure a plain float or a criterion object in `test_config.json`. This means `AgentEvaluator.evaluate()`'s own assert/no-assert exit code is directionally unreliable for this metric at *any* threshold — a package-side sentinel can't silently correct it (a permissive `0.0` sentinel would make that harness's gate permanently PASS regardless of real cost, which is worse than the original bug: a "regression gate" that can never fire). `adk eval`/`LocalEvalService` are unaffected — they read this evaluator's real `eval_status` directly, correctly, always. **Trust `adk eval`/`LocalEvalService`, or this evaluator's own per-invocation `eval_status` (call `evaluate_invocations()` directly), for real pass/fail — never `AgentEvaluator.evaluate()`'s own assert outcome for this metric.** See `adk_tracegauge/evaluator.py`'s module docstring for the full detail and the source citations.
 
 ## What this actually is
 
-A `TraceGaugeUsagePlugin` that captures real per-call token usage during inference (via `BasePlugin.after_model_callback`, the only place ADK exposes `usage_metadata`+`model_version` together), plus a `CostEfficiencyEvaluator` that turns captured usage into a priced `PerInvocationResult` you read directly out of Python — a library for building your own cost-tracking eval harness, not a metric you register into ADK's dataset-driven eval runner and expect to work end to end unattended.
+A `TraceGaugeUsagePlugin` that captures real per-call token usage during inference (via `BasePlugin.after_model_callback`, the only place ADK exposes `usage_metadata`+`model_version` together), plus a `CostEfficiencyEvaluator` that turns captured usage into a priced, real PASSED/FAILED `PerInvocationResult`. Registers cleanly into ADK's `adk eval`/`AgentEvaluator.evaluate()` runner as of Phase 2 W2 (see "Read this first"); usage capture still requires either the hand-rolled `App`+plugin harness below or the `after_model_callback` workaround, since `AgentEvaluator`/`adk eval` build their own bare `Runner` that never fires an `App`-wired plugin.
 
 ## Install
 
@@ -82,25 +77,30 @@ invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
 ```python
 from google.adk.evaluation.eval_metrics import EvalMetric
 from adk_tracegauge import CostEfficiencyEvaluator
-from adk_tracegauge.evaluator import METRIC_NAME
+from adk_tracegauge.evaluator import METRIC_NAME, CostThresholdCriterion
 
-evaluator = CostEfficiencyEvaluator(eval_metric=EvalMetric(metric_name=METRIC_NAME))
+evaluator = CostEfficiencyEvaluator(
+    eval_metric=EvalMetric(
+        metric_name=METRIC_NAME,
+        criterion=CostThresholdCriterion(threshold=0.05),  # max $0.05/invocation
+    )
+)
 result = evaluator.evaluate_invocations(invocations)
 ```
 
-**6. Read the score and rationale straight out of the returned object** — this in-memory path never touches `LocalEvalService`, so nothing here is discarded:
+**6. Read the score, verdict, and rationale straight out of the returned object:**
 
 ```python
 for pir in result.per_invocation_results:
-    print(pir.score, pir.rubric_scores[0].rationale)
-print("total cost:", result.overall_score)
+    print(pir.score, pir.eval_status, pir.rubric_scores[0].rationale)
+print("total cost:", result.overall_score, result.overall_eval_status)
 ```
 
-**What you lose by not going through `AgentEvaluator`/`adk eval`:** every other built-in metric (`tool_trajectory_avg_score`, `response_match_score`, rubric-based judges, etc.), persistence to `eval_history/`, `num_runs` repetition, and parallelism across eval cases. If you want those *and* cost for the same conversations, you currently have to run inference twice — once through this harness, once through `AgentEvaluator`/`adk eval` — against a model that isn't guaranteed to behave identically both times.
+**Why a hand-rolled harness is still needed at all** (this part of the story is unchanged by Phase 2 W2): `AgentEvaluator`/`adk eval` build their *own* `Runner` internally and never look at the `App`/`plugins` you constructed in step 1 — so `TraceGaugeUsagePlugin` never fires and no usage is ever captured through that path, independent of the scoring fix below. What you lose by using this harness instead: every other built-in metric (`tool_trajectory_avg_score`, `response_match_score`, rubric-based judges, etc.), persistence to `eval_history/`, `num_runs` repetition, and parallelism across eval cases. If you want those *and* cost for the same conversations, you currently have to run inference twice — once through this harness, once through `AgentEvaluator`/`adk eval` — against a model that isn't guaranteed to behave identically both times. (The workaround below gets a real cost number *into* `adk eval` directly, trading away sub-agent cost rollup to do it.)
 
-## Documented workaround (not the supported path): `after_model_callback`
+## Workaround for capturing usage inside `adk eval`/`AgentEvaluator`: `after_model_callback`
 
-If you need this metric to show up in an `adk eval` run *at all* — accepting real limitations, not as a fix — attach the plugin's callback directly to your agent instead of wrapping it in an App:
+Since `AgentEvaluator`/`adk eval` never fire an `App`-wired plugin (see above — a usage-*capture* limitation, unrelated to the Phase 2 W2 scoring fix), attach the plugin's callback directly to your agent instead of wrapping it in an App if you want this metric to participate in a normal `adk eval` run:
 
 ```python
 from google.adk.agents.llm_agent import LlmAgent
@@ -115,19 +115,15 @@ root_agent = LlmAgent(
 )
 ```
 
-This works because `agent.canonical_after_model_callbacks` (an ordinary `LlmAgent` field) fires independent of which Runner wraps the agent, unlike `BasePlugin.after_model_callback` — so it survives `AgentEvaluator`/`adk eval`'s hardcoded bare-Runner construction. Verified live against `google-adk==2.6.3`: the plugin does capture real usage this way, and `CostEfficiencyEvaluator` does compute the correct dollar figure internally.
+This works because `agent.canonical_after_model_callbacks` (an ordinary `LlmAgent` field) fires independent of which Runner wraps the agent, unlike `BasePlugin.after_model_callback` — so it survives `AgentEvaluator`/`adk eval`'s hardcoded bare-Runner construction. Verified live against `google-adk==2.6.3`: the plugin does capture real usage this way, and `CostEfficiencyEvaluator` does compute the correct dollar figure and a real PASSED/FAILED verdict.
 
-**But it does not fix the underlying problem:**
-- `AgentEvaluator.evaluate()` **still raises unconditionally** — the NOT_EVALUATED-nulling bug happens after scoring, regardless of how usage was captured.
-- `adk eval` still discards the per-invocation score/rationale (`score: null` in the table and in `eval_history/*.json`) — you only get the one aggregate console line, and it isn't written anywhere.
+**As of Phase 2 W2, this now genuinely works end to end:** `AgentEvaluator.evaluate()` no longer raises unconditionally, and `adk eval` no longer nulls the per-invocation score/rationale — both read a real `score`/`eval_status`/rationale once this metric is given a threshold (see "Read this first" above for one remaining caveat specific to `AgentEvaluator.evaluate()`'s own pytest-style pass/fail helper).
 
-Net effect: this gets you a single correct dollar figure printed to the console during an `adk eval` run, and nothing else — no per-call breakdown, no persistence, and it's still incompatible with `AgentEvaluator.evaluate()`. Treat it as a narrow, caveated option, not something to build a workflow around. The hand-rolled harness above is the reliable path.
+One real limit specific to this workaround (unchanged by Phase 2 W2): `before_run_callback`/`after_run_callback` — what makes sub-agent delegation aggregate correctly (see "Sub-agent delegation" below) — are plugin-lifecycle hooks, invoked only through a Runner's `PluginManager`. Attaching just the bound `after_model_callback` method to `LlmAgent` bypasses that lifecycle entirely, so this workaround captures individual model calls but never correlates delegated sub-agent calls back to the parent. Only the full `App(plugins=[TraceGaugeUsagePlugin()])` wiring (the hand-rolled harness above) gets both.
 
-One more limit specific to this workaround: `before_run_callback`/`after_run_callback` — what makes sub-agent delegation aggregate correctly (see "Sub-agent delegation" below) — are plugin-lifecycle hooks, invoked only through a Runner's `PluginManager`. Attaching just the bound `after_model_callback` method to `LlmAgent` bypasses that lifecycle entirely, so this workaround captures individual model calls but never correlates delegated sub-agent calls back to the parent. Only the full `App(plugins=[TraceGaugeUsagePlugin()])` wiring gets both.
+## Diagnostics: `warnings.warn`, not rationale text alone
 
-## Diagnostics: `warnings.warn`, not rationale text
-
-Because `LocalEvalService` discards `rubric_scores`/rationale for this metric unconditionally (see above), nothing written there is guaranteed to reach a caller going through `AgentEvaluator`/`adk eval`. So every diagnostic this package produces — "no usage captured", "unresolved model", the successful per-call cost breakdown, and the stale-price-table warning — is also emitted via `warnings.warn` at evaluate time, which does survive. If you're driving `CostEfficiencyEvaluator.evaluate_invocations()` directly (the hand-rolled harness above), you get both the rationale text *and* the warning; if you're going through ADK's own eval runner, the warning is the only channel that reaches you.
+`rubric_scores`/rationale now reach a caller going through `AgentEvaluator`/`adk eval` for any invocation this metric could price (Phase 2 W2) — but LocalEvalService still substitutes empty per-invocation results for the *whole* eval case whenever this metric's case-level `overall_eval_status` is `NOT_EVALUATED` (which now only happens when literally nothing in that case could be priced — see `_aggregate_eval_status`'s docstring in `evaluator.py`). For that narrower remaining scenario, every diagnostic this package produces — "no usage captured", "unresolved model", the successful per-call cost breakdown, and the stale-price-table warning — is also emitted via `warnings.warn` at evaluate time, which does survive. If you're driving `CostEfficiencyEvaluator.evaluate_invocations()` directly, you always get both the rationale text *and* the warning.
 
 ## What it reports, and what it deliberately doesn't
 
@@ -152,11 +148,11 @@ Earlier versions of this package recorded every streamed chunk as if it were a s
 
 That grouping doesn't blindly trust the "cumulative total" assumption above — it verifies it, every time: **token counts within a group must be monotonically non-decreasing, or the whole invocation is refused rather than priced under a broken assumption.** If a later chunk's `total_token_count` is ever *less* than an earlier one's, `score` reports `None` with a rationale (and a `warnings.warn`) naming exactly what regressed and between which values — never a number computed by silently taking "the last chunk" when the ordering assumption it depends on has already been observed to not hold. A stream that never reaches a final (non-partial) chunk — an interrupted response — is refused the same way, since its true total is genuinely unknown. This makes the documentation-vs-live-API gap above largely moot: if Gemini's real behavior ever differs from what's documented here, this check is what catches it, rather than this package silently trusting an unverified assumption forever.
 
-## Why this metric always reports `NOT_EVALUATED`
+## How PASSED/FAILED is computed (and why not ADK's built-in `>=`)
 
-ADK's built-in pass/fail convention is `PASSED if score >= threshold else FAILED` — hardcoded, higher-is-better. Cost is lower-is-better. There is no lower-is-better or inverted-metric convention anywhere in `google.adk.evaluation` to plug into (checked directly against the source, not assumed). Silently negating the score to make the built-in gate technically "work" would misrepresent the number to anyone reading it — a `score: -0.0043` needs an explanation to even parse. So this metric doesn't participate in ADK's pass/fail gating: it always reports `eval_status=NOT_EVALUATED`, whatever threshold you configure.
+ADK's built-in pass/fail convention is `PASSED if score >= threshold else FAILED` — hardcoded, higher-is-better. Cost is lower-is-better. There is no lower-is-better or inverted-metric convention anywhere in `google.adk.evaluation` to plug into (checked directly against the source, not assumed). Silently negating the score to make the built-in gate technically "work" would misrepresent the number to anyone reading it — a `score: -0.0043` needs an explanation to even parse.
 
-This is also exactly the status value that triggers ADK's own per-invocation result discarding — see "Read this first" above and [google/adk-python#6725](https://github.com/google/adk-python/issues/6725). Read `score` directly (via the hand-rolled harness), or write your own threshold comparison against it — never rely on ADK's built-in pass/fail gate to expose it.
+So `CostEfficiencyEvaluator` computes PASSED/FAILED itself, directly, with the correct direction for a lower-is-better metric: `PASSED` when `cost <= threshold`, `FAILED` when `cost > threshold` (`threshold` from `CostThresholdCriterion`, preferred, or the deprecated `EvalMetric.threshold`). A `ValueError` is raised at construction time if neither is set — this package never falls back to a permissive always-PASSED default. An invocation whose cost couldn't be verified at all (no usage captured, unresolved model, a streaming anomaly, an unpriced token category) still reports `NOT_EVALUATED`, not a fabricated pass/fail — see `adk_tracegauge/evaluator.py`'s module docstring for the full design, including one ADK-side limitation (in `AgentEvaluator.evaluate()`'s pytest-style helper specifically, not `adk eval`/`LocalEvalService`) this package works around but cannot fully fix.
 
 ## Gemini pricing
 
@@ -202,7 +198,7 @@ This package depends on `tracegauge`'s `tes.cost` module (`compute_session_cost`
 
 ## What this is not
 
-Not a general ADK observability/tracing tool — see `traceAI-google-adk` for that. Not a statistics/confidence-interval layer for ADK evaluation results — that's a separate, harder problem ([agentgauge](https://github.com/gaurav-gandhi-2411/agentgauge)'s domain) blocked by the same `EvalMetricResult` field-stripping this package works around by using `score`+`rationale` only. Not a replacement for any of ADK's quality metrics — this reports cost alongside them, not instead of them. Not (currently) a drop-in `adk eval`/`AgentEvaluator` metric — see "Read this first" above.
+Not a general ADK observability/tracing tool — see `traceAI-google-adk` for that. Not a statistics/confidence-interval layer for ADK evaluation results — that's a separate, harder problem ([agentgauge](https://github.com/gaurav-gandhi-2411/agentgauge)'s domain). Not a replacement for any of ADK's quality metrics — this reports cost alongside them, not instead of them. Not a metric that captures usage on its own inside `AgentEvaluator`/`adk eval` without the hand-rolled harness or `after_model_callback` workaround above — see "Read this first".
 
 ## License
 

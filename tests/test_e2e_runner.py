@@ -28,6 +28,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
+from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.events.event import Event
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
@@ -116,8 +117,9 @@ async def test_real_runner_plugin_capture_correlates_with_real_invocation_id():
     assert captured_invocation_id == real_invocation.invocation_id
 
     evaluator = CostEfficiencyEvaluator(
-        eval_metric=EvalMetric(metric_name=METRIC_NAME), store=store
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1_000.0), store=store
     )
     result = evaluator.evaluate_invocations([real_invocation])
 
     assert result.per_invocation_results[0].score == 2.80
+    assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED

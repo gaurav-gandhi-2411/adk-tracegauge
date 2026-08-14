@@ -16,7 +16,9 @@ def test_importing_the_package_registers_the_metric():
 def test_registry_resolves_our_metric_to_our_evaluator_class():
     from google.adk.evaluation.eval_metrics import EvalMetric
 
-    evaluator = DEFAULT_METRIC_EVALUATOR_REGISTRY.get_evaluator(EvalMetric(metric_name=METRIC_NAME))
+    evaluator = DEFAULT_METRIC_EVALUATOR_REGISTRY.get_evaluator(
+        EvalMetric(metric_name=METRIC_NAME, threshold=1_000.0)
+    )
     assert isinstance(evaluator, CostEfficiencyEvaluator)
 
 

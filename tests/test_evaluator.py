@@ -7,7 +7,7 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.genai import types as genai_types
 
 from adk_tracegauge._store import CapturedCall, UsageStore
-from adk_tracegauge.evaluator import METRIC_NAME, CostEfficiencyEvaluator
+from adk_tracegauge.evaluator import METRIC_NAME, CostEfficiencyEvaluator, CostThresholdCriterion
 
 
 def _invocation(invocation_id: str) -> Invocation:
@@ -20,8 +20,15 @@ def _invocation(invocation_id: str) -> Invocation:
     )
 
 
-def _evaluator(store: UsageStore) -> CostEfficiencyEvaluator:
-    return CostEfficiencyEvaluator(eval_metric=EvalMetric(metric_name=METRIC_NAME), store=store)
+def _evaluator(store: UsageStore, threshold_usd: float = 1_000.0) -> CostEfficiencyEvaluator:
+    # A generously high default threshold -- every real cost figure in this
+    # file's fixtures is well under it -- so tests unrelated to threshold
+    # gating itself (token math, rationale content, staleness, ...) keep
+    # PASSING and aren't coupled to the specific dollar amounts asserted
+    # elsewhere in this file.
+    return CostEfficiencyEvaluator(
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=threshold_usd), store=store
+    )
 
 
 def test_no_usage_captured_reports_none_score_not_zero():
@@ -80,28 +87,188 @@ def test_priced_invocation_reports_positive_cost_as_raw_score():
     assert "cost_usd=2.800000" in pir.rubric_scores[0].rationale
 
 
-def test_eval_status_always_not_evaluated_never_passed_or_failed():
-    # The core sign-problem resolution: this metric never gates pass/fail,
-    # regardless of whether a threshold was configured on eval_metric.
+def test_priced_invocation_under_threshold_passes():
+    # Phase 2 W2: the core fix. A priceable invocation now gets a real
+    # PASSED verdict, not the permanent NOT_EVALUATED that made
+    # AgentEvaluator.evaluate() raise unconditionally.
     store = UsageStore()
     store.record(
         "inv-1",
         CapturedCall(
             model_version="gemini-2.5-flash",
-            prompt_token_count=100,
-            candidates_token_count=50,
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
             cached_content_token_count=0,
-            total_token_count=150,
+            total_token_count=2_000_000,
         ),
     )
     evaluator = CostEfficiencyEvaluator(
-        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=0.01), store=store
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=3.00), store=store
     )
 
     result = evaluator.evaluate_invocations([_invocation("inv-1")])
 
-    assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+    pir = result.per_invocation_results[0]
+    assert pir.score == 2.80
+    assert pir.eval_status == EvalStatus.PASSED
+    assert result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_priced_invocation_over_threshold_fails_with_readable_message():
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
+            cached_content_token_count=0,
+            total_token_count=2_000_000,
+        ),
+    )
+    evaluator = CostEfficiencyEvaluator(
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1.00), store=store
+    )
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == 2.80
+    assert pir.eval_status == EvalStatus.FAILED
+    assert result.overall_eval_status == EvalStatus.FAILED
+    # Readable and actionable: names the actual cost and the actual
+    # threshold, not just the word "FAILED".
+    rationale = pir.rubric_scores[0].rationale
+    assert "FAILED: cost $2.800000 exceeds the configured threshold $1.000000" in rationale
+
+
+def test_missing_threshold_raises_clear_actionable_error():
+    with pytest.raises(ValueError, match="requires a max-USD-per-invocation threshold"):
+        CostEfficiencyEvaluator(eval_metric=EvalMetric(metric_name=METRIC_NAME), store=UsageStore())
+
+
+def test_criterion_threshold_is_used_when_provided():
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
+            cached_content_token_count=0,
+            total_token_count=2_000_000,
+        ),
+    )
+    evaluator = CostEfficiencyEvaluator(
+        eval_metric=EvalMetric(
+            metric_name=METRIC_NAME, criterion=CostThresholdCriterion(threshold=1.00)
+        ),
+        store=store,
+    )
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    assert result.per_invocation_results[0].eval_status == EvalStatus.FAILED
+
+
+def test_unset_legacy_threshold_is_mirrored_from_the_resolved_criterion():
+    # Never left as None (would TypeError in any downstream code assuming
+    # EvalMetric.threshold is numeric) and never a fake permissive sentinel
+    # either -- a 0.0 sentinel would make AgentEvaluator.evaluate()'s own
+    # (ADK-side, direction-backward) pytest reclassification permanently
+    # PASS for this metric regardless of real cost, which is worse than the
+    # bug this package fixes. See evaluator.py's module docstring.
+    eval_metric = EvalMetric(
+        metric_name=METRIC_NAME, criterion=CostThresholdCriterion(threshold=0.05)
+    )
+    assert eval_metric.threshold is None
+
+    CostEfficiencyEvaluator(eval_metric=eval_metric, store=UsageStore())
+
+    assert eval_metric.threshold == 0.05
+
+
+def test_explicit_legacy_threshold_is_not_overridden():
+    eval_metric = EvalMetric(metric_name=METRIC_NAME, threshold=0.05)
+
+    CostEfficiencyEvaluator(eval_metric=eval_metric, store=UsageStore())
+
+    assert eval_metric.threshold == 0.05
+
+
+def test_overall_eval_status_failed_dominates_a_mix():
+    store = UsageStore()
+    # inv-1: cheap, passes. inv-2: expensive, fails.
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000,
+            candidates_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=1_000,
+        ),
+    )
+    store.record(
+        "inv-2",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
+            cached_content_token_count=0,
+            total_token_count=2_000_000,
+        ),
+    )
+    evaluator = CostEfficiencyEvaluator(
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1.00), store=store
+    )
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1"), _invocation("inv-2")])
+
+    assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
+    assert result.per_invocation_results[1].eval_status == EvalStatus.FAILED
+    assert result.overall_eval_status == EvalStatus.FAILED
+
+
+def test_overall_eval_status_is_passed_when_mixed_with_an_unpriceable_invocation():
+    # inv-1 prices and passes; inv-2 has no captured usage (NOT_EVALUATED).
+    # Deliberately overall PASSED, not NOT_EVALUATED: LocalEvalService
+    # blanks EVERY per-invocation result for this metric across the whole
+    # case whenever overall_eval_status is NOT_EVALUATED (google-adk 2.6.3,
+    # source-confirmed) -- letting one unpriceable invocation drag the
+    # whole case to NOT_EVALUATED would destroy inv-1's genuinely-priced
+    # PASSED result downstream. inv-2's own per-invocation eval_status
+    # still correctly shows NOT_EVALUATED -- nothing is hidden there.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000,
+            candidates_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=1_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1"), _invocation("inv-2")])
+
+    assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
+    assert result.per_invocation_results[1].eval_status == EvalStatus.NOT_EVALUATED
+    assert result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_unpriceable_invocations_still_report_not_evaluated_not_passed_or_failed():
+    # A legitimate, distinct case from the Phase 1 bug: "cost could not be
+    # verified" is neither a pass nor a fail.
+    store = UsageStore()
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
     assert result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+    assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
 
 
 def test_overall_score_sums_cost_across_invocations_not_averages():
