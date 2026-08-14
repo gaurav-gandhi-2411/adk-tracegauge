@@ -1,18 +1,26 @@
-"""adk-tracegauge — per-invocation cost-in-USD evaluator for the Agent Development Kit.
+"""adk-tracegauge — per-invocation cost-in-USD evaluator for custom ADK eval harnesses.
+
+Not a drop-in metric for `adk eval` / `AgentEvaluator.evaluate()`: ADK's
+LocalEvalService discards per-invocation results for any metric reporting
+EvalStatus.NOT_EVALUATED (this metric's permanent status, since cost is
+lower-is-better and has no honest fit in ADK's score>=threshold->PASSED
+convention). AgentEvaluator.evaluate() raises unconditionally as a result;
+adk eval doesn't raise but discards the per-invocation score/rationale too.
+Filed upstream: https://github.com/google/adk-python/issues/6725. See
+README, "Read this first", for the full explanation and the hand-rolled
+Runner harness this package is actually meant to be used through:
+
+    from adk_tracegauge import TraceGaugeUsagePlugin
+    app = App(name="my_app", root_agent=root_agent, plugins=[TraceGaugeUsagePlugin()])
 
 Importing this package registers the "adk_tracegauge_cost_usd" metric into
 google-adk's DEFAULT_METRIC_EVALUATOR_REGISTRY as a side effect, matching
 the registration pattern google-adk itself documents for third-party
-metrics. If google-adk's @experimental registry API has changed
-incompatibly, this import-time call fails loudly (AttributeError/TypeError)
-rather than silently doing nothing -- see README, "Compatibility risk".
-
-Required setup (not optional -- see README for why):
-
-    from adk_tracegauge import TraceGaugeUsagePlugin
-    app = App(agent=root_agent, plugins=[TraceGaugeUsagePlugin()])
-
-Then reference "adk_tracegauge_cost_usd" as a metric_name in your eval_config.json.
+metrics -- registration itself works fine; it's ADK's eval-result plumbing
+downstream of it that discards the output. If google-adk's @experimental
+registry API has changed incompatibly, this import-time call fails loudly
+(AttributeError/TypeError) rather than silently doing nothing -- see
+README, "Compatibility risk".
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
     evaluator=CostEfficiencyEvaluator,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "CostEfficiencyEvaluator",
