@@ -501,3 +501,115 @@ Two release-blocking findings from Phase 2's verification pass, fixed on the sam
       `runtime-config.json` autocrlf line-ending churn is a pre-existing, unrelated environmental
       artifact -- confirmed via a same-named stash entry from an unrelated branch predating this
       session -- deliberately left unstaged/uncommitted, not part of either PR's diff).
+- [x] B4 -- Measured the cost-regression gate's statistical POWER (Phase 2 only measured
+      false-positive rate, never detection rate) and found it does NOT reliably catch a
+      realistic-magnitude regression at realistic ADK eval-set sizes; implemented and shipped a
+      paired-comparison mode as the fix. DONE 2026-08-15.
+      4.1: current `min_n` default is 30 (`_regression.MIN_N_DEFAULT`), justified in Phase 2/W4 as
+      "the textbook CLT/bootstrap-stability rule of thumb (Efron & Tibshirani)" -- explicitly NOT
+      independently derived from this project's own data. Not re-inflated here.
+      4.2: full 5x5 power grid, `scripts/measure_regression_power.py` (permanent, on-demand --
+      not run by default CI/pytest; `uv run python scripts/measure_regression_power.py`), SAME
+      generator shape as Phase 2's own fixtures (i.i.d. `max(0.0001, Gauss(mean, sd))`,
+      mean=$0.010, sd=$0.0015, sd scaling with the mean under a true effect -- no invented,
+      more-favorable distribution). min_n forced to 2 (bypassing the real min_n=30 refusal gate,
+      which would otherwise trivially zero out the n=10/n=25 columns for the wrong reason) and
+      min_effect_usd/min_effect_pct forced to 0.0 (isolating pure statistical detection from the
+      separate practical-significance floor) -- both deviations from real default usage, stated
+      explicitly; a real `check` run with default floors is AT MOST as good as these numbers.
+      n_boot reduced 10,000->1,000 for this script only (n_boot=10,000 measured ~0.91s/call at
+      n=250 -- 5,000+ calls would take ~an hour; n_boot=1,000 validated first: 150 trials at the
+      grid's most-borderline cell, n=25/10%-effect, showed 146/150=97.3% verdict agreement between
+      n_boot=1,000 and n_boot=10,000 on identical data). 5,000 total simulated `check` calls,
+      wall-clock 126.7s.
+
+      MEASURED GRID (detection rate = fraction of 200 trials firing status="regression"):
+
+      ```
+      n\effect%        0%       5%      10%      25%      50%
+      10            0.050    0.120    0.315    0.890    1.000
+      25            0.035    0.270    0.690    1.000    1.000
+      50            0.025    0.385    0.870    1.000    1.000
+      100           0.020    0.645    0.995    1.000    1.000
+      250           0.020    0.960    1.000    1.000    1.000
+      ```
+
+      The 0% column is the false-positive rate at every n (Phase 2 only measured this at n=40):
+      5.0% (n=10), 3.5% (n=25), 2.5% (n=50), 2.0% (n=100), 2.0% (n=250) -- roughly tracking the
+      ~2.5% nominal one-sided expectation, elevated at n=10 (small-sample bootstrap CI coverage is
+      known to degrade there, consistent with min_n=30's own justification).
+      4.3: VERDICT, explicit and unsoftened -- reliability bar set at >=80% detection (a
+      standard, defensible power-analysis convention; stated explicitly so it isn't picked to flatter
+      the result). The two-sample gate crosses 80% for a 10% true regression only at n=50 (87.0%),
+      NOT at n=25 (69.0%) -- and n=25 is a realistic ADK eval-set size (this repo's own
+      `examples/03_ci_regression_gate.py` uses n=40, deliberately just above min_n=30; real ADK
+      eval cases can involve real/expensive model calls, so teams keep eval sets to tens of cases,
+      not hundreds). Worse: at n=25, the REAL gate (default min_n=30) refuses to run at all
+      (`status="insufficient_data"`, exit 3) -- it does not "detect poorly," it cannot be used.
+      **So: NO, the gate does not reliably detect a 10% true cost regression at realistic ADK
+      eval-set sizes.** FIX IMPLEMENTED: paired comparison. Checked the premise first (per rule 99,
+      verify before building) -- confirmed by reading google-adk's own `evaluation_generator.py`
+      (`Event.new_id()`) and `runners.py` (`new_invocation_context_id()`) that `invocation_id` is
+      ALWAYS a fresh random id, never eval_case_id, so pairing by `invocation_id` (as the work item's
+      own instructions hypothesized) is NOT directly applicable -- a real, source-confirmed
+      correction to the task's premise. However, `TraceGaugeUsagePlugin` only fires through a
+      hand-rolled `Runner`/`App` the CALLER builds (confirmed pre-existing in `_plugin.py`'s own
+      docstring: "Not honored by AgentEvaluator/adk eval"), and that caller directly controls
+      `session_id` via `runner.run_async(session_id=..., ...)` -- so `session_id`, not
+      `invocation_id`, is a real, available, stable-across-runs pairing key TODAY whenever the
+      caller pins one per eval case. Implemented: `UsageStore.record_session`/`.session_id`
+      (`_store.py`), `TraceGaugeUsagePlugin.before_run_callback` now also captures
+      `invocation_context.session.id` (`_plugin.py`), `SnapshotRecord.session_id` (additive,
+      backward-compatible field -- old schema_version=1 files without it still read fine,
+      `snapshot.py`), `Snapshot.costs_by_session_id()`/`pair_costs_by_session_id()` (sums cost per
+      session, since one eval case can span multiple invocations e.g. a multi-turn conversation),
+      `_regression.bootstrap_mean_of_paired_deltas`/`evaluate_regression_paired` (a genuinely
+      different, more powerful statistic -- ONE bootstrap over per-pair deltas, not two independent
+      resamples, so between-case variance cancels in the subtraction before any resampling), and
+      `tracegauge check --mode {auto,two-sample,paired}` (`_cli.py`; `auto` default: paired when
+      overlap >= min_n, else two-sample, ALWAYS printing which mode was used and why -- an explicit
+      request for `--mode paired` with insufficient overlap fails closed with `SystemExit` naming
+      the actual overlap count, never silently downgrades).
+      RE-MEASURED SLICE (n=25, effects {0%, 10%}, `tests/test_regression_power.py`, permanent, fast,
+      always run): using a DELIBERATELY DIFFERENT, explicitly-justified generator (case-correlated:
+      each of 25 synthetic eval cases gets its own fixed cost level ~Uniform($0.004, $0.024), real
+      case-to-case heterogeneity; regression is an additive +$0.001/case bump, uniform across
+      cases -- the shape a pairing key is meant to catch, e.g. a bigger system prompt) --
+      two_sample=0/200=0.000, paired=200/200=1.000: the two-sample gate essentially NEVER detects
+      this regression at n=25 once real case-to-case variance is present (it swamps a $0.001 shift
+      entirely); paired detects it on EVERY trial. Control (same n=25/10%-effect cell, but under
+      4.2's FLAT no-case-structure generator instead): two_sample=0.665, paired=0.675 --
+      statistically indistinguishable, exactly as expected when there is no between-case variance
+      to cancel -- confirming the dramatic result above is the mechanism (variance cancellation),
+      not a generator artifact. Paired FPR at this n: 5.5% (11/200) vs two-sample's 4.0% (8/200) --
+      both plausible at n_trials=200 relative to the ~2.5% nominal expectation, paired's flagged as
+      worth a larger confirmatory run before being the default in a production-critical setting (not
+      silently accepted).
+      4.4: FPR re-derived from B4's own harness, same generator/methodology as the power
+      measurement (not stitched from Phase 2's separate run) -- two-sample: 5.0%/3.5%/2.5%/2.0%/2.0%
+      at n=10/25/50/100/250 (the grid's own 0% column, above). Paired (case-correlated generator,
+      n=25 only, matching the n 4.3 re-measured at): 5.5%.
+      4.5: exact README sentence(s) this measurement supports (not written to README this item --
+      that's W6/B6): "At n=25 (a realistic ADK eval-set size), the default two-sample gate detects a
+      true 10% cost regression only 69% of the time, and refuses to run at all below n=30's own
+      min_n floor -- treat a clean two-sample result at small n with real skepticism. If your eval
+      harness pins a stable `session_id` per eval case (`runner.run_async(session_id=...)`),
+      `tracegauge check --mode paired` (or the `auto` default) uses a paired comparison that is
+      dramatically more sensitive at the same n whenever real per-case cost variance exists."
+      Implemented as an ADDITIONAL mode (`--mode paired`/`auto`), not a replacement of two-sample --
+      paired's power advantage is conditional on the caller pinning `session_id`, which not every
+      harness will do, and two-sample remains the correct, safe fallback (and the only option) when
+      it isn't pinned; replacing it outright would be a breaking change with no fallback for that
+      real case. Full suite: 250 -> 293 tests passing (+43: 16 in `test_regression.py`
+      paired-function/method-field tests, 9 in `test_snapshot.py` session_id/pairing tests, 2 in
+      `test_plugin.py` session-capture tests, 5 in `test_store.py` session tests, 7 in
+      `test_cli.py` --mode tests, 4 in new `tests/test_regression_power.py`; exact split verified
+      via `git diff --stat` + per-file `def test_` counts, not estimated), 99%
+      coverage (3 pre-existing uncovered lines, unchanged in kind from Phase 2/B1-B3 --
+      `_cli.py`'s `if __name__=="__main__"` guard, `evaluator.py`'s pragma:no-cover branch,
+      `snapshot.py`'s defensive `if not calls: continue`; every line touched by B4 itself is 100%
+      covered). ruff check/ruff format --check/mypy src/ all clean. `pyproject.toml`'s
+      `[tool.pytest.ini_options] pythonpath` gained `"scripts"` (one-line addition) so
+      `tests/test_regression_power.py` can import `scripts/measure_regression_power.py`'s
+      `compute_power_grid` directly, keeping the grid computation itself in exactly one place.
+      `git status` clean after commit.
