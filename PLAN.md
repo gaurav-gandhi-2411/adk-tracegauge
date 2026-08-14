@@ -114,8 +114,52 @@ significant cost regression.
       went stale -- now prints each entry's own source_url). 107->152 tests passing (45 new), 99% coverage
       (100% on _pricing.py and _adapter.py, the two files this item touched most; the one uncovered
       evaluator.py line is W2's pre-existing pragma: no cover, unrelated). ruff/mypy clean.
-- [ ] W4 — CI regression gate (the differentiator): `tracegauge check --baseline`, bootstrap CI,
+- [x] W4 — CI regression gate (the differentiator): `tracegauge check --baseline`, bootstrap CI,
       min-n refusal, synthetic fixture validation incl. measured false-positive rate. Depends on W1-W3.
+      DONE 2026-08-14, commit (pending). New `[project.scripts] tracegauge = "adk_tracegauge._cli:main"`
+      entry point, two subcommands: `tracegauge snapshot --entrypoint module:callable --output path.json`
+      (imports and calls a zero-arg callable that runs your eval; snapshots either its returned
+      UsageStore or DEFAULT_USAGE_STORE if it populated that as a side effect -- there is no other way
+      to hand a fresh CLI process a live in-memory UsageStore) and `tracegauge check --baseline b.json
+      --current c.json [--confidence 0.95] [--min-effect-usd 0.0001] [--min-effect-pct 5.0] [--min-n 30]
+      [--n-boot 10000] [--seed 42]`. New `snapshot.py` (public) defines the on-disk format nothing in
+      this repo previously had: schema_version=1 JSON, one record per raw invocation_id (invocation_id,
+      cost_usd, tokens_input/output/cache_read, models, call_count) plus a `skipped` list (invocation_id
+      + reason) for anything that failed to price -- never silently dropped or fabricated. New
+      `_regression.py`: stdlib-only (random/statistics/math, no numpy/scipy) percentile bootstrap on the
+      difference in means, one-sided (only a cost *increase* counts as a regression), 10,000 resamples
+      default, seed=42 hardcoded default per project convention. A verdict requires BOTH statistical
+      significance (bootstrap CI lower bound > 0) AND practical significance (effect clears
+      --min-effect-usd OR --min-effect-pct, default $0.0001 / 5%) -- documented explicitly as an AND
+      between two different questions ("is this real?" vs. "do we care?"), not a single threshold.
+      min_n=30 default, justified by the standard CLT/bootstrap-stability rule of thumb (Efron &
+      Tibshirani), not guessed -- refuses to emit a verdict below it (status="insufficient_data",
+      distinct exit code 3, vs. 0=pass/1=regression; argparse itself owns exit code 2 for malformed
+      invocations). Every `check` run prints n, CI bounds, and effect size regardless of verdict --
+      never only on failure. numpy/scipy ARE already-transitive deps via google-adk[eval]'s
+      scikit-learn/pandas chain (confirmed via uv.lock) but deliberately not used directly -- an
+      undeclared transitive dependency for the package's core differentiator was judged too fragile for
+      "a small focused tool"; stdlib is plenty fast at this n/n_boot scale. Refactored `compute_session_cost`'s
+      sole sanctioned call site (test_pricing_call_site.py's structural guard) out of evaluator.py into
+      `_adapter.price_digest`, so snapshot.py could become a second real caller without violating or
+      loosening that guard -- evaluator._price_digest kept as a thin alias so existing imports don't
+      break; the guard test itself updated to match (still asserts exactly one real compute_session_cost
+      call site, just relocated). 4.3(a) synthetic fixture (deterministic seed=1234/42, n=80/group,
+      injected +20% mean-cost regression): MEASURED mean_baseline=$0.010222, mean_current=$0.011741,
+      effect=+$0.001520 (+14.87%), 95% CI [+0.001007, +0.002023] -- gate correctly fires
+      (status="regression"). 4.3(b) false-positive rate (250 independent deterministic trials, n=40/group,
+      both groups drawn from the identical generator, min_effect floors set to 0.0 to isolate the pure
+      statistical test): MEASURED 5/250 = 2.00% false positives, in line with the ~2.5% nominal one-sided
+      expectation at 95% confidence -- no evidence of miscalibration. Both fixture validations are
+      permanent pytest tests (tests/test_regression.py), not one-off scripts, and are fully deterministic
+      (hardcoded seeds throughout) so the measured numbers reproduce exactly on every future run.
+      GitHub Actions snippet (run eval -> snapshot -> compare -> fail build on regression) written to
+      `docs/ci-snippet.md` as the single canonical source for W5's README rewrite to pull from verbatim.
+      New test files: test_regression.py (30 tests incl. both 4.3 fixtures), test_snapshot.py (11 tests),
+      test_cli.py (17 tests). 199 total tests passing (152->199, +47), 99% coverage. ruff/ruff-format/mypy
+      all clean. Live end-to-end smoke test (not just pytest): real `uv run tracegauge snapshot`/`check`
+      invocations via the actually-installed console script against a real regressed pair of synthetic
+      UsageStores -- confirmed real exit code 1 on a genuine regression, matching the documented contract.
 - [ ] W6 — Hygiene: CI matrix 3.10-3.13, pin bump to admit 2.7.0 (after full suite green), GitHub topics,
       release backfill, dist/branch/assertion cleanup, oss-contrib branch sync, keras#23420 thread attempt.
 - [ ] W5 — DX/adoption (last — documents everything above): eliminate/wrap private-API dependency (C5),

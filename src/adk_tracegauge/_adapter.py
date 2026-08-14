@@ -40,8 +40,10 @@ Three things happen here before any TurnDigest is built, all fail-closed:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from tes._digest import SessionDigest, TurnDigest
+from tes.cost import SessionCost, compute_session_cost
 
 from ._pricing import PRICE_TABLE_ENV_VAR, known_model_keys, resolve_model_for_call
 from ._store import CapturedCall
@@ -185,6 +187,33 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
     return AdaptResult(digest=digest)
 
 
+def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
+    """The single sanctioned call site for tracegauge's compute_session_cost
+    in this package -- every caller that needs a priced SessionDigest
+    (``evaluator.py``'s per-invocation eval result, ``snapshot.py``'s
+    regression-gate snapshots -- Phase 2 W4) must go through this function,
+    never call ``compute_session_cost`` directly.
+
+    `prices` is required with no default -- deliberately, not by
+    convention. tracegauge's own ``compute_session_cost(digest,
+    prices=None, ...)`` silently falls back to its bundled Claude price
+    table when `prices` is omitted, and that fallback bug actually happened
+    during this package's own development: omitting `prices=` priced a
+    $2.80 gemini-2.5-flash call at $18.00 (Claude Sonnet's rate), no error,
+    just a buried `approximate` flag. This module's own pre-check
+    (``build_session_digest``) only guards against *unresolvable* models --
+    it does nothing to stop the wrong price *table* being passed for an
+    otherwise-valid model, which is exactly what happened. Routing every
+    call through this one function, with `prices` required, converts
+    "forgot the argument" from a silent wrong number into a TypeError.
+    ``tests/test_pricing_call_site.py`` asserts this is the only place
+    ``compute_session_cost`` is called in ``src/``, so a future call site
+    added elsewhere can't reintroduce the same bug by skipping this
+    wrapper.
+    """
+    return compute_session_cost(digest, prices=prices)
+
+
 def unknown_model_message(model_version: str) -> str:
     known = ", ".join(known_model_keys())
     return (
@@ -206,4 +235,4 @@ def unknown_model_message(model_version: str) -> str:
     )
 
 
-__all__ = ["AdaptResult", "build_session_digest", "unknown_model_message"]
+__all__ = ["AdaptResult", "build_session_digest", "price_digest", "unknown_model_message"]

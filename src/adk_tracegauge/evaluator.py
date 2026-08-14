@@ -116,9 +116,9 @@ from google.adk.evaluation.evaluator import (
 )
 from pydantic import ValidationError
 from tes._digest import SessionDigest
-from tes.cost import SessionCost, compute_session_cost
+from tes.cost import SessionCost
 
-from ._adapter import build_session_digest, unknown_model_message
+from ._adapter import build_session_digest, price_digest, unknown_model_message
 from ._pricing import LOCAL_MODEL_KEY, STALE_THRESHOLD_DAYS, load_gemini_prices, resolve_model
 from ._store import DEFAULT_USAGE_STORE, UsageStore
 
@@ -227,24 +227,19 @@ def _unpriced_component_result(
 
 
 def _price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
-    """The only call site for tracegauge's compute_session_cost in this package.
+    """Evaluator-local alias for ``_adapter.price_digest`` -- kept as its own
+    name (rather than calling ``_adapter.price_digest`` inline at each call
+    site below) purely so existing callers of this exact symbol
+    (``from adk_tracegauge.evaluator import _price_digest``, used by
+    ``tests/test_pricing_call_site.py``) keep working unchanged.
 
-    `prices` is required with no default -- deliberately, not by convention.
-    tracegauge's own compute_session_cost(digest, prices=None, ...) silently
-    falls back to its bundled Claude price table when prices is omitted, and
-    that fallback bug actually happened here during development: omitting
-    `prices=` priced a $2.80 gemini-2.5-flash call at $18.00 (Claude Sonnet's
-    rate), no error, just a buried `approximate` flag. Our own adapter's
-    pre-check (build_session_digest) only guards against *unresolvable*
-    models -- it does nothing to stop the wrong price *table* being passed
-    for an otherwise-valid model, which is exactly what happened. Routing
-    every call through this one function, with `prices` required, converts
-    "forgot the argument" from a silent wrong number into a TypeError. A
-    regression test (test_pricing_call_site.py) asserts this is the only
-    place compute_session_cost is called in src/, so a future call site
-    added elsewhere can't reintroduce the same bug by skipping this wrapper.
+    `prices` remains required with no default here too -- see
+    ``_adapter.price_digest``'s docstring for the full rationale (the
+    single sanctioned call site for tracegauge's ``compute_session_cost``,
+    now living in ``_adapter.py`` so ``snapshot.py`` (Phase 2 W4) can share
+    it instead of duplicating the same wrapper).
     """
-    return compute_session_cost(digest, prices=prices)
+    return price_digest(digest, prices=prices)
 
 
 def _stale_price_warning(session_cost: SessionCost) -> str | None:

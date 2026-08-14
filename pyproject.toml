@@ -51,6 +51,9 @@ dev = [
 [project.urls]
 Repository = "https://github.com/gaurav-gandhi-2411/adk-tracegauge"
 
+[project.scripts]
+tracegauge = "adk_tracegauge._cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["adk_tracegauge*"]
