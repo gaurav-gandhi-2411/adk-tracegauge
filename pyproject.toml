@@ -34,7 +34,11 @@ dependencies = [
     # with ModuleNotFoundError: No module named 'pandas', even though this
     # package uses none of those libraries itself. Confirmed by reading
     # google-adk's own pyproject.toml requires list.
-    "google-adk[eval]>=2.6.0,<2.7.0",
+    # <2.8.0: verified (W6) against the live current release 2.7.0 -- full 199-test
+    # suite passes clean, 99% coverage, no code changes required. Not pinned further
+    # past 2.7.0 since 2.8.0 doesn't exist yet (checked via PyPI JSON API) and hasn't
+    # been verified.
+    "google-adk[eval]>=2.6.0,<2.8.0",
     "tracegauge>=0.10.0,<0.11.0",
 ]
 
