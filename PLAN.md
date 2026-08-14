@@ -160,8 +160,84 @@ significant cost regression.
       all clean. Live end-to-end smoke test (not just pytest): real `uv run tracegauge snapshot`/`check`
       invocations via the actually-installed console script against a real regressed pair of synthetic
       UsageStores -- confirmed real exit code 1 on a genuine regression, matching the documented contract.
-- [ ] W6 — Hygiene: CI matrix 3.10-3.13, pin bump to admit 2.7.0 (after full suite green), GitHub topics,
+- [x] W6 — Hygiene: CI matrix 3.10-3.13, pin bump to admit 2.7.0 (after full suite green), GitHub topics,
       release backfill, dist/branch/assertion cleanup, oss-contrib branch sync, keras#23420 thread attempt.
+      DONE 2026-08-14, commits 85918e7/6971a33/bff7006/0ee18b2/5a591e5. 6.1: adding the 3.10 leg to the
+      matrix surfaced a REAL bug before it ever reached CI, not a hypothetical one -- `snapshot.py` imported
+      `datetime.UTC` (stdlib-only since 3.11) despite `requires-python = ">=3.10"`; a fresh Python 3.10.20
+      install (uv-managed, via `uv sync --frozen --python 3.10` into a scratch venv) failed collection on
+      `ImportError: cannot import name 'UTC' from 'datetime'`. Root-caused and fixed: `timezone.utc` (stdlib
+      since 3.2) instead of the 3.11-only alias. Also fixed a second-order cause of the same class of bug:
+      `[tool.ruff] target-version` was `"py311"` against a `">=3.10"` floor, so ruff's own UP017 pyupgrade
+      rule was actively suggesting `datetime.UTC` over `timezone.utc` -- fixed to `"py310"` so ruff stops
+      recommending 3.11+-only syntax on future contributions. Full 199-test suite then run clean on both
+      Python 3.10.20 and 3.13.5 (the two extremes; scratch venvs via `uv sync --frozen --python X` with
+      `UV_PROJECT_ENVIRONMENT` redirected out of the repo) -- 199 passed, 99% coverage, identical on both.
+      One test-harness false trail along the way, resolved and NOT a project defect: an initial attempt using
+      the session's default deeply-nested scratchpad path hit Windows' MAX_PATH (260 chars) mid-install,
+      silently truncating/corrupting `google-cloud-aiplatform`'s deeply-nested generated schema tree
+      (`ImportError`/`ModuleNotFoundError` that looked version-specific but reproduced identically on 3.10
+      AND 3.13 and vanished once venvs were moved to short paths under `C:\Users\gaura\tmp\`) -- root-caused
+      by measuring the exact failing path length (260 chars, confirmed via direct count) before concluding
+      per rule 101c, not accepted as an unexplained flake. 3.10/3.13 not available as bare system Pythons
+      (`py -0` showed only 3.11.9/3.11.15/3.12.12/3.14.4); 3.10.20 installed via `uv python install 3.10`
+      (zero-cost, local, ~7s), 3.13 satisfied by the already-installed anaconda3 3.13.5 that `uv venv
+      --python 3.13` resolved to. CI matrix itself committed to `ci.yml` (`python-version: ["3.10", "3.11",
+      "3.12", "3.13"]`, lint/format/mypy gated to run once on 3.11 only via `if:`) but NOT yet proven green
+      in real GitHub Actions -- this branch is unpushed per session constraint, so only this session's local
+      verification exists; CI's own ubuntu-latest run is a TODO for whoever pushes.
+      6.2: full 199-test suite run for real against live google-adk==2.7.0 (scratch venv, `google-adk[eval]
+      ==2.7.0 --no-deps` over the locked base, matching Phase 1's own tolerate-the-pin-conflict install
+      pattern) -- 199 passed, 99% coverage, zero code changes required. Pin bumped `<2.7.0`-><2.8.0`
+      (pyproject.toml + `uv lock`); checked PyPI's JSON API directly and confirmed 2.8.0 does not exist yet,
+      so `<2.8.0` is the honest ceiling, not a guess. `uv.lock`'s actual resolved version stays 2.6.3 (uv's
+      conservative-resolution default) -- this only widens what the range *admits*. Canary dispatch
+      (`gh workflow run pypi-canary.yml`) deferred: `workflow_dispatch` needs a pushed ref and this branch
+      isn't pushed -- TODO for after push, documented in the commit body.
+      6.3: GitHub topics set live (`google-adk`, `agent-development-kit`, `llm-cost`, `llm-evaluation`,
+      `opentelemetry`), verified via `gh repo view --json repositoryTopics`. No commit (repo metadata, not a
+      tracked file).
+      6.4: `release.yml` now runs `gh release create "${{ github.ref_name }}" --generate-notes` as a final
+      step, gated to run only after PyPI publish succeeds (`contents` permission bumped read->write for the
+      default token). 3 existing tags backfilled live: v0.1.0rc1, v0.1.0, v0.2.0 all now have real
+      auto-generated notes citing their actual merged PRs (verified via `gh release view v0.2.0`, notes cite
+      PR #4/#5 by title with real links) -- confirmed via `gh release list`, all 3 present, v0.2.0 correctly
+      marked Latest.
+      6.5: stale `dist/adk_tracegauge-0.1.0-*` (whl+tar.gz) removed, `dist/.gitignore` untouched. 5
+      already-merged local branches re-verified (not blindly trusted from Phase 1) via content-level diff --
+      `chore/0.2.0-release` empty-diffed against `main` directly; `ci/pypi-trusted-publishing`'s single
+      commit (4e49f87) content-diffed as empty against main's corresponding squash-merge commit (4283cf8,
+      PR #1) since main has since moved past the squash point -- both genuinely fully merged, not just
+      SHA-different. All 5 deleted locally (`git branch -d`). Remote deletion (`git push origin --delete`)
+      explicitly deferred, not attempted -- branch deletion is a standing pause-for-confirmation item (rule
+      55) and the task's own instructions gave an explicit safe fallback for exactly this case; TODO for a
+      human to run `git push origin --delete chore/0.1.0-release chore/0.2.0-release chore/rc1-version-bump
+      ci/pypi-trusted-publishing docs/releasing` if desired. 2 shallow `is not None` assertions in
+      `test_registration.py` strengthened to real identity/type checks (`is TraceGaugeUsagePlugin`, `is
+      DEFAULT_USAGE_STORE`, `isinstance(..., UsageStore)`), matching the file's own existing
+      `CostEfficiencyEvaluator` identity-check pattern. oss-contrib's `adk-python` checkout: 3 of 4 local PR
+      branches were behind their own origin fork (105/39/105 commits respectively, grown from Phase 1's
+      "40-96" as more upstream activity landed) -- re-verified fast-forward safety first
+      (`git log origin/<branch>..<branch>` empty for all 4, confirming zero local-only commits would be
+      lost) before syncing: the checked-out branch via `git merge --ff-only`, the other two via `git fetch
+      origin <branch>:<branch>` (updates the local ref without checkout, avoiding 2 unnecessary branch
+      switches in someone else's possibly-shared checkout). `fix/eval-metric-threshold-criterion-resolution`
+      needed no action (already 0 commits behind). Working tree confirmed clean before and after.
+      6.6: `resolveReviewThread` GraphQL mutation on keras-team/keras#23420's review thread SUCCEEDED
+      directly (`isResolved: true`, verified by re-fetching) -- contrary to Phase 1's expectation of a likely
+      permission error for an external contributor (`authorAssociation: NONE`); GitHub evidently allows a
+      PR's own author to resolve conversation threads on their own PR regardless of reviewer/maintainer
+      status. No ROUTE-TO-GG item needed for this one; Phase 1's "may be permission-gated" was a reasonable
+      caveat that turned out not to bind.
+      Final verification: `uv sync --frozen` + full suite in the repo's own `.venv` (post all W6 changes,
+      including the pin bump) -- 199 passed, 99% coverage, ruff/ruff-format/mypy all clean. `git status`
+      clean. 5 commits on this branch for W6 (kept split by concern per rule 39a: the 3.10 compat fix is
+      logically separate from the CI matrix that surfaced it, which is separate from the pin bump, the
+      release-workflow change, and the test-assertion strengthening).
+      TODOs left for after this branch is pushed/reviewed: (1) trigger `pypi-canary.yml` for real via
+      `workflow_dispatch`; (2) confirm the new 3.10-3.13 CI matrix is actually green on ubuntu-latest (only
+      locally verified this session, on Windows); (3) optionally `git push origin --delete` the 5
+      already-merged branches (local deletion done, remote deferred per rule 55).
 - [ ] W5 — DX/adoption (last — documents everything above): eliminate/wrap private-API dependency (C5),
       README quickstart rewrite, examples/, badges, real passing+failing gate captures, CHANGELOG/CONTRIBUTING/
       issue template, trigger and document the 3 deferred misconfiguration errors.
