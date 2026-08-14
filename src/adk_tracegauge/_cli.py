@@ -10,8 +10,13 @@ Two subcommands:
 ``TraceGaugeUsagePlugin`` during an actual eval/agent run -- there is
 nothing on disk to point a fresh CLI process at. ``--entrypoint`` names a
 zero-argument callable (``module.path:function_name``, importable on
-``sys.path``/``PYTHONPATH``) that this command imports and calls; that
-callable is expected to run your eval (e.g. call
+``sys.path``/``PYTHONPATH``) that this command imports and calls -- your
+current working directory is inserted onto ``sys.path`` first if it isn't
+already there (Phase 3 B7: found and fixed because the installed
+``tracegauge`` console script, unlike ``python -m adk_tracegauge._cli``,
+does not get cwd on ``sys.path`` for free), so a module sitting next to
+where you run the command resolves without any extra ``PYTHONPATH`` setup;
+that callable is expected to run your eval (e.g. call
 ``AgentEvaluator.evaluate()`` or drive your own ``Runner``), which
 populates ``adk_tracegauge.DEFAULT_USAGE_STORE`` as a side effect via the
 plugin exactly as it would in a real eval run. The entrypoint may instead
@@ -57,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -90,6 +96,21 @@ def _resolve_entrypoint(spec: str) -> UsageStore:
             f"--entrypoint must be of the form 'module.path:callable_name', got {spec!r}"
         )
     module_name, _, func_name = spec.partition(":")
+    # `python -m adk_tracegauge._cli` gets the caller's cwd on sys.path[0]
+    # automatically (Python's own `-m` behavior); the installed `tracegauge`
+    # console-script entry point does NOT -- its sys.path[0] is the venv's
+    # Scripts/ dir instead. Without this, the exact README quickstart
+    # command (`tracegauge snapshot --entrypoint my_eval_suite:...` run from
+    # a plain project directory) fails with "could not import module" even
+    # though the file is right there in cwd -- a real gap found during
+    # Phase 3 B7's fresh-pip-install verification (running from a source
+    # checkout or via `uv run` already has cwd on sys.path one way or
+    # another, which is why this was never observed before that test).
+    # Inserted explicitly so --entrypoint resolution behaves identically
+    # regardless of how `tracegauge` was invoked.
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
     try:
         module = importlib.import_module(module_name)
     except ImportError as e:

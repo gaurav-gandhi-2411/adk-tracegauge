@@ -6,6 +6,7 @@ parsing in isolation, and the two subcommands' end-to-end behavior
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,44 @@ def test_resolve_entrypoint_falls_back_to_default_store_when_none_returned():
     store = _resolve_entrypoint("test_cli:_fixture_populates_default_store_and_returns_none")
     assert store is DEFAULT_USAGE_STORE
     assert "inv-default" in store.invocation_ids()
+
+
+def test_resolve_entrypoint_puts_cwd_on_syspath_for_the_bare_console_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Phase 3 B7: found via a genuinely fresh pip-installed wheel run from
+    an external directory outside this repo. The installed `tracegauge`
+    console-script entry point does NOT get cwd on sys.path automatically
+    -- unlike `python -m adk_tracegauge._cli` (Python's own `-m` behavior)
+    and unlike this test suite's own pytest run (`pythonpath = [".", "src",
+    "scripts"]` in pyproject.toml already covers the repo root) -- both of
+    which masked this gap until it was tested from a real standalone
+    install. Simulates that exact scenario with a module this test process
+    genuinely cannot already see: written fresh into a `tmp_path` the test
+    then `cd`s into, confirmed absent from `sys.path` beforehand (the actual
+    pre-fix failure mode), then resolved successfully after.
+    """
+    module_path = tmp_path / "a_fresh_standalone_entrypoint_module.py"
+    module_path.write_text(
+        "from adk_tracegauge._store import CapturedCall, UsageStore\n"
+        "def build():\n"
+        "    store = UsageStore()\n"
+        "    store.record('inv-standalone', CapturedCall(\n"
+        "        model_version='gemini-2.5-flash', prompt_token_count=1000,\n"
+        "        candidates_token_count=200, cached_content_token_count=0,\n"
+        "        total_token_count=1200))\n"
+        "    return store\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    assert str(tmp_path) not in sys.path  # the actual pre-fix failure mode
+    try:
+        store = _resolve_entrypoint("a_fresh_standalone_entrypoint_module:build")
+        assert store.invocation_ids() == ["inv-standalone"]
+        assert str(tmp_path) in sys.path  # the fix: cwd is now importable
+    finally:
+        sys.modules.pop("a_fresh_standalone_entrypoint_module", None)
+        if str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
 
 
 # --- end-to-end: snapshot subcommand -------------------------------------
