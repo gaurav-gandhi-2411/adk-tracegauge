@@ -1,7 +1,12 @@
-"""adk_tracegauge/_pricing.py — Gemini price table loading and strict model resolution.
+"""adk_tracegauge/_pricing.py — multi-provider price table loading and strict model resolution.
 
-adk-tracegauge ships its own Gemini price table (Gemini pricing is an ADK
-concern, not a tracegauge/Claude-Code concern -- see README). This module is
+adk-tracegauge ships its own price table covering Gemini (ADK's native
+backend), plus Claude and GPT models reachable through ADK's LiteLlm
+integration, plus a synthetic zero-cost entry for local/self-hosted models
+(Ollama, vLLM) -- see README. Originally Gemini-only (hence the historical
+``gemini_prices.json``/``load_gemini_prices`` naming, kept as-is rather than
+renamed -- Phase 2 W3 broadened scope, not the file); every symbol here now
+covers all three real providers plus the local-model case. This module is
 deliberately independent of tracegauge's own ``tes.cost._resolve_model``,
 which silently defaults to a fallback model rate on no match. That is the
 right call for tracegauge's own problem (best-effort scoring of imperfect
@@ -10,18 +15,96 @@ an unrecognized model is worse than one that refuses. ``resolve_model``
 below returns ``None`` on no match instead of defaulting, and callers must
 treat ``None`` as "do not report a cost for this invocation" rather than
 falling through to tracegauge's own default-model path.
+
+Phase 2 W3 additions, because they're load-bearing and not obvious from the
+code:
+
+- **Provider-prefix stripping.** ADK's LiteLlm wrapper carries model strings
+  as ``"<provider>/<model>"`` (confirmed by reading google-adk's
+  ``models/lite_llm.py``: ``LlmResponse.model_version`` is set to LiteLLM's
+  own ``response.model``, which echoes the requested string, prefix
+  included). ``resolve_model`` strips a small allowlist of prefixes
+  (``anthropic/``, ``openai/``) that route to first-party APIs whose
+  published pricing this table's entries were verified against, then
+  matches the bare model name exactly as it always has. Deliberately NOT
+  stripped: ``bedrock/``, ``vertex_ai/``, ``azure/`` -- Claude/GPT pricing on
+  those platforms can differ from first-party rates (see
+  ``shared/platform-availability.md``-style vendor docs), so a call routed
+  through one of them fails closed (unresolved) rather than silently
+  pricing at a rate that may not apply. Register those via the
+  ``ADK_TRACEGAUGE_PRICE_TABLE`` override (below) if you've confirmed the
+  rate actually matches.
+- **Local/self-hosted models resolve to a real, zero-cost table entry, not
+  a bypass.** ``resolve_model_for_call`` recognizes the ``ollama_chat/``,
+  ``ollama/``, and ``vllm/`` LiteLlm prefixes (``is_local_model``) and
+  routes them to the ``__local_zero_cost__`` entry -- a real row in the
+  price table with ``0.0`` rates, not a special-cased short-circuit that
+  skips pricing entirely. This keeps local calls flowing through the exact
+  same ``compute_session_cost``/threshold-gate pipeline as any priced call
+  (trivially producing cost=$0.00 and a PASSED verdict against any positive
+  threshold), rather than duplicating that pipeline's logic in a second
+  code path. ``resolve_model`` itself (the plain, non-call-site function)
+  deliberately does NOT resolve local prefixes -- only
+  ``resolve_model_for_call`` does. That split matters: ``resolve_model``
+  answers "is this a priced model in the table", which is correctly `None`
+  for e.g. ``"ollama_chat/qwen2.5:7b"``; ``resolve_model_for_call`` answers
+  "what should this real call cost", which is correctly the zero-cost entry
+  for the same string.
+- **Custom price registration via ``ADK_TRACEGAUGE_PRICE_TABLE``.** Mirrors
+  tracegauge's own ``TES_PRICE_TABLE`` env-var override pattern (see
+  ``tes.cost.load_price_table``) for consistency. Points at a JSON file with
+  the same schema as the bundled table (``models``, ``model_patterns``,
+  ``cache_multipliers``, ``default_model``) to add or replace entries --
+  e.g. a self-hosted model behind a paid gateway, or a Bedrock/Azure-routed
+  model whose actual negotiated rate differs from the first-party price.
+  Deliberately a whole-file override, not a merge/plugin API -- "keep it
+  minimal, don't over-engineer a plugin system" per this work item's own
+  scope.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import date
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+_DASHED_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+"""Strips a hyphen-separated YYYY-MM-DD suffix (e.g. the historical OpenAI
+snapshot convention "gpt-4o-2024-08-06"). Checked, Phase 2 W3: none of the
+GPT-5.x models this table actually prices use this convention as of
+2026-08-14 (all fetched IDs -- gpt-5, gpt-5.1, gpt-5.6-sol/terra/luna -- are
+bare, undated strings) -- this exists defensively, for a caller referencing
+an older dated OpenAI deployment string via LiteLlm, and to strip the date
+off a request before failing closed with an accurate model name in the
+unresolved-model message rather than a spurious per-day fanout of "unknown
+models". Independent of _DATE_SUFFIX_RE above (matches Gemini's and
+Anthropic's dateless 8-digit convention, e.g. "-20251101") -- the two never
+match the same string, so both are applied unconditionally."""
+
+_LITELLM_PROVIDER_PREFIXES = ("anthropic/", "openai/")
+"""LiteLlm provider prefixes stripped before price-table lookup. Deliberately
+an allowlist of first-party-API routes only -- see this module's docstring
+for why bedrock/vertex_ai/azure are excluded."""
+
+_LOCAL_MODEL_PREFIXES = ("ollama_chat/", "ollama/", "vllm/")
+"""LiteLlm provider prefixes that route to a model the caller runs
+themselves -- zero marginal API cost by design. See is_local_model."""
+
+LOCAL_MODEL_KEY = "__local_zero_cost__"
+"""The price-table key resolve_model_for_call routes local-model calls to.
+A real entry in the bundled table (0.0 rates) -- see resolve_model_for_call
+and this module's docstring for why it's a real entry, not a bypass."""
+
+PRICE_TABLE_ENV_VAR = "ADK_TRACEGAUGE_PRICE_TABLE"
+"""Environment variable naming a JSON file (same schema as the bundled
+table) to load instead of the bundled one -- the extension mechanism for
+registering a custom price. Mirrors tracegauge's own TES_PRICE_TABLE."""
 
 STALE_THRESHOLD_DAYS = 90
 """A price entry older than this is flagged, not silently trusted. Gemini
@@ -47,11 +130,24 @@ _PRICE_TABLE_CACHE: dict[str, Any] | None = None
 
 
 def load_gemini_prices() -> dict[str, Any]:
-    """Loads the bundled Gemini price table (cached after first call)."""
+    """Loads the price table (cached after first call).
+
+    Loads from the ``ADK_TRACEGAUGE_PRICE_TABLE`` env var's path when set
+    (the custom-price extension mechanism -- see module docstring),
+    otherwise the bundled table covering Gemini/Claude/GPT plus the
+    zero-cost local-model entry. Cached process-wide after first call --
+    tests that toggle ``ADK_TRACEGAUGE_PRICE_TABLE`` must reset
+    ``_PRICE_TABLE_CACHE`` to ``None`` themselves for the change to take
+    effect, same as tracegauge's own equivalent cache.
+    """
     global _PRICE_TABLE_CACHE
     if _PRICE_TABLE_CACHE is None:
-        pkg_files = resources.files("adk_tracegauge") / "data" / "gemini_prices.json"
-        _PRICE_TABLE_CACHE = json.loads(pkg_files.read_text(encoding="utf-8"))
+        override_path = os.environ.get(PRICE_TABLE_ENV_VAR)
+        if override_path:
+            _PRICE_TABLE_CACHE = json.loads(Path(override_path).read_text(encoding="utf-8"))
+        else:
+            pkg_files = resources.files("adk_tracegauge") / "data" / "gemini_prices.json"
+            _PRICE_TABLE_CACHE = json.loads(pkg_files.read_text(encoding="utf-8"))
     return _PRICE_TABLE_CACHE
 
 
@@ -102,17 +198,47 @@ def _entry_to_resolved(model_key: str, entry: dict[str, Any]) -> ResolvedModel:
     )
 
 
+def _strip_litellm_provider_prefix(model_version: str) -> str:
+    """Strips a recognized first-party-API LiteLlm provider prefix, if present.
+
+    Only the providers in _LITELLM_PROVIDER_PREFIXES -- see module docstring
+    for why bedrock/vertex_ai/azure routes are deliberately left alone
+    (pricing there can diverge from first-party rates).
+    """
+    for prefix in _LITELLM_PROVIDER_PREFIXES:
+        if model_version.startswith(prefix):
+            return model_version[len(prefix) :]
+    return model_version
+
+
+def is_local_model(model_version: str) -> bool:
+    """True if ``model_version`` carries a LiteLlm prefix for a backend the
+    caller runs themselves (Ollama, vLLM) -- zero marginal API cost by
+    design. Checked on the RAW ``model_version`` string, before any
+    price-table lookup or prefix stripping -- see resolve_model_for_call,
+    the only function that acts on this.
+    """
+    cleaned = model_version.strip().lower()
+    return cleaned.startswith(_LOCAL_MODEL_PREFIXES)
+
+
 def resolve_model(model_version: str, prices: dict[str, Any] | None = None) -> ResolvedModel | None:
     """Resolves a raw ``model_version`` string to a price-table entry.
 
     Returns ``None`` if the model is not in the table -- never a default or
     approximate guess. Callers must not report a cost when this returns
-    ``None``.
+    ``None``. Does NOT resolve local-model prefixes (ollama_chat/, ollama/,
+    vllm/) to the zero-cost entry -- that is resolve_model_for_call's job
+    (see module docstring for why the split exists); this function alone
+    correctly reports "not a priced table entry" for those strings.
     """
     if prices is None:
         prices = load_gemini_prices()
 
-    cleaned = _DATE_SUFFIX_RE.sub("", model_version.strip())
+    cleaned = model_version.strip()
+    cleaned = _strip_litellm_provider_prefix(cleaned)
+    cleaned = _DATE_SUFFIX_RE.sub("", cleaned)
+    cleaned = _DASHED_DATE_SUFFIX_RE.sub("", cleaned)
     models: dict[str, Any] = prices["models"]
 
     if cleaned in models:
@@ -133,14 +259,23 @@ def resolve_model_for_call(
     model's long-context tier (if any) when ``prompt_token_count`` crosses
     its published threshold.
 
-    This is the tiering-aware entry point real call sites (``_adapter.py``)
-    must use -- ``resolve_model`` alone always returns the base (<=
-    threshold) rate, by design, since it has no token count to compare
-    against. Returns ``None`` under the same conditions ``resolve_model``
-    does (no match at all), never a default or approximate guess.
+    This is the tiering-aware, local-model-aware entry point real call
+    sites (``_adapter.py``) must use -- ``resolve_model`` alone always
+    returns the base (<= threshold) rate, by design, since it has no token
+    count to compare against, and never resolves a local-model prefix (see
+    is_local_model / module docstring). Returns ``None`` under the same
+    conditions ``resolve_model`` does (no match at all), never a default or
+    approximate guess.
     """
     if prices is None:
         prices = load_gemini_prices()
+
+    if is_local_model(model_version):
+        # Explicit, named, auditable local-model path -- routed to a real
+        # zero-cost table entry (not a bypass) so it flows through the
+        # exact same pricing/threshold-gate pipeline as any priced call.
+        # See LOCAL_MODEL_KEY and the module docstring.
+        return _entry_to_resolved(LOCAL_MODEL_KEY, prices["models"][LOCAL_MODEL_KEY])
 
     resolved = resolve_model(model_version, prices)
     if resolved is None:
@@ -166,9 +301,12 @@ def known_model_keys(prices: dict[str, Any] | None = None) -> list[str]:
 
 
 __all__ = [
+    "LOCAL_MODEL_KEY",
+    "PRICE_TABLE_ENV_VAR",
     "ResolvedModel",
+    "is_local_model",
+    "known_model_keys",
     "load_gemini_prices",
     "resolve_model",
     "resolve_model_for_call",
-    "known_model_keys",
 ]

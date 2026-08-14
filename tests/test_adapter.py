@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from adk_tracegauge._adapter import build_session_digest, unknown_model_message
+from adk_tracegauge._pricing import LOCAL_MODEL_KEY, PRICE_TABLE_ENV_VAR
 from adk_tracegauge._store import CapturedCall
 
 
@@ -194,3 +195,57 @@ def test_build_session_digest_equal_totals_across_chunks_is_not_a_violation():
     ]
     result = build_session_digest("inv-1", calls)
     assert result.ok
+
+
+# --- Phase 2 W3: multi-provider pricing -------------------------------------
+
+
+def test_build_session_digest_resolves_litellm_prefixed_claude_model():
+    result = build_session_digest("inv-1", [_call(model="anthropic/claude-opus-5")])
+    assert result.ok
+    assert result.digest.turns[0].model == "claude-opus-5"
+
+
+def test_build_session_digest_resolves_litellm_prefixed_gpt_model():
+    result = build_session_digest("inv-1", [_call(model="openai/gpt-5.1")])
+    assert result.ok
+    assert result.digest.turns[0].model == "gpt-5.1"
+
+
+def test_build_session_digest_local_model_resolves_to_zero_cost_key():
+    result = build_session_digest("inv-1", [_call(model="ollama_chat/qwen2.5:7b")])
+    assert result.ok
+    assert result.unresolved_model is None
+    assert result.digest.turns[0].model == LOCAL_MODEL_KEY
+
+
+def test_build_session_digest_local_model_prices_at_zero_regardless_of_tokens():
+    result = build_session_digest(
+        "inv-1", [_call(model="vllm/mistral-7b-instruct", prompt=5_000_000, output=1_000_000)]
+    )
+    assert result.ok
+    assert result.digest.turns[0].model == LOCAL_MODEL_KEY
+    # build_session_digest only resolves the model key -- the actual $0.00
+    # total comes from compute_session_cost picking up the table's 0.0
+    # rates for this key (see test_evaluator.py's end-to-end assertion).
+
+
+def test_build_session_digest_fails_closed_on_bedrock_routed_claude():
+    # Deliberately not auto-resolved -- Bedrock pricing can differ from
+    # first-party rates. See _pricing.py's module docstring.
+    result = build_session_digest("inv-1", [_call(model="bedrock/claude-opus-5")])
+    assert not result.ok
+    assert result.unresolved_model == "bedrock/claude-opus-5"
+
+
+def test_unknown_model_message_does_not_say_gemini_price_table():
+    # Phase 2 W3: this wording was actively stale once the table stopped
+    # being Gemini-only.
+    message = unknown_model_message("mistral-large-latest")
+    assert "Gemini price table" not in message
+
+
+def test_unknown_model_message_names_the_extension_mechanism():
+    message = unknown_model_message("mistral-large-latest")
+    assert PRICE_TABLE_ENV_VAR in message
+    assert "mistral-large-latest" in message

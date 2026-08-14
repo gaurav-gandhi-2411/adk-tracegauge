@@ -566,6 +566,129 @@ def test_stale_price_warning_names_only_the_stale_model_not_a_fresh_one(monkeypa
     )
 
 
+def test_local_model_prices_at_zero_and_passes_with_explicit_rationale():
+    # Phase 2 W3: a local/self-hosted model must resolve to cost 0.0 with a
+    # real PASSED verdict (trivially under any positive threshold) and an
+    # explicit, named rationale -- never a silent default, never the old
+    # score=None behavior an unresolved model gets.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="ollama_chat/qwen2.5:7b",
+            prompt_token_count=1_000,
+            candidates_token_count=500,
+            cached_content_token_count=0,
+            total_token_count=1_500,
+        ),
+    )
+    evaluator = _evaluator(store, threshold_usd=0.01)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == 0.0
+    assert pir.eval_status == EvalStatus.PASSED
+    assert result.overall_eval_status == EvalStatus.PASSED
+    assert "local model, zero marginal cost" in pir.rubric_scores[0].rationale
+
+
+def test_local_model_passes_even_at_a_zero_threshold():
+    # cost <= threshold, and 0.0 <= 0.0 -- the strictest possible threshold
+    # still passes a genuinely zero-cost local call.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="vllm/mistral-7b-instruct",
+            prompt_token_count=10_000,
+            candidates_token_count=10_000,
+            cached_content_token_count=0,
+            total_token_count=20_000,
+        ),
+    )
+    evaluator = _evaluator(store, threshold_usd=0.0)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == 0.0
+    assert pir.eval_status == EvalStatus.PASSED
+
+
+def test_litellm_prefixed_claude_model_prices_correctly_end_to_end():
+    # anthropic/claude-opus-5: $5.00/Mtok input, $25.00/Mtok output.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="anthropic/claude-opus-5",
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
+            cached_content_token_count=0,
+            total_token_count=2_000_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    # 1M input @ $5.00/Mtok + 1M output @ $25.00/Mtok = $30.00
+    assert pir.score == 30.00
+    assert "model=claude-opus-5" in pir.rubric_scores[0].rationale
+
+
+def test_litellm_prefixed_gpt_model_prices_correctly_end_to_end():
+    # openai/gpt-5.1: $1.25/Mtok input, $10.00/Mtok output.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="openai/gpt-5.1",
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
+            cached_content_token_count=0,
+            total_token_count=2_000_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == pytest.approx(11.25)
+    assert "model=gpt-5.1" in pir.rubric_scores[0].rationale
+
+
+def test_unresolvable_non_local_model_reports_actionable_rationale():
+    # Not local, not a cloud-platform Claude/GPT route, not a recognized
+    # vendor at all -- must still fail closed with the extension mechanism
+    # named, not the stale "Gemini price table" wording.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="mistral-large-latest",
+            prompt_token_count=100,
+            candidates_token_count=50,
+            cached_content_token_count=0,
+            total_token_count=150,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score is None
+    assert pir.eval_status == EvalStatus.NOT_EVALUATED
+    rationale = pir.rubric_scores[0].rationale
+    assert "mistral-large-latest" in rationale
+    assert "Gemini price table" not in rationale
+    assert "ADK_TRACEGAUGE_PRICE_TABLE" in rationale
+
+
 def test_streaming_anomaly_reports_none_score_not_a_partial_total():
     store = UsageStore()
     store.record(

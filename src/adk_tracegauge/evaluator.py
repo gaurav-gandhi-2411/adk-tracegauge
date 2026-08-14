@@ -73,9 +73,25 @@ Phase 2 W2 redesign, because it's load-bearing and not obvious from the code:
   evaluator runs against (see README, "bare-agent limitation"). Without it,
   every invocation reports "no usage captured", not a cost of zero.
 
-- An invocation whose model isn't in the Gemini price table reports
+- An invocation whose model isn't in adk-tracegauge's price table reports
   score=None with the specific unresolved model name in the rationale --
   never a fabricated number from a fallback rate.
+
+- **Phase 2 W3: multi-provider pricing, local models, and LiteLlm-prefixed
+  identifiers.** This evaluator (via ``_adapter.build_session_digest`` ->
+  ``_pricing.resolve_model_for_call``) now also prices Claude and current-
+  generation GPT models reached through ADK's LiteLlm integration
+  (``model_version`` strings like ``"anthropic/claude-opus-5"`` or
+  ``"openai/gpt-5.1"``), and recognizes local/self-hosted models (Ollama,
+  vLLM -- ``"ollama_chat/..."``, ``"ollama/..."``, ``"vllm/..."``) as an
+  explicit, named zero-cost case: ``cost_usd=0.000000``, which trivially
+  passes any positive threshold, with a per-call rationale line stating
+  "local model, zero marginal cost" -- not a silent default. See
+  ``_pricing.py``'s module docstring for the prefix-stripping rules
+  (bedrock/vertex_ai/azure routes are deliberately NOT auto-resolved,
+  since Claude/GPT pricing on those platforms can differ from first-party
+  rates) and the ``ADK_TRACEGAUGE_PRICE_TABLE`` env-var extension
+  mechanism for registering a custom price.
 """
 
 from __future__ import annotations
@@ -103,7 +119,7 @@ from tes._digest import SessionDigest
 from tes.cost import SessionCost, compute_session_cost
 
 from ._adapter import build_session_digest, unknown_model_message
-from ._pricing import STALE_THRESHOLD_DAYS, load_gemini_prices, resolve_model
+from ._pricing import LOCAL_MODEL_KEY, STALE_THRESHOLD_DAYS, load_gemini_prices, resolve_model
 from ._store import DEFAULT_USAGE_STORE, UsageStore
 
 METRIC_NAME = "adk_tracegauge_cost_usd"
@@ -309,12 +325,18 @@ def _priced_result(
             f"${session_cost.total_usd - threshold_usd:.6f})"
         )
     for turn_cost in session_cost.turn_costs:
-        breakdown_lines.append(
+        line = (
             f"  call[{turn_cost.turn_index}] model={turn_cost.model_key} "
             f"fresh_tokens={turn_cost.fresh_tokens} fresh=${turn_cost.fresh_cost:.6f} "
             f"cache_read=${turn_cost.cache_read_cost:.6f} "
             f"output=${turn_cost.output_cost:.6f} total=${turn_cost.total_usd:.6f}"
         )
+        if turn_cost.model_key == LOCAL_MODEL_KEY:
+            # Explicit, named, auditable per Phase 2 W3's requirement --
+            # never silently a $0.00 line indistinguishable from a genuinely
+            # free-tier priced call.
+            line += " (local model, zero marginal cost)"
+        breakdown_lines.append(line)
     if session_cost.approximate:
         breakdown_lines.append(
             f"WARNING: approximate -- {'; '.join(session_cost.approximate_reasons)}"

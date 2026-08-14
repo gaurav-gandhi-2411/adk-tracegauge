@@ -43,7 +43,7 @@ from dataclasses import dataclass
 
 from tes._digest import SessionDigest, TurnDigest
 
-from ._pricing import known_model_keys, resolve_model_for_call
+from ._pricing import PRICE_TABLE_ENV_VAR, known_model_keys, resolve_model_for_call
 from ._store import CapturedCall
 
 
@@ -188,10 +188,21 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
 def unknown_model_message(model_version: str) -> str:
     known = ", ".join(known_model_keys())
     return (
-        f"cost not computed: model '{model_version}' is not in the "
-        f"adk-tracegauge Gemini price table (known: {known}). "
-        "Check https://ai.google.dev/gemini-api/docs/pricing for a new or "
-        "renamed model, or open an issue if this model should be added."
+        f"cost not computed: model '{model_version}' did not resolve against "
+        f"adk-tracegauge's price table (Gemini, Claude, and GPT models "
+        f"known: {known}). If this is a local/self-hosted model (Ollama, "
+        "vLLM) it should have resolved automatically to zero cost -- check "
+        "the captured model string actually carries one of the recognized "
+        "local prefixes (ollama_chat/, ollama/, vllm/); if it's routed "
+        "through a cloud platform whose pricing can differ from the "
+        "first-party rate (Bedrock, Vertex AI, Azure), that's why it wasn't "
+        "auto-resolved -- see _pricing.py's module docstring. Otherwise, "
+        f"register a custom price by setting the {PRICE_TABLE_ENV_VAR} "
+        "environment variable to the path of a JSON file with the same "
+        "schema as the bundled table (src/adk_tracegauge/data/"
+        "gemini_prices.json) containing an entry for this model, or open an "
+        "issue at https://github.com/gaurav-gandhi-2411/adk-tracegauge/"
+        "issues if it should ship built-in."
     )
 
 
