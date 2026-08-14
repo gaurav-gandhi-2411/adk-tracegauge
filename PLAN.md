@@ -238,9 +238,86 @@ significant cost regression.
       `workflow_dispatch`; (2) confirm the new 3.10-3.13 CI matrix is actually green on ubuntu-latest (only
       locally verified this session, on Windows); (3) optionally `git push origin --delete` the 5
       already-merged branches (local deletion done, remote deferred per rule 55).
-- [ ] W5 — DX/adoption (last — documents everything above): eliminate/wrap private-API dependency (C5),
+- [x] W5 — DX/adoption (last -- documents everything above): eliminate/wrap private-API dependency (C5),
       README quickstart rewrite, examples/, badges, real passing+failing gate captures, CHANGELOG/CONTRIBUTING/
       issue template, trigger and document the 3 deferred misconfiguration errors.
+      DONE 2026-08-14, commit (pending). 5.1: confirmed by grep -- nothing under src/adk_tracegauge/ calls
+      the private EvaluationGenerator.convert_events_to_eval_invocations internal; W2's after_model_callback
+      workaround + adk eval/AgentEvaluator (this phase's primary documented path) never touches it, since
+      LocalEvalService/AgentEvaluator do their own internal Event->Invocation conversion. It's still needed
+      by the optional hand-rolled sub-agent-rollup harness (test_e2e_runner.py, README's sub-agent section) --
+      wrapped in new src/adk_tracegauge/_compat.py: convert_events_to_eval_invocations() runs a best-effort
+      version check against a KNOWN_TESTED range mirroring the pyproject pin (warns, doesn't block, on
+      mismatch -- an out-of-range version is often still compatible, per W6's 2.7.0 finding) and converts a
+      bare ImportError/AttributeError into an actionable RuntimeError naming the installed version and which
+      integration path is affected. test_e2e_runner.py updated to call the wrapper instead of importing
+      EvaluationGenerator directly. New tests/test_compat.py (11 tests): version parsing, out-of-range warning
+      (real call still succeeds), and both simulated-unsupported-version failure paths (missing module,
+      missing method) via monkeypatch, each asserting the actionable RuntimeError text.
+      5.2: quickstart measured for real via examples/01_minimal_cost_gate.py -- 4 lines of
+      adk-tracegauge-specific Python (import adk_tracegauge; from adk_tracegauge import
+      TraceGaugeUsagePlugin; _usage_plugin = TraceGaugeUsagePlugin(); after_model_callback=... wiring) + 1
+      line of threshold config (test_config.json's criteria dict), ZERO private-API calls (down from Phase
+      1's "3 lines + 1 mandatory private-API call"). Both real `adk eval` CLI runs (PASSED at threshold=5.00,
+      FAILED at threshold=1.00, real cost $2.80 both times, deterministic fixed-cost fake LLM double --
+      zero-cost, no network call) took 31.6s wall-clock total (cold uv/ADK-import overhead included) this
+      session, google-adk==2.6.3. REAL FINDING surfaced by this measurement, not previously documented
+      anywhere in this repo: `adk eval`'s own process exit code does NOT reflect PASSED/FAILED -- verified
+      live, exit 0 in both runs regardless of the printed Overall Eval Status. Documented prominently in the
+      README quickstart and "Known limitations" -- this is exactly why `tracegauge check`'s own real,
+      distinguishable exit codes (0/1/3) matter for CI gating, strengthening W4's differentiator rather than
+      undercutting it.
+      5.3: examples/ created, 3 scripts, each actually run this session (not just written) --
+      01_minimal_cost_gate.py (the quickstart, real adk eval CLI subprocess, both PASS/FAIL captured);
+      02_subagent_rollup.py (real InMemoryRunner + AgentTool two-agent delegation, no mocking -- root
+      $0.525 across 2 turns + delegated sub-agent $0.04 = $0.565 rolled-up, verified against the price table
+      by hand and matching the script's real printed output exactly, 14.7s); 03_ci_regression_gate.py (real
+      `tracegauge snapshot`+`tracegauge check` subprocesses via `python -m adk_tracegauge._cli` -- chosen
+      over `python -c "...; main()"` after discovering the latter doesn't propagate main()'s return value to
+      the process exit code, only the `if __name__=="__main__": sys.exit(main())` guard does; real detected
+      regression, exit code 1, 51.9s). Real terminal captures from all 3 pulled into the README verbatim.
+      5.4: badges added -- PyPI version (dynamic, live v0.2.0), CI status (live GitHub Actions badge, "CI -
+      passing"), Python versions (dynamic, 3.10|3.11|3.12|3.13), License. All 4 URLs verified to return HTTP
+      200 with real (not placeholder) SVG content this session. Real passing + failing `adk eval` captures
+      (from 5.2's run) and real passing + failing `tracegauge check` captures (from 5.3's run) both in the
+      README as fenced code blocks, not screenshots -- consistent with this being a CLI tool.
+      5.5: DEFAULT_USAGE_STORE decision -- kept public (not renamed to _DEFAULT_USAGE_STORE). Checked first:
+      test_registration.py asserts on the public name directly (test_public_exports_are_importable), and
+      docs/ci-snippet.md's own documented CLI pattern ("simply lets the calls land in
+      adk_tracegauge.DEFAULT_USAGE_STORE as a side effect") depends on it being public -- renaming would be
+      a real breaking change for zero benefit, violating Phase 1's "no gratuitous breaking changes" finding.
+      Documented instead: new README subsection under "What this actually is" explaining why it exists (ADK's
+      MetricEvaluatorRegistry only ever constructs a registered evaluator as
+      EvaluatorClass(eval_metric=eval_metric) -- no channel to hand it a custom store) and when to construct
+      your own UsageStore()+store= instead (isolation between concurrent evals, tests) -- Phase 1's D11
+      finding (real export, zero README mentions) is now closed.
+      5.6: CHANGELOG.md (retroactive 0.1.0rc1/0.1.0/0.2.0 entries derived from `gh release view <tag>` +
+      git log, not invented; Unreleased section for this phase's actual Added/Changed/Fixed, proposing next
+      version 0.3.0 per this project's own 0.x convention -- middle digit for breaking changes pre-1.0,
+      justified by W2's real breaking change (threshold now required, ValueError instead of permanent
+      NOT_EVALUATED) -- pyproject.toml's version NOT bumped, no tag, no publish, per this work item's own
+      scope). CONTRIBUTING.md (dev setup, test/lint/mypy commands, branch/commit conventions, and why the
+      price-freshness + canary CI jobs are scheduled not just push-triggered). 2 GitHub issue templates
+      (.github/ISSUE_TEMPLATE/bug_report.yml, price_correction.yml -- the latter directly tied to the
+      price-freshness mechanism per this item's own instruction).
+      5.7: all 3 misconfiguration errors triggered live this session, real text captured into
+      docs/troubleshooting.md (referenced from README): (a) wrong google-adk version -- force-installed
+      google-adk[eval]==1.0.0 (well outside the >=2.6.0,<2.8.0 pin) into a scratch venv with this branch's
+      adk-tracegauge installed editable; real `ModuleNotFoundError: No module named
+      'google.adk.evaluation.metric_evaluator_registry'` at import time (2.0.0 still worked fine -- had to
+      go older to find a genuine break, confirming the pin's floor is conservative, not arbitrary); (b)
+      unknown model -- real captured warnings.warn text naming the exact failing model and every known
+      model key; (c) missing threshold -- real captured ValueError text. All three pasted verbatim, not
+      reconstructed from memory.
+      Verification: full suite 199->210 tests passing (+11, test_compat.py), 99% coverage (3 uncovered
+      lines total, all pre-existing and unrelated to this work item: _cli.py:222's `if
+      __name__=="__main__"` guard, evaluator.py:336's pragma:no-cover branch, snapshot.py:132's defensive
+      `if not calls: continue` -- unreached because store.invocation_ids() only ever returns ids that have
+      at least one recorded call) -- ruff check/ruff format --check/mypy src/ all clean. All 3 examples re-run clean one final time after
+      every change in this work item, producing byte-identical output to their first runs (deterministic
+      seeds throughout). Global ~/.adk/config.json set to {"telemetry": false} (a one-time local ADK CLI
+      setting on this machine, not a repo file) to unblock non-interactive `adk eval` invocations during
+      this session's live testing.
 - [ ] Verifier pass: independently re-run every test and every price figure.
 - [ ] docs/audit/PHASE2_REPORT.md: what changed per item, before/after numbers, W1.2 price diff table,
       W2.4 actual `adk eval` output, W4.3(b) measured false-positive rate, numbered ROUTE-TO-GG list.
