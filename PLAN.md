@@ -32,7 +32,7 @@ significant cost regression.
       that's the final wrap-up item at the bottom of this file, still open).
 - [x] W2 — Threshold gate (fixes P0/D1): CostEfficiencyEvaluator redesigned to return real PASSED/FAILED,
       no path resolves to NOT_EVALUATED for a priceable model. Depends on W1 (price_as_of in rationale).
-      DONE 2026-08-14, commit PENDING_W2_SHA. New `CostThresholdCriterion(BaseCriterion)` (reuses
+      DONE 2026-08-14, commit ea7262f. New `CostThresholdCriterion(BaseCriterion)` (reuses
       `threshold`, opposite comparison direction: PASSED iff cost<=threshold). Constructor now requires a
       threshold (criterion= preferred, deprecated eval_metric.threshold= supported) -- raises ValueError if
       neither set, no silent always-PASS default (rejected as a gate that looks green while checking
