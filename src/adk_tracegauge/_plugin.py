@@ -104,6 +104,12 @@ class TraceGaugeUsagePlugin(BasePlugin):
                 cached_content_token_count=usage.cached_content_token_count or 0,
                 total_token_count=usage.total_token_count or 0,
                 partial=bool(llm_response.partial),
+                # Billed as output tokens and as further input-side tokens
+                # respectively -- see CapturedCall's own docstring for the
+                # Phase 2 W1 P0 finding these two fields fix (both were
+                # silently dropped before, undercounting real cost).
+                thoughts_token_count=usage.thoughts_token_count or 0,
+                tool_use_prompt_token_count=usage.tool_use_prompt_token_count or 0,
             ),
         )
         return None

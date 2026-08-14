@@ -13,6 +13,8 @@ def _llm_response(
     prompt: int = 1000,
     output: int = 200,
     cached: int = 0,
+    thoughts: int = 0,
+    tool_use: int = 0,
     with_usage: bool = True,
 ) -> LlmResponse:
     usage = None
@@ -22,6 +24,8 @@ def _llm_response(
             candidates_token_count=output,
             cached_content_token_count=cached,
             total_token_count=prompt + output,
+            thoughts_token_count=thoughts,
+            tool_use_prompt_token_count=tool_use,
         )
     return LlmResponse(model_version=model_version, usage_metadata=usage)
 
@@ -43,6 +47,25 @@ async def test_after_model_callback_records_usage_by_invocation_id(mocker):
     assert calls[0].model_version == "gemini-2.5-flash"
     assert calls[0].prompt_token_count == 1000
     assert calls[0].candidates_token_count == 200
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_captures_thoughts_and_tool_use_prompt_tokens(mocker):
+    # Phase 2 W1 P0 fix: these two usage_metadata fields were previously
+    # dropped entirely rather than captured -- see CapturedCall's docstring.
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "inv-1"
+
+    await plugin.after_model_callback(
+        callback_context=callback_context,
+        llm_response=_llm_response(thoughts=42, tool_use=7),
+    )
+
+    captured = store.get("inv-1")[0]
+    assert captured.thoughts_token_count == 42
+    assert captured.tool_use_prompt_token_count == 7
 
 
 @pytest.mark.asyncio

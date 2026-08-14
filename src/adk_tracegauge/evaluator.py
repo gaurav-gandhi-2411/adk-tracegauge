@@ -104,6 +104,19 @@ def _streaming_anomaly_result(
     )
 
 
+def _unpriced_component_result(
+    invocation: Invocation, expected: Invocation | None, reason: str
+) -> PerInvocationResult:
+    message = f"cost not computed: {reason}"
+    warnings.warn(f"adk_tracegauge: {message}", stacklevel=2)
+    return PerInvocationResult(
+        actual_invocation=invocation,
+        expected_invocation=expected,
+        score=None,
+        rubric_scores=[RubricScore(rubric_id="cost_breakdown", score=None, rationale=message)],
+    )
+
+
 def _price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
     """The only call site for tracegauge's compute_session_cost in this package.
 
@@ -159,9 +172,28 @@ def _priced_result(
 ) -> PerInvocationResult:
     session_cost = _price_digest(digest, prices=load_gemini_prices())
 
+    # price_as_of travels with every reported number specifically so a
+    # reader of just the rationale text (the only channel guaranteed to
+    # survive ADK's LocalEvalService discarding this metric's structured
+    # result -- see the module docstring) can tell how current the dollar
+    # figure is without cross-referencing the price table file separately.
+    # One session can span multiple models/tiers with different fetched_on
+    # dates (e.g. a long-context call re-resolved to a different table
+    # entry); report every distinct date actually used, sorted, not just
+    # one arbitrarily-picked model's date.
+    price_as_of_dates = sorted(
+        {
+            resolved.fetched_on
+            for tc in session_cost.turn_costs
+            if (resolved := resolve_model(tc.model_key)) is not None and resolved.fetched_on
+        }
+    )
+    price_as_of = ",".join(price_as_of_dates) if price_as_of_dates else "unknown"
+
     breakdown_lines = [
         f"cost_usd={session_cost.total_usd:.6f}",
         f"ai_calls={session_cost.ai_turn_count}",
+        f"price_as_of={price_as_of}",
     ]
     for turn_cost in session_cost.turn_costs:
         breakdown_lines.append(
@@ -239,6 +271,11 @@ class CostEfficiencyEvaluator(Evaluator):
             if adapted.streaming_anomaly is not None:
                 per_invocation_results.append(
                     _streaming_anomaly_result(actual, expected, adapted.streaming_anomaly)
+                )
+                continue
+            if adapted.unpriced_component is not None:
+                per_invocation_results.append(
+                    _unpriced_component_result(actual, expected, adapted.unpriced_component)
                 )
                 continue
             if not adapted.ok:

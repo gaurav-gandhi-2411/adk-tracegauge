@@ -1,61 +1,100 @@
 {
-  "schema_version": 1,
-  "note": "Per-million-token USD rates for Gemini API models used by ADK agents. Prices change without notice -- verify against each entry's source_url before relying on a number for a real budget decision. Standard tier only (no batch/flex/priority).",
+  "schema_version": 2,
+  "note": "Per-million-token USD rates for Gemini API models used by ADK agents. Prices change without notice -- verify against each entry's source_url before relying on a number for a real budget decision. Standard (interactive/online) tier only -- no Batch API pricing (ADK's live-agent plugin path never issues Batch API calls, confirmed by source grep of google-adk's models/plugins modules; a batch call is a separate async job-submission API that never flows through BasePlugin.after_model_callback). Text/image/video input rate only -- Gemini prices audio input separately (typically higher) on several models; audio calls are priced at the text rate here, which under-charges audio-heavy invocations. schema_version 2 adds optional per-model long-context tiering (see 'long_context_threshold_tokens'/'long_context_model_key') -- verified P0 fix, Phase 2 W1.",
   "cache_multipliers": {
     "read": 0.1,
     "write_5min": 0.0,
     "write_1hr": 0.0,
-    "_note": "Gemini's default (automatic/implicit) context caching bills only a read-time discount at 0.1x the model's fresh input rate -- verified per-model against ai.google.dev's published cached-input rates (every model checked divides out to exactly 0.1x). There is no cache-write surcharge and no cache_creation token field in GenerateContentResponseUsageMetadata (confirmed by inspecting the actual Pydantic model), so write multipliers are 0 by design, not a placeholder."
+    "_note": "Gemini's default (automatic/implicit) context caching bills only a read-time discount at 0.1x the model's fresh input rate -- verified per-model against ai.google.dev's published cached-input rates (every model checked, including the >200k long-context tiers, divides out to exactly 0.1x of that tier's own input rate; re-verified 2026-08-14 across 10 models). There is no cache-write surcharge and no cache_creation token field in GenerateContentResponseUsageMetadata (confirmed by inspecting the actual installed Pydantic model), so write multipliers are 0 by design, not a placeholder. cache_read billing correctness also depends on prompt_token_count already including cached tokens (so fresh_tokens = prompt_token_count - cache_read is not double-billing) -- confirmed directly from the installed google-genai SDK's GenerateContentResponseUsageMetadata docstring: 'prompt_token_count ... When cached_content is set, this also includes the number of tokens in the cached content.'"
   },
   "models": {
     "gemini-2.5-pro": {
       "input_usd_per_mtok": 1.25,
       "output_usd_per_mtok": 10.00,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier, <=200k token context only. Gemini bills >200k-context calls at $2.50/$15.00 per Mtok; this table has no per-call tiered-pricing logic, so long-context Pro calls will be under-priced by this evaluator. See README."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier, <=200k token prompts. Prompts >200k tokens are priced via the long_context tier below (schema_version 2) -- Phase 1 flagged this as unmodeled; now fixed.",
+      "long_context_threshold_tokens": 200000,
+      "long_context_model_key": "gemini-2.5-pro-long-context"
+    },
+    "gemini-2.5-pro-long-context": {
+      "input_usd_per_mtok": 2.50,
+      "output_usd_per_mtok": 15.00,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "Synthetic tier-only entry, never matched directly against a raw ADK model_version string. Applied by _pricing.resolve_model_for_call when a real call's prompt_token_count exceeds gemini-2.5-pro's long_context_threshold_tokens (200,000)."
     },
     "gemini-2.5-flash": {
       "input_usd_per_mtok": 0.30,
       "output_usd_per_mtok": 2.50,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier, text/image/video input. No context-length tiering published for this model. Audio input bills at $1.00/Mtok, not modeled here."
     },
     "gemini-2.5-flash-lite": {
       "input_usd_per_mtok": 0.10,
       "output_usd_per_mtok": 0.40,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier, text/image/video input. No context-length tiering published for this model. Audio input bills at $0.30/Mtok, not modeled here."
     },
     "gemini-2.0-flash": {
       "input_usd_per_mtok": 0.10,
       "output_usd_per_mtok": 0.40,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
+      "fetched_on": "2026-08-14",
       "note": "Deprecated by Google (shut down 2026-06-01). Kept for pricing historical eval sessions recorded before the shutdown; will not appear in new runs."
     },
     "gemini-3.5-flash": {
       "input_usd_per_mtok": 1.50,
       "output_usd_per_mtok": 9.00,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier. No context-length tiering or time-limited promotional rate published for this model."
     },
     "gemini-3.5-flash-lite": {
       "input_usd_per_mtok": 0.30,
       "output_usd_per_mtok": 2.50,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier. No context-length tiering or time-limited promotional rate published for this model."
     },
     "gemini-3.6-flash": {
-      "input_usd_per_mtok": 1.50,
-      "output_usd_per_mtok": 7.50,
+      "input_usd_per_mtok": 0.75,
+      "output_usd_per_mtok": 3.75,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "CORRECTED 2026-08-14 (Phase 2 W1 P0 fix): prior table entry ($1.50/$7.50) was the POST-promotion rate, not the rate actually in effect. Google's published standard rate is $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after. This is a time-based tier the 90-day staleness guard will force a re-check on well before the 2026-12-31 change (re-verify on or before that date regardless of the staleness guard's own timing)."
+    },
+    "gemini-3.7-flash": {
+      "input_usd_per_mtok": 0.75,
+      "output_usd_per_mtok": 3.75,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Standard rate $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after -- same promotional-period caveat as gemini-3.6-flash; re-verify before 2026-12-31."
+    },
+    "gemini-3.1-flash-lite": {
+      "input_usd_per_mtok": 0.25,
+      "output_usd_per_mtok": 1.50,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Standard tier, text/image/video input. Audio input bills at $0.50/Mtok, not modeled here. No context-length tiering published."
+    },
+    "gemini-3.1-pro-preview": {
+      "input_usd_per_mtok": 2.00,
+      "output_usd_per_mtok": 12.00,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Preview model. Standard tier, <=200k token prompts; long-context tier below.",
+      "long_context_threshold_tokens": 200000,
+      "long_context_model_key": "gemini-3.1-pro-preview-long-context"
+    },
+    "gemini-3.1-pro-preview-long-context": {
+      "input_usd_per_mtok": 4.00,
+      "output_usd_per_mtok": 18.00,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "Synthetic tier-only entry for gemini-3.1-pro-preview calls with prompt_token_count > 200,000. See gemini-2.5-pro-long-context for the same pattern."
     }
   },
   "model_patterns": [
@@ -65,7 +104,10 @@
     {"prefix": "gemini-2.0-flash", "model_key": "gemini-2.0-flash"},
     {"prefix": "gemini-3.5-flash-lite", "model_key": "gemini-3.5-flash-lite"},
     {"prefix": "gemini-3.5-flash", "model_key": "gemini-3.5-flash"},
-    {"prefix": "gemini-3.6-flash", "model_key": "gemini-3.6-flash"}
+    {"prefix": "gemini-3.6-flash", "model_key": "gemini-3.6-flash"},
+    {"prefix": "gemini-3.7-flash", "model_key": "gemini-3.7-flash"},
+    {"prefix": "gemini-3.1-flash-lite", "model_key": "gemini-3.1-flash-lite"},
+    {"prefix": "gemini-3.1-pro-preview", "model_key": "gemini-3.1-pro-preview"}
   ],
   "default_model": "gemini-2.5-flash",
   "approximate_threshold_pct": 25

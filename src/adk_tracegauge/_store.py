@@ -26,6 +26,24 @@ class CapturedCall:
     (streamed or not). This is ADK's own chunk-boundary signal, not inferred
     -- see _adapter.py's grouping logic, which relies on it to avoid pricing
     each streamed chunk of one real call as if it were a separate call.
+
+    ``thoughts_token_count`` and ``tool_use_prompt_token_count`` are two more
+    fields on Gemini's ``GenerateContentResponseUsageMetadata`` beyond the
+    original four this dataclass started with (Phase 1 only captured
+    prompt/candidates/cached/total -- Phase 2 W1 P0 audit found both were
+    silently dropped, which undercounts real dollar cost):
+
+    - ``thoughts_token_count``: "thinking"/reasoning tokens. Billed as
+      output tokens per Gemini's own pricing pages (output price is
+      documented as "including thinking tokens") -- see _adapter.py, which
+      folds this into token_count_output alongside candidates_token_count.
+    - ``tool_use_prompt_token_count``: tokens from Gemini's server-side
+      built-in tools (e.g. Google Search grounding, code execution) fed back
+      to the model within the same call. adk-tracegauge could not find an
+      authoritative source for this category's exact billing rate/tier, so
+      rather than guess, _adapter.py refuses to price any call where this is
+      nonzero (fail-closed, same philosophy as an unresolved model) --
+      see AdaptResult.unpriced_component.
     """
 
     model_version: str
@@ -34,6 +52,8 @@ class CapturedCall:
     cached_content_token_count: int
     total_token_count: int
     partial: bool = False
+    thoughts_token_count: int = 0
+    tool_use_prompt_token_count: int = 0
 
 
 @dataclass

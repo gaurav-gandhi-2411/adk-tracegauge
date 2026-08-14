@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, timedelta
 
+import pytest
+
 from adk_tracegauge._pricing import (
     STALE_THRESHOLD_DAYS,
     known_model_keys,
     load_gemini_prices,
     resolve_model,
+    resolve_model_for_call,
 )
 
 
@@ -62,6 +65,86 @@ def test_known_model_keys_is_sorted_and_nonempty():
     keys = known_model_keys()
     assert keys == sorted(keys)
     assert "gemini-2.5-flash" in keys
+
+
+# Exact-value regression assertions per model, cross-checked 2026-08-14
+# against https://ai.google.dev/gemini-api/docs/pricing directly (Phase 2 W1
+# P0 price-correctness audit) -- NOT derived from this repo's own code, so
+# this catches a wrong number in gemini_prices.json, not just an internal
+# inconsistency between the JSON and _pricing.py's own resolution logic.
+@pytest.mark.parametrize(
+    ("model_version", "expected_input", "expected_output"),
+    [
+        ("gemini-2.5-pro", 1.25, 10.00),
+        ("gemini-2.5-flash", 0.30, 2.50),
+        ("gemini-2.5-flash-lite", 0.10, 0.40),
+        ("gemini-2.0-flash", 0.10, 0.40),
+        ("gemini-3.5-flash", 1.50, 9.00),
+        ("gemini-3.5-flash-lite", 0.30, 2.50),
+        # CORRECTED 2026-08-14: table previously had the post-2026-12-31
+        # rate ($1.50/$7.50) in effect early -- the actual standard rate as
+        # of today is the promotional one below.
+        ("gemini-3.6-flash", 0.75, 3.75),
+        # NEW 2026-08-14: previously missing from the table entirely.
+        ("gemini-3.7-flash", 0.75, 3.75),
+        ("gemini-3.1-flash-lite", 0.25, 1.50),
+        ("gemini-3.1-pro-preview", 2.00, 12.00),
+    ],
+)
+def test_base_tier_rates_match_published_figures(model_version, expected_input, expected_output):
+    resolved = resolve_model(model_version)
+    assert resolved is not None
+    assert resolved.input_usd_per_mtok == expected_input
+    assert resolved.output_usd_per_mtok == expected_output
+
+
+def test_gemini_2_5_pro_long_context_rate_matches_published_figure():
+    resolved = resolve_model("gemini-2.5-pro-long-context")
+    assert resolved is not None
+    assert resolved.input_usd_per_mtok == 2.50
+    assert resolved.output_usd_per_mtok == 15.00
+
+
+def test_gemini_3_1_pro_preview_long_context_rate_matches_published_figure():
+    resolved = resolve_model("gemini-3.1-pro-preview-long-context")
+    assert resolved is not None
+    assert resolved.input_usd_per_mtok == 4.00
+    assert resolved.output_usd_per_mtok == 18.00
+
+
+def test_resolve_model_for_call_returns_base_tier_at_exactly_the_threshold():
+    resolved = resolve_model_for_call("gemini-2.5-pro", 200_000)
+    assert resolved is not None
+    assert resolved.model_key == "gemini-2.5-pro"
+    assert resolved.input_usd_per_mtok == 1.25
+
+
+def test_resolve_model_for_call_returns_long_context_tier_one_token_above_threshold():
+    resolved = resolve_model_for_call("gemini-2.5-pro", 200_001)
+    assert resolved is not None
+    assert resolved.model_key == "gemini-2.5-pro-long-context"
+    assert resolved.input_usd_per_mtok == 2.50
+    assert resolved.output_usd_per_mtok == 15.00
+
+
+def test_resolve_model_for_call_no_tiering_for_a_model_without_a_long_context_entry():
+    resolved = resolve_model_for_call("gemini-2.5-flash", 50_000_000)
+    assert resolved is not None
+    assert resolved.model_key == "gemini-2.5-flash"
+
+
+def test_resolve_model_for_call_unknown_model_returns_none():
+    assert resolve_model_for_call("totally-made-up-model-xyz", 1_000) is None
+
+
+def test_resolve_model_unaffected_by_token_count_still_returns_base_tier():
+    # resolve_model (no token count arg) always returns the base rate --
+    # existing callers relying on this behavior before schema_version 2
+    # added tiering must see no change.
+    resolved = resolve_model("gemini-2.5-pro")
+    assert resolved is not None
+    assert resolved.model_key == "gemini-2.5-pro"
+    assert resolved.input_usd_per_mtok == 1.25
 
 
 def test_cache_read_multiplier_is_a_tenth_of_input_rate_for_every_model():

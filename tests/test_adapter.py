@@ -5,7 +5,12 @@ from adk_tracegauge._store import CapturedCall
 
 
 def _call(
-    model: str = "gemini-2.5-flash", prompt: int = 1000, output: int = 200, cached: int = 0
+    model: str = "gemini-2.5-flash",
+    prompt: int = 1000,
+    output: int = 200,
+    cached: int = 0,
+    thoughts: int = 0,
+    tool_use: int = 0,
 ) -> CapturedCall:
     return CapturedCall(
         model_version=model,
@@ -13,6 +18,8 @@ def _call(
         candidates_token_count=output,
         cached_content_token_count=cached,
         total_token_count=prompt + output,
+        thoughts_token_count=thoughts,
+        tool_use_prompt_token_count=tool_use,
     )
 
 
@@ -127,6 +134,55 @@ def test_build_session_digest_fails_closed_on_unterminated_partial_stream():
     assert not result.ok
     assert result.streaming_anomaly is not None
     assert "never reached a final" in result.streaming_anomaly
+
+
+def test_build_session_digest_folds_thoughts_into_output_tokens():
+    # thoughts_token_count ("thinking" tokens) is billed as output per
+    # Gemini's pricing pages -- must be added to candidates_token_count, not
+    # dropped (Phase 2 W1 P0 finding: this was previously silently ignored).
+    result = build_session_digest("inv-1", [_call(output=200, thoughts=50)])
+    assert result.ok
+    assert result.digest.turns[0].token_count_output == 250
+
+
+def test_build_session_digest_fails_closed_on_tool_use_prompt_tokens():
+    # Gemini's server-side built-in tool use (Google Search grounding, code
+    # execution) has no verified billing rate in this table -- refuse rather
+    # than silently ignore (undercount) or guess (fabricate).
+    result = build_session_digest("inv-1", [_call(tool_use=123)])
+    assert not result.ok
+    assert result.digest is None
+    assert result.unpriced_component is not None
+    assert "123" in result.unpriced_component
+    assert "tool_use_prompt" in result.unpriced_component
+
+
+def test_build_session_digest_zero_tool_use_prompt_tokens_prices_normally():
+    # The default (0) must not trip the refusal path -- this is the ordinary
+    # client-orchestrated function-calling shape every other test uses.
+    result = build_session_digest("inv-1", [_call(tool_use=0)])
+    assert result.ok
+    assert result.unpriced_component is None
+
+
+def test_build_session_digest_uses_base_rate_at_or_below_long_context_threshold():
+    result = build_session_digest("inv-1", [_call(model="gemini-2.5-pro", prompt=200_000)])
+    assert result.ok
+    assert result.digest.turns[0].model == "gemini-2.5-pro"
+
+
+def test_build_session_digest_uses_long_context_rate_one_token_above_threshold():
+    result = build_session_digest("inv-1", [_call(model="gemini-2.5-pro", prompt=200_001)])
+    assert result.ok
+    assert result.digest.turns[0].model == "gemini-2.5-pro-long-context"
+
+
+def test_build_session_digest_no_tiering_for_models_without_a_long_context_tier():
+    # gemini-2.5-flash has no long-context entry -- a huge prompt must not
+    # spuriously resolve to some other model's tier.
+    result = build_session_digest("inv-1", [_call(model="gemini-2.5-flash", prompt=5_000_000)])
+    assert result.ok
+    assert result.digest.turns[0].model == "gemini-2.5-flash"
 
 
 def test_build_session_digest_equal_totals_across_chunks_is_not_a_violation():

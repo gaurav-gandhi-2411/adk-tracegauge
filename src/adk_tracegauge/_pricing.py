@@ -23,11 +23,25 @@ from typing import Any
 
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 
-STALE_THRESHOLD_DAYS = 180
+STALE_THRESHOLD_DAYS = 90
 """A price entry older than this is flagged, not silently trusted. Gemini
 pricing has no published change cadence to derive this number from
-precisely -- 180 days is a deliberately conservative round number, not a
-measured constant. Tune down if you have evidence prices move faster."""
+precisely -- 90 days is a deliberately conservative round number, not a
+measured constant (tightened from 180 in Phase 2 W1 after a live P0 finding:
+a promotional per-model rate scheduled to change on a fixed calendar date,
+not a token-usage threshold, was found stale-by-construction under the old
+180-day window -- see gemini-3.6-flash/gemini-3.7-flash entries in
+gemini_prices.json). Tune down further if you have evidence prices move
+faster still.
+
+Staleness is always evaluated against "today" as of the moment the check
+runs (``date.today()`` in ``ResolvedModel.is_stale``, or the CI runner's
+clock in scripts/check_price_freshness.py) -- never a date baked into the
+library at import time. That is intentional: a price table shipped inside a
+user's installed package has no way to know the real "today" except by
+asking the running process's own clock, and the whole point of this guard
+is to catch drift between the table's fetched_on and whatever day the
+check actually executes."""
 
 _PRICE_TABLE_CACHE: dict[str, Any] | None = None
 
@@ -51,6 +65,17 @@ class ResolvedModel:
     note: str
     fetched_on: str
     source_url: str
+    long_context_threshold_tokens: int | None = None
+    long_context_model_key: str | None = None
+    """Both None unless this model has a published context-length pricing
+    tier (schema_version 2+). When set, a call whose prompt_token_count
+    exceeds long_context_threshold_tokens must be re-priced against the
+    entry named by long_context_model_key instead of this one -- see
+    resolve_model_for_call, the only function that should act on these two
+    fields. resolve_model itself never applies the tier (it has no token
+    count to compare against), so existing callers of resolve_model are
+    unaffected by schema_version 2 -- they keep getting the base (<=
+    threshold) rate exactly as before."""
 
     @property
     def is_stale(self) -> bool:
@@ -72,6 +97,8 @@ def _entry_to_resolved(model_key: str, entry: dict[str, Any]) -> ResolvedModel:
         note=entry.get("note", ""),
         fetched_on=entry.get("fetched_on", ""),
         source_url=entry.get("source_url", ""),
+        long_context_threshold_tokens=entry.get("long_context_threshold_tokens"),
+        long_context_model_key=entry.get("long_context_model_key"),
     )
 
 
@@ -99,6 +126,38 @@ def resolve_model(model_version: str, prices: dict[str, Any] | None = None) -> R
     return None
 
 
+def resolve_model_for_call(
+    model_version: str, prompt_token_count: int, prices: dict[str, Any] | None = None
+) -> ResolvedModel | None:
+    """Resolves ``model_version`` to a price-table entry, applying the
+    model's long-context tier (if any) when ``prompt_token_count`` crosses
+    its published threshold.
+
+    This is the tiering-aware entry point real call sites (``_adapter.py``)
+    must use -- ``resolve_model`` alone always returns the base (<=
+    threshold) rate, by design, since it has no token count to compare
+    against. Returns ``None`` under the same conditions ``resolve_model``
+    does (no match at all), never a default or approximate guess.
+    """
+    if prices is None:
+        prices = load_gemini_prices()
+
+    resolved = resolve_model(model_version, prices)
+    if resolved is None:
+        return None
+
+    if (
+        resolved.long_context_model_key is not None
+        and resolved.long_context_threshold_tokens is not None
+        and prompt_token_count > resolved.long_context_threshold_tokens
+    ):
+        models: dict[str, Any] = prices["models"]
+        tier_key = resolved.long_context_model_key
+        return _entry_to_resolved(tier_key, models[tier_key])
+
+    return resolved
+
+
 def known_model_keys(prices: dict[str, Any] | None = None) -> list[str]:
     """Returns the model keys this table can price, for error messages."""
     if prices is None:
@@ -106,4 +165,10 @@ def known_model_keys(prices: dict[str, Any] | None = None) -> list[str]:
     return sorted(prices["models"].keys())
 
 
-__all__ = ["ResolvedModel", "load_gemini_prices", "resolve_model", "known_model_keys"]
+__all__ = [
+    "ResolvedModel",
+    "load_gemini_prices",
+    "resolve_model",
+    "resolve_model_for_call",
+    "known_model_keys",
+]

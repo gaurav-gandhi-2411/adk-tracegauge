@@ -7,7 +7,7 @@ a SessionDigest with one TurnDigest per real call -- summed cost across the
 whole invocation, same as tracegauge sums cost across a whole Claude Code
 session.
 
-Two things happen here before any TurnDigest is built, both fail-closed:
+Three things happen here before any TurnDigest is built, all fail-closed:
 
 1. Streamed chunks of one real call are collapsed into a single TurnDigest
    using each CapturedCall's own `partial` flag (ADK's own chunk-boundary
@@ -23,8 +23,16 @@ Two things happen here before any TurnDigest is built, both fail-closed:
    (an interrupted stream) is unresolved for the same reason -- its true
    total is genuinely unknown.
 
-2. Model resolution happens once per real call. A call whose model_version
-   doesn't match the Gemini price table makes the whole adaptation fail
+2. A call reporting nonzero tool_use_prompt_token_count (Gemini server-side
+   built-in tool use, e.g. Google Search grounding) has no verified billing
+   rate in this table -- adaptation fails closed rather than silently
+   ignoring billed tokens (see AdaptResult.unpriced_component).
+
+3. Model resolution happens once per real call, tiering-aware (a long-context
+   model resolves to its own, higher, over-threshold rate once
+   prompt_token_count crosses the published threshold -- see
+   _pricing.resolve_model_for_call). A call whose model_version doesn't
+   match the Gemini price table at all makes the whole adaptation fail
    closed (see AdaptResult.unresolved_model) rather than producing a
    partially-priced or silently-approximate result.
 """
@@ -35,7 +43,7 @@ from dataclasses import dataclass
 
 from tes._digest import SessionDigest, TurnDigest
 
-from ._pricing import known_model_keys, resolve_model
+from ._pricing import known_model_keys, resolve_model_for_call
 from ._store import CapturedCall
 
 
@@ -46,6 +54,12 @@ class AdaptResult:
     digest: SessionDigest | None
     unresolved_model: str | None = None
     streaming_anomaly: str | None = None
+    unpriced_component: str | None = None
+    """Set when a real call includes a token category adk-tracegauge cannot
+    price with confidence (currently: tool_use_prompt_token_count > 0, from
+    Gemini's server-side built-in tools). Same fail-closed philosophy as
+    unresolved_model -- refuse rather than under-report cost by silently
+    ignoring billed tokens. See CapturedCall's docstring in _store.py."""
 
     @property
     def ok(self) -> bool:
@@ -112,7 +126,23 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         # totals -- intermediate partial chunks are superseded by it, not
         # summed with it.
         final_call = group[-1]
-        resolved = resolve_model(final_call.model_version)
+
+        if final_call.tool_use_prompt_token_count:
+            return AdaptResult(
+                digest=None,
+                unpriced_component=(
+                    f"call for model '{final_call.model_version}' includes "
+                    f"{final_call.tool_use_prompt_token_count} tool_use_prompt "
+                    "token(s) (Gemini server-side built-in tool use, e.g. "
+                    "Google Search grounding or code execution) -- "
+                    "adk-tracegauge has no verified billing rate for this "
+                    "token category and refuses to under-report cost by "
+                    "silently ignoring it rather than fabricate one. See "
+                    "README."
+                ),
+            )
+
+        resolved = resolve_model_for_call(final_call.model_version, final_call.prompt_token_count)
         if resolved is None:
             return AdaptResult(digest=None, unresolved_model=final_call.model_version)
 
@@ -123,7 +153,12 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
                 tool_names=[],
                 content_snippet="",
                 token_count_input=final_call.prompt_token_count,
-                token_count_output=final_call.candidates_token_count,
+                # thoughts_token_count ("thinking" tokens) is billed as
+                # output per Gemini's pricing pages -- folded in here so it
+                # isn't silently undercounted (Phase 2 W1 P0 finding).
+                token_count_output=(
+                    final_call.candidates_token_count + final_call.thoughts_token_count
+                ),
                 cache_read=final_call.cached_content_token_count,
                 h2_duplicate=False,
                 cache_creation=0,
@@ -135,7 +170,10 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         session_id=invocation_id,
         domain="adk_invocation",
         resolved=True,
-        total_tokens=sum(g[-1].prompt_token_count + g[-1].candidates_token_count for g in groups),
+        total_tokens=sum(
+            g[-1].prompt_token_count + g[-1].candidates_token_count + g[-1].thoughts_token_count
+            for g in groups
+        ),
         turn_count=len(turns),
         h2_duplicate_count=0,
         cache_hit_rate=0.0,

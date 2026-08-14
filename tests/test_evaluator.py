@@ -222,6 +222,183 @@ def test_delegated_sub_agent_cost_aggregates_into_the_parent_invocation():
     assert "ai_calls=2" in pir.rubric_scores[0].rationale
 
 
+def test_cached_token_discount_matches_hand_calculated_value():
+    # gemini-2.5-flash: input $0.30/Mtok, output $2.50/Mtok, cache-read 0.1x
+    # input. prompt_token_count (1,000,000) already includes the cached
+    # portion (400,000) per Gemini's own usage_metadata semantics.
+    #   fresh_tokens = 1,000,000 - 400,000 = 600,000
+    #   fresh_cost   = 600,000 * 0.30 / 1e6           = 0.18
+    #   cache_cost   = 400,000 * (0.30 * 0.1) / 1e6   = 0.012
+    #   output_cost  = 100,000 * 2.50 / 1e6           = 0.25
+    #   total        = 0.18 + 0.012 + 0.25            = 0.442
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=100_000,
+            cached_content_token_count=400_000,
+            total_token_count=1_100_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == pytest.approx(0.442)
+    assert "cache_read=$0.012000" in pir.rubric_scores[0].rationale
+
+
+def test_long_context_tier_at_exactly_the_threshold_uses_base_rate():
+    # gemini-2.5-pro base rate: $1.25/Mtok input. Exactly 200,000 tokens is
+    # still the <=200k tier per Google's own "<=200k" / ">200k" split.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-pro",
+            prompt_token_count=200_000,
+            candidates_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=200_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == pytest.approx(0.25)  # 200,000 * 1.25 / 1e6
+    assert "model=gemini-2.5-pro " in pir.rubric_scores[0].rationale
+
+
+def test_long_context_tier_one_token_above_threshold_uses_the_higher_rate():
+    # gemini-2.5-pro long-context rate: $2.50/Mtok input -- exactly double
+    # the base rate, triggered the instant prompt_token_count exceeds 200k.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-pro",
+            prompt_token_count=200_001,
+            candidates_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=200_001,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score == pytest.approx(200_001 * 2.50 / 1_000_000)
+    assert "model=gemini-2.5-pro-long-context" in pir.rubric_scores[0].rationale
+
+
+def test_unpriced_component_reports_none_score_not_a_partial_total():
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000,
+            candidates_token_count=50,
+            cached_content_token_count=0,
+            total_token_count=1_050,
+            tool_use_prompt_token_count=77,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score is None
+    assert "tool_use_prompt" in pir.rubric_scores[0].rationale
+    assert "77" in pir.rubric_scores[0].rationale
+    assert result.overall_score is None
+
+
+def test_price_as_of_appears_in_the_rationale():
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000,
+            candidates_token_count=50,
+            cached_content_token_count=0,
+            total_token_count=1_050,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert "price_as_of=" in pir.rubric_scores[0].rationale
+    # Never the bare "unknown" fallback for a resolvable, priced model.
+    assert "price_as_of=unknown" not in pir.rubric_scores[0].rationale
+
+
+def test_stale_price_warning_names_only_the_stale_model_not_a_fresh_one(monkeypatch):
+    import copy
+    import warnings as warnings_module
+    from datetime import date, timedelta
+
+    import adk_tracegauge._pricing as pricing_module
+    import adk_tracegauge.evaluator as evaluator_module
+
+    real_prices = pricing_module.load_gemini_prices()
+    patched = copy.deepcopy(real_prices)
+    old_date = (date.today() - timedelta(days=pricing_module.STALE_THRESHOLD_DAYS + 30)).isoformat()
+    patched["models"]["gemini-2.5-flash"]["fetched_on"] = old_date
+    # gemini-2.5-flash-lite is left at its real (fresh) fetched_on.
+
+    monkeypatch.setattr(pricing_module, "load_gemini_prices", lambda: patched)
+    monkeypatch.setattr(evaluator_module, "load_gemini_prices", lambda: patched)
+
+    store = UsageStore()
+    store.record(
+        "stale-inv",
+        CapturedCall(
+            model_version="gemini-2.5-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=1_000_000,
+        ),
+    )
+    store.record(
+        "fresh-inv",
+        CapturedCall(
+            model_version="gemini-2.5-flash-lite",
+            prompt_token_count=1_000_000,
+            candidates_token_count=0,
+            cached_content_token_count=0,
+            total_token_count=1_000_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    with warnings_module.catch_warnings(record=True) as caught:
+        warnings_module.simplefilter("always")
+        result = evaluator.evaluate_invocations(
+            [_invocation("stale-inv"), _invocation("fresh-inv")]
+        )
+
+    stale_pir, fresh_pir = result.per_invocation_results
+    assert "PRICE TABLE STALE" in stale_pir.rubric_scores[0].rationale
+    assert "gemini-2.5-flash" in stale_pir.rubric_scores[0].rationale
+    assert "PRICE TABLE STALE" not in fresh_pir.rubric_scores[0].rationale
+    assert any(
+        "PRICE TABLE STALE" in str(w.message) and "gemini-2.5-flash" in str(w.message)
+        for w in caught
+    )
+
+
 def test_streaming_anomaly_reports_none_score_not_a_partial_total():
     store = UsageStore()
     store.record(
