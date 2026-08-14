@@ -32,12 +32,28 @@ from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALU
 
 from ._plugin import TraceGaugeUsagePlugin
 from ._store import DEFAULT_USAGE_STORE, UsageStore
-from .evaluator import _METRIC_INFO, METRIC_NAME, CostEfficiencyEvaluator, CostThresholdCriterion
+from .evaluator import (
+    _METRIC_INFO,
+    METRIC_NAME,
+    CostEfficiencyEvaluator,
+    CostThresholdCriterion,
+    _install_agent_evaluator_marker,
+)
 
 DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
     metric_info=_METRIC_INFO,
     evaluator=CostEfficiencyEvaluator,
 )
+
+# Phase 3 B3: best-effort, defensive (never fails import -- see
+# evaluator.py's _install_agent_evaluator_marker docstring). Unlike the
+# metric registration above, this is advisory only: it enables
+# evaluate_invocations()'s real-time warning when this metric is being
+# evaluated under AgentEvaluator.evaluate()'s known-backward pytest-style
+# harness (see evaluator.py's module docstring), and silently no-ops if
+# AgentEvaluator.evaluate has moved -- it must never be the reason importing
+# this package breaks.
+_install_agent_evaluator_marker()
 
 __version__ = "0.2.0"
 

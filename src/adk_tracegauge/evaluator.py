@@ -69,6 +69,25 @@ Phase 2 W2 redesign, because it's load-bearing and not obvious from the code:
   `evaluate_invocations()` directly), never from that harness's own
   pass/fail exit behavior.
 
+- **Phase 3 B3: this is now also a real runtime warning, not just
+  documentation.** `evaluate_invocations()` detects whether it is being
+  driven by `AgentEvaluator.evaluate()` specifically, and if so emits a
+  `warnings.warn` naming this exact behavior and the installed `google-adk`
+  version -- see `_warn_if_running_under_agent_evaluator` and
+  `_install_agent_evaluator_marker`. Detection is a `contextvars.ContextVar`
+  set for the duration of a real `AgentEvaluator.evaluate()` call (via a
+  defensive, best-effort monkeypatch installed as an `adk_tracegauge`
+  import side effect), not a call-stack check -- a call-stack walk was
+  tried first and empirically failed, because `LocalEvalService.evaluate()`
+  forks each eval case's evaluation into its own `asyncio.Task`
+  (`asyncio.as_completed`), which discards the physical call stack back to
+  whichever caller awaited it into existence, identically for both
+  `AgentEvaluator.evaluate()` and `adk eval`. A `ContextVar` set *before*
+  that fork survives it (Task creation copies the current context, PEP
+  567); `adk eval`/`LocalEvalService` never set it. This closes the gap
+  between "documented in README/tests" and "a user actually sees this
+  before hitting an unexplained AssertionError."
+
 - Requires TraceGaugeUsagePlugin to be wired into the same App this
   evaluator runs against (see README, "bare-agent limitation"). Without it,
   every invocation reports "no usage captured", not a cost of zero.
@@ -96,9 +115,12 @@ Phase 2 W2 redesign, because it's load-bearing and not obvious from the code:
 
 from __future__ import annotations
 
+import contextvars
+import functools
 import warnings
 from typing import Any, ClassVar
 
+import google.adk as _google_adk
 from google.adk.evaluation.eval_case import ConversationScenario, Invocation
 from google.adk.evaluation.eval_metrics import (
     BaseCriterion,
@@ -486,6 +508,178 @@ def _aggregate_eval_status(statuses: list[EvalStatus]) -> EvalStatus:
     return EvalStatus.NOT_EVALUATED
 
 
+_RUNNING_UNDER_AGENT_EVALUATOR: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "adk_tracegauge_running_under_agent_evaluator", default=False
+)
+"""Set (via ``_install_agent_evaluator_marker``'s monkeypatch) for the
+duration of a real ``AgentEvaluator.evaluate()`` call. See
+``_warn_if_running_under_agent_evaluator`` for why this exists and why it is
+a ``ContextVar``, not a call-stack check."""
+
+_AGENT_EVALUATOR_MARKER_INSTALLED = False
+"""Idempotency guard for ``_install_agent_evaluator_marker`` -- importing
+``adk_tracegauge`` more than once in a process (re-import after
+``importlib.reload``, multiple test modules, ...) must not double-wrap
+``AgentEvaluator.evaluate``."""
+
+
+def _installed_adk_version() -> str:
+    return getattr(_google_adk, "__version__", "unknown")
+
+
+def _install_agent_evaluator_marker() -> None:
+    """Best-effort: wraps ``AgentEvaluator.evaluate`` to set
+    ``_RUNNING_UNDER_AGENT_EVALUATOR`` for the duration of the call, so
+    ``evaluate_invocations()`` can reliably detect that *this specific*
+    harness is driving the current evaluation.
+
+    **Why not a call-stack check (tried first, and why it fails):** a plain
+    ``inspect.stack()`` walk for a frame inside
+    ``google.adk.evaluation.agent_evaluator`` was the first approach tried
+    here -- and empirically failed (confirmed live against the real,
+    installed, unpatched ``google-adk==2.6.3`` in
+    ``tests/test_agent_evaluator_integration.py`` during development, not a
+    hypothetical concern). Root cause, source-confirmed:
+    ``LocalEvalService.evaluate()`` -- which both ``AgentEvaluator.evaluate()``
+    and ``adk eval`` call identically -- wraps every eval case's evaluation
+    in its own ``asyncio.Task`` via ``asyncio.as_completed(evaluation_tasks)``
+    (``local_eval_service.py::evaluate``). A Task's physical call stack does
+    NOT include the frames of whatever awaited it into existence -- so by
+    the time execution reaches ``evaluate_invocations()``, every frame from
+    ``agent_evaluator.py`` (or ``cli_tools_click.py``) is already gone,
+    *identically* on both the AgentEvaluator and the adk-eval path. A
+    call-stack check can't distinguish the two callers because, at the
+    point this code actually runs, neither caller's frames are observable
+    at all.
+
+    ``contextvars.ContextVar`` survives exactly the boundary that broke the
+    stack walk: ``asyncio.Task`` creation (via ``ensure_future`` inside
+    ``asyncio.as_completed``) copies the *current* context at task-creation
+    time (``contextvars.copy_context()``, per PEP 567) -- so a value set
+    here, before ``AgentEvaluator.evaluate()`` has done any Task-forking
+    internally, propagates down into every Task it later spawns, including
+    the one that eventually calls ``evaluate_invocations()``. ``adk eval``
+    (which never runs through this wrapper) never sets it.
+
+    Defensive by construction, same philosophy as ``_compat.py``: wrapped
+    in ``try/except`` so an ADK release that renames/removes
+    ``AgentEvaluator.evaluate`` degrades this to "no warning capability" on
+    import, never a crash -- the whole point of this mechanism is to make a
+    real bug more visible, not to introduce a new failure mode of its own.
+    Idempotent via ``_AGENT_EVALUATOR_MARKER_INSTALLED``.
+
+    **Known, mechanism-explained gap: the very first ``AgentEvaluator.
+    evaluate()`` call in a process, if THAT SAME call is what triggers
+    ``adk_tracegauge`` to be imported for the first time.** This is the
+    common quickstart shape: the user's *agent module* (not their test
+    file) does ``import adk_tracegauge`` (see README quickstart), and
+    ``AgentEvaluator._get_agent_for_eval`` only imports the agent module
+    *from inside* the already-in-progress, still-unwrapped ``evaluate()``
+    call -- so this function runs (and installs the wrap) too late to
+    affect the call already on the stack; reassigning
+    ``AgentEvaluator.evaluate`` does not retroactively change a call
+    already dispatched to the original function. Confirmed empirically
+    during development (not a hypothetical caveat): a single-file pytest
+    run where this is the first and only ``AgentEvaluator.evaluate()`` call
+    in the process misses the warning; a second such call in the same
+    process (or the same call after ``adk_tracegauge`` was already
+    imported some other way -- e.g. a `conftest.py` importing it, or an
+    earlier test in the same session) gets it correctly, because the wrap
+    is already installed by then. Recommended workaround, documented in
+    README: import ``adk_tracegauge`` explicitly at the top of your eval
+    driver script or `conftest.py`, ahead of any ``AgentEvaluator.
+    evaluate()`` call, rather than relying solely on the agent module's own
+    import to install the wrap in time. Not fixed by also doing a stack
+    walk at import time and setting the ContextVar directly (tried and
+    rejected): unlike the wrap's `set`/`reset` pair, a value set at import
+    time has no natural point to reset it, so it would leak `True` into
+    every later, unrelated evaluation in the same process (a false
+    positive on the package's own primary, unaffected `adk eval`/
+    `LocalEvalService` path) -- worse than the gap it would close, and a
+    hazard this package's own "never fabricate, fail closed" philosophy
+    rules out.
+    """
+    global _AGENT_EVALUATOR_MARKER_INSTALLED
+    if _AGENT_EVALUATOR_MARKER_INSTALLED:
+        return
+
+    try:
+        from google.adk.evaluation.agent_evaluator import AgentEvaluator
+
+        original = AgentEvaluator.__dict__["evaluate"].__func__
+
+        @functools.wraps(original)
+        async def _marked_evaluate(*args: Any, **kwargs: Any) -> Any:
+            token = _RUNNING_UNDER_AGENT_EVALUATOR.set(True)
+            try:
+                return await original(*args, **kwargs)
+            finally:
+                _RUNNING_UNDER_AGENT_EVALUATOR.reset(token)
+
+        # Deliberate monkeypatch, not a typo -- see this function's docstring
+        # for why (ContextVar propagation requires the wrap to be installed
+        # before the call, and there is no ADK-supported extension point for
+        # this). mypy correctly flags reassigning a class's own method as
+        # generally suspicious; suppressed here, narrowly, with the reason
+        # stated rather than silenced blind.
+        AgentEvaluator.evaluate = staticmethod(_marked_evaluate)  # type: ignore[method-assign]
+    except Exception:  # noqa: BLE001 -- advisory only, see docstring; never block import.
+        return
+
+    _AGENT_EVALUATOR_MARKER_INSTALLED = True
+
+
+def _warn_if_running_under_agent_evaluator() -> None:
+    """Runtime guard for the known ADK-side directionality bug (Phase 3 B3, 3.2).
+
+    ``AgentEvaluator.evaluate()`` (google-adk's pytest-style harness) and
+    ``adk eval``/``LocalEvalService`` both end up calling this evaluator's
+    own ``evaluate_invocations()`` -- there is no ADK-side flag or context
+    object handed to a registered ``Evaluator`` that distinguishes which
+    caller is driving it, by design (see ``_install_agent_evaluator_marker``
+    for how this package supplies one anyway).
+
+    When ``_RUNNING_UNDER_AGENT_EVALUATOR`` reads ``True``, warns explicitly
+    -- naming the exact ADK behavior
+    (``agent_evaluator.py::_process_metrics_and_get_failures`` recomputes
+    PASSED/FAILED from raw scores via ``mean(scores) >= threshold``,
+    hardcoded higher-is-better, ignoring this evaluator's own correct
+    ``eval_status``) and the installed ``google-adk`` version -- so a caller
+    sees this explained *before* hitting an unexplained ``AssertionError``
+    (or, worse, a silently inverted pass/fail with no signal at all). See
+    the module docstring, README "Known limitations", and
+    ``tests/test_agent_evaluator_integration.py``.
+
+    Best-effort by construction: if ``_install_agent_evaluator_marker``
+    could not wrap ``AgentEvaluator.evaluate`` (an ADK release renamed or
+    removed it), this never fires -- a caller then only sees the
+    documentation, same as before this mechanism existed, never a crash.
+    Deliberately does NOT use ``warnings``' default once-per-location dedup
+    as a reason to skip the check on every call: the whole point is to fire
+    every time this evaluator is actually driven through the affected
+    harness, and reading a ``ContextVar`` is effectively free.
+    """
+    if not _RUNNING_UNDER_AGENT_EVALUATOR.get():
+        return
+    installed = _installed_adk_version()
+    warnings.warn(
+        "adk_tracegauge: this evaluation is running under "
+        f"AgentEvaluator.evaluate() (installed google-adk=={installed}). "
+        "Its pytest-style harness "
+        "(agent_evaluator.py::_process_metrics_and_get_failures) recomputes "
+        "PASSED/FAILED itself from raw per-invocation scores via "
+        "`mean(scores) >= threshold` -- hardcoded higher-is-better, ignoring "
+        "this evaluator's own correct eval_status entirely -- which is "
+        "directionally backward for this lower-is-better cost metric at ANY "
+        "real threshold. Trust `adk eval`/LocalEvalService, or this "
+        "evaluator's own eval_status (call evaluate_invocations() directly), "
+        "for real pass/fail -- never AgentEvaluator.evaluate()'s own "
+        "assert/no-assert outcome for this metric. See README "
+        "'Known limitations'.",
+        stacklevel=3,
+    )
+
+
 class CostEfficiencyEvaluator(Evaluator):
     """Reports real per-invocation dollar cost with a real PASSED/FAILED verdict.
 
@@ -529,6 +723,8 @@ class CostEfficiencyEvaluator(Evaluator):
         conversation_scenario: ConversationScenario | None = None,
     ) -> EvaluationResult:
         del conversation_scenario  # not applicable to a per-invocation cost metric.
+
+        _warn_if_running_under_agent_evaluator()
 
         resolved_expected: list[Invocation | None] = (
             [None] * len(actual_invocations)
