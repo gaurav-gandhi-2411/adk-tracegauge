@@ -318,9 +318,15 @@ significant cost regression.
       seeds throughout). Global ~/.adk/config.json set to {"telemetry": false} (a one-time local ADK CLI
       setting on this machine, not a repo file) to unblock non-interactive `adk eval` invocations during
       this session's live testing.
-- [ ] Verifier pass: independently re-run every test and every price figure.
-- [ ] docs/audit/PHASE2_REPORT.md: what changed per item, before/after numbers, W1.2 price diff table,
-      W2.4 actual `adk eval` output, W4.3(b) measured false-positive rate, numbered ROUTE-TO-GG list.
+- [x] Verifier pass: independently re-run every test and every price figure. DONE 2026-08-14, two parallel
+      passes (tests/git/gh state + statistics with a different seed; adversarial pricing re-check against
+      live vendor pages). All 6 numbered claims CONFIRMED, all 20 price entries CONFIRMED against live
+      sources, gpt-5.1 conflict definitively resolved ($1.25/$10 correct). One new gap found: Ollama Cloud
+      (paid) shares the `ollama_chat/`/`ollama/` prefix with local Ollama, so `is_local_model()` cannot
+      distinguish them -- a cloud-routed call would be silently priced at $0.00. Not fixed this phase
+      (found during verification, after W3 closed) -- documented as a known limitation in PHASE2_REPORT.md
+      and flagged for Phase 3.
+- [x] docs/audit/PHASE2_REPORT.md: written 2026-08-14.
 
 Deferred to Phase 3 (do not build now): OTel span-attribute export, trajectory analysis,
 deterministic replay, HTML report, failure clustering, LLM-judge scoring.
