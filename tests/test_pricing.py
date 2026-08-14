@@ -8,10 +8,13 @@ import pytest
 
 import adk_tracegauge._pricing as pricing_module
 from adk_tracegauge._pricing import (
+    _LOCAL_MODEL_PREFIXES,
+    ASSUME_LOCAL_ENV_VAR,
     LOCAL_MODEL_KEY,
     PRICE_TABLE_ENV_VAR,
     STALE_THRESHOLD_DAYS,
     is_local_model,
+    is_local_model_asserted,
     known_model_keys,
     load_gemini_prices,
     resolve_model,
@@ -336,7 +339,52 @@ def test_resolve_model_does_not_resolve_local_prefixes_to_the_zero_cost_entry():
     assert resolve_model("ollama_chat/qwen2.5:7b") is None
 
 
-def test_resolve_model_for_call_local_model_resolves_to_zero_cost():
+# --- Phase 3 B1: local-model zero-cost pricing requires explicit opt-in ----
+#
+# Ollama Cloud is a real paid product routed through the identical
+# ollama_chat//ollama/ LiteLlm prefix as local Ollama -- see _pricing.py's
+# module docstring for the source-confirmed reason neither LlmResponse nor
+# CallbackContext/InvocationContext expose enough to tell the two apart. A
+# bare prefix match must NEVER be sufficient on its own to price $0.00.
+
+
+def test_resolve_model_for_call_local_model_fails_closed_without_opt_in(monkeypatch):
+    monkeypatch.delenv(ASSUME_LOCAL_ENV_VAR, raising=False)
+    assert resolve_model_for_call("ollama_chat/qwen2.5:7b", prompt_token_count=1_000) is None
+    assert resolve_model_for_call("ollama/llama3.2:latest", prompt_token_count=1_000) is None
+    assert resolve_model_for_call("vllm/mistral-7b-instruct", prompt_token_count=1_000) is None
+
+
+@pytest.mark.parametrize("local_model_version", list(_LOCAL_MODEL_PREFIXES))
+def test_no_local_prefix_ever_resolves_to_zero_cost_without_the_opt_in_env_var(
+    local_model_version, monkeypatch
+):
+    # Structural/property test (1.4): every recognized local prefix, with
+    # no opt-in set at all, must resolve to None (NOT_EVALUATED upstream),
+    # never a $0.00 ResolvedModel -- this is the exact regression this work
+    # item exists to prevent.
+    monkeypatch.delenv(ASSUME_LOCAL_ENV_VAR, raising=False)
+    model_string = f"{local_model_version}some-model:latest"
+    assert not is_local_model_asserted(model_string)
+    assert resolve_model_for_call(model_string, prompt_token_count=1_000) is None
+
+
+@pytest.mark.parametrize(
+    "opt_in_value",
+    ["1", "true", "TRUE", "yes", "on", "  1  "],
+)
+def test_assume_local_true_spellings_assert_every_local_prefix(opt_in_value, monkeypatch):
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, opt_in_value)
+    for prefix in _LOCAL_MODEL_PREFIXES:
+        model_string = f"{prefix}some-model:latest"
+        assert is_local_model_asserted(model_string)
+        resolved = resolve_model_for_call(model_string, prompt_token_count=1_000)
+        assert resolved is not None
+        assert resolved.model_key == LOCAL_MODEL_KEY
+
+
+def test_resolve_model_for_call_local_model_resolves_to_zero_cost_once_asserted(monkeypatch):
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
     resolved = resolve_model_for_call("ollama_chat/qwen2.5:7b", prompt_token_count=1_000)
     assert resolved is not None
     assert resolved.model_key == LOCAL_MODEL_KEY
@@ -344,12 +392,52 @@ def test_resolve_model_for_call_local_model_resolves_to_zero_cost():
     assert resolved.output_usd_per_mtok == 0.0
 
 
-def test_resolve_model_for_call_local_model_zero_cost_regardless_of_prompt_size():
-    # Zero-cost is unconditional for a local model -- no long-context tier
-    # or any other token-count-dependent branch applies.
+def test_resolve_model_for_call_local_model_zero_cost_regardless_of_prompt_size(monkeypatch):
+    # Zero-cost is unconditional for an asserted local model -- no
+    # long-context tier or any other token-count-dependent branch applies.
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
     resolved = resolve_model_for_call("vllm/mistral-7b-instruct", prompt_token_count=50_000_000)
     assert resolved is not None
     assert resolved.model_key == LOCAL_MODEL_KEY
+
+
+def test_assume_local_allowlist_asserts_only_the_listed_prefixes(monkeypatch):
+    # A partial allowlist -- trust vllm/ (e.g. a known self-hosted
+    # deployment) while ollama_chat/ (the exact prefix Ollama Cloud shares)
+    # still fails closed.
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "vllm/")
+    assert is_local_model_asserted("vllm/mistral-7b-instruct")
+    assert not is_local_model_asserted("ollama_chat/qwen2.5:7b")
+    assert not is_local_model_asserted("ollama/llama3.2:latest")
+
+    resolved = resolve_model_for_call("vllm/mistral-7b-instruct", prompt_token_count=1_000)
+    assert resolved is not None
+    assert resolved.model_key == LOCAL_MODEL_KEY
+
+    assert resolve_model_for_call("ollama_chat/qwen2.5:7b", prompt_token_count=1_000) is None
+
+
+def test_assume_local_allowlist_is_case_insensitive_and_comma_separated(monkeypatch):
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "OLLAMA_CHAT/, vllm/")
+    assert is_local_model_asserted("ollama_chat/qwen2.5:7b")
+    assert is_local_model_asserted("vllm/mistral-7b-instruct")
+    assert not is_local_model_asserted("ollama/llama3.2:latest")
+
+
+def test_assume_local_unrecognized_entry_does_not_widen_trust(monkeypatch):
+    # A typo/unrecognized prefix in the allowlist must never silently
+    # expand what's trusted -- fail closed, not open.
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "not-a-real-prefix/")
+    assert not is_local_model_asserted("ollama_chat/qwen2.5:7b")
+    assert not is_local_model_asserted("vllm/mistral-7b-instruct")
+
+
+def test_is_local_model_asserted_false_for_a_non_local_model_even_with_opt_in_set(monkeypatch):
+    # Even the broadest opt-in ("assert everything") must not assert
+    # something that was never structurally local in the first place.
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
+    assert not is_local_model_asserted("gemini-2.5-flash")
+    assert not is_local_model_asserted("anthropic/claude-opus-5")
 
 
 def test_local_zero_cost_entry_is_in_known_model_keys():

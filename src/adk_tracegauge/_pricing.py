@@ -60,6 +60,30 @@ code:
   Deliberately a whole-file override, not a merge/plugin API -- "keep it
   minimal, don't over-engineer a plugin system" per this work item's own
   scope.
+
+Phase 3 B1 (release-blocking fix, not a new feature): **local-model
+zero-cost pricing now requires an explicit opt-in.** Ollama has a real paid
+product, Ollama Cloud, routed through the *identical* LiteLlm prefix as
+local Ollama (``ollama_chat/``, ``ollama/``) -- only the ``api_base``/host
+differs (localhost vs. ``https://ollama.com``), and that field is
+confirmed NOT reachable at the point a real call lands in
+``TraceGaugeUsagePlugin.after_model_callback``: read directly,
+google-adk's ``models/lite_llm.py`` builds ``LlmResponse`` from
+``response.model`` (litellm's ``ModelResponse.model``, the bare
+``"<provider>/<model>"`` string) with no host/endpoint field anywhere on
+it; ``LlmResponse`` itself (``models/llm_response.py``) is a pydantic model
+with ``extra="forbid"`` and no ``api_base``-shaped field in its schema;
+and neither ``CallbackContext`` (= ``agents/context.py``'s ``Context``) nor
+the ``InvocationContext`` it wraps expose the underlying ``LiteLlm`` model
+client instance (which is the only place ``api_base`` is actually stored,
+in ``LiteLlm._additional_args``) to a plugin callback. Since local-vs-cloud
+is NOT distinguishable from anything available here, a bare
+``ollama_chat/``/``ollama/``/``vllm/`` prefix match is no longer
+sufficient on its own to price a call at $0.00 -- see
+``ASSUME_LOCAL_ENV_VAR``/``is_local_model_asserted`` below. A wrong $0.00
+for a genuinely paid Ollama Cloud call is strictly worse than a loud,
+actionable refusal to price (NOT_EVALUATED) -- see
+``_adapter.unknown_model_message`` for the actionable remedy text.
 """
 
 from __future__ import annotations
@@ -94,17 +118,45 @@ for why bedrock/vertex_ai/azure are excluded."""
 
 _LOCAL_MODEL_PREFIXES = ("ollama_chat/", "ollama/", "vllm/")
 """LiteLlm provider prefixes that route to a model the caller runs
-themselves -- zero marginal API cost by design. See is_local_model."""
+themselves -- zero marginal API cost by design, PROVIDED the caller has
+confirmed that. See is_local_model (structural prefix check only) and
+is_local_model_asserted (the actual gate resolve_model_for_call uses --
+requires ASSUME_LOCAL_ENV_VAR opt-in, Phase 3 B1)."""
 
 LOCAL_MODEL_KEY = "__local_zero_cost__"
-"""The price-table key resolve_model_for_call routes local-model calls to.
-A real entry in the bundled table (0.0 rates) -- see resolve_model_for_call
-and this module's docstring for why it's a real entry, not a bypass."""
+"""The price-table key resolve_model_for_call routes an ASSERTED local-model
+call to (see is_local_model_asserted). A real entry in the bundled table
+(0.0 rates) -- see resolve_model_for_call and this module's docstring for
+why it's a real entry, not a bypass."""
 
 PRICE_TABLE_ENV_VAR = "ADK_TRACEGAUGE_PRICE_TABLE"
 """Environment variable naming a JSON file (same schema as the bundled
 table) to load instead of the bundled one -- the extension mechanism for
 registering a custom price. Mirrors tracegauge's own TES_PRICE_TABLE."""
+
+ASSUME_LOCAL_ENV_VAR = "ADK_TRACEGAUGE_ASSUME_LOCAL"
+"""Environment variable asserting that model strings matching a local-model
+prefix (_LOCAL_MODEL_PREFIXES) are genuinely local/self-hosted, not a paid
+gateway sharing the identical LiteLlm prefix (Ollama Cloud -- see this
+module's docstring, Phase 3 B1). Unset/empty means NO local-prefixed model
+is priced at zero cost -- resolve_model_for_call fails closed (returns
+None) instead, and the caller reports NOT_EVALUATED with an actionable
+message naming this env var (see _adapter.unknown_model_message). Two
+accepted forms, checked case-insensitively:
+
+  - "1" / "true" / "yes" / "on": assert EVERY recognized local prefix
+    (_LOCAL_MODEL_PREFIXES) as genuinely local.
+  - a comma-separated SUBSET of _LOCAL_MODEL_PREFIXES (e.g. "vllm/"): assert
+    only the listed prefixes -- e.g. to trust a self-hosted vllm/
+    deployment while still failing closed on ollama_chat/, the exact
+    prefix Ollama Cloud (a real paid product) also uses. Entries that don't
+    exactly match a recognized local prefix are silently ignored -- a typo
+    here must never silently WIDEN what gets trusted as zero-cost.
+
+See is_local_model_asserted, the function that actually reads this."""
+
+_ASSUME_LOCAL_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+"""Case-insensitive "assert everything" spellings for ASSUME_LOCAL_ENV_VAR."""
 
 STALE_THRESHOLD_DAYS = 90
 """A price entry older than this is flagged, not silently trusted. Gemini
@@ -212,14 +264,58 @@ def _strip_litellm_provider_prefix(model_version: str) -> str:
 
 
 def is_local_model(model_version: str) -> bool:
-    """True if ``model_version`` carries a LiteLlm prefix for a backend the
-    caller runs themselves (Ollama, vLLM) -- zero marginal API cost by
-    design. Checked on the RAW ``model_version`` string, before any
-    price-table lookup or prefix stripping -- see resolve_model_for_call,
-    the only function that acts on this.
+    """True if ``model_version`` carries a LiteLlm prefix associated with a
+    backend the caller CAN run themselves (Ollama, vLLM) -- a purely
+    STRUCTURAL/syntactic check on the RAW ``model_version`` string, before
+    any price-table lookup or prefix stripping.
+
+    This is NOT sufficient on its own to price a call at zero cost (Phase 3
+    B1): the identical ``ollama_chat/``/``ollama/`` prefix also routes to
+    Ollama Cloud, a real paid product, and nothing available at the point a
+    real call reaches this package can distinguish the two -- see this
+    module's docstring. Use is_local_model_asserted (which also requires
+    the caller's explicit ASSUME_LOCAL_ENV_VAR opt-in) to decide whether a
+    call should actually be priced at $0.00; resolve_model_for_call is the
+    only function that acts on that decision.
     """
     cleaned = model_version.strip().lower()
     return cleaned.startswith(_LOCAL_MODEL_PREFIXES)
+
+
+def _asserted_local_prefixes() -> frozenset[str]:
+    """Returns the local-model prefixes ASSUME_LOCAL_ENV_VAR asserts as
+    genuinely local for this process. Empty if unset/empty -- see
+    ASSUME_LOCAL_ENV_VAR's docstring for the two accepted forms.
+    """
+    raw = os.environ.get(ASSUME_LOCAL_ENV_VAR, "").strip()
+    if not raw:
+        return frozenset()
+    if raw.lower() in _ASSUME_LOCAL_TRUE_VALUES:
+        return frozenset(_LOCAL_MODEL_PREFIXES)
+    requested = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    # Intersect with the known prefixes, not a straight pass-through --
+    # ASSUME_LOCAL_ENV_VAR narrows which recognized local prefixes are
+    # trusted, it never WIDENS what counts as "local" in the first place
+    # (that's is_local_model's job, and a typo here must fail closed, not
+    # silently expand the trusted set).
+    return frozenset(p for p in _LOCAL_MODEL_PREFIXES if p in requested)
+
+
+def is_local_model_asserted(model_version: str) -> bool:
+    """True iff ``model_version`` both looks local (is_local_model) AND the
+    caller has explicitly asserted, via ASSUME_LOCAL_ENV_VAR, that calls
+    carrying this specific prefix are genuinely local/self-hosted -- not,
+    e.g., Ollama Cloud (see this module's docstring for why the two cases
+    are not distinguishable from any field available to
+    TraceGaugeUsagePlugin.after_model_callback, Phase 3 B1). This is the
+    actual gate resolve_model_for_call uses to decide whether to price a
+    local-prefixed call at $0.00 -- is_local_model alone is a structural
+    signal only, never sufficient by itself since Phase 3 B1.
+    """
+    if not is_local_model(model_version):
+        return False
+    cleaned = model_version.strip().lower()
+    return any(cleaned.startswith(prefix) for prefix in _asserted_local_prefixes())
 
 
 def resolve_model(model_version: str, prices: dict[str, Any] | None = None) -> ResolvedModel | None:
@@ -265,12 +361,22 @@ def resolve_model_for_call(
     count to compare against, and never resolves a local-model prefix (see
     is_local_model / module docstring). Returns ``None`` under the same
     conditions ``resolve_model`` does (no match at all), never a default or
-    approximate guess.
+    approximate guess -- INCLUDING for a local-prefixed model that has not
+    been asserted via ASSUME_LOCAL_ENV_VAR (Phase 3 B1): a bare prefix
+    match is fail-closed here, not priced at $0.00, since it cannot be
+    distinguished from a paid Ollama Cloud call. See
+    is_local_model_asserted and this module's docstring.
     """
     if prices is None:
         prices = load_gemini_prices()
 
     if is_local_model(model_version):
+        if not is_local_model_asserted(model_version):
+            # Fails closed -- see is_local_model_asserted's docstring.
+            # Callers (build_session_digest -> unknown_model_message) turn
+            # this None into an actionable NOT_EVALUATED naming the exact
+            # opt-in remedy, never a silent $0.00.
+            return None
         # Explicit, named, auditable local-model path -- routed to a real
         # zero-cost table entry (not a bypass) so it flows through the
         # exact same pricing/threshold-gate pipeline as any priced call.
@@ -301,10 +407,12 @@ def known_model_keys(prices: dict[str, Any] | None = None) -> list[str]:
 
 
 __all__ = [
+    "ASSUME_LOCAL_ENV_VAR",
     "LOCAL_MODEL_KEY",
     "PRICE_TABLE_ENV_VAR",
     "ResolvedModel",
     "is_local_model",
+    "is_local_model_asserted",
     "known_model_keys",
     "load_gemini_prices",
     "resolve_model",

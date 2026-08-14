@@ -45,7 +45,13 @@ from typing import Any
 from tes._digest import SessionDigest, TurnDigest
 from tes.cost import SessionCost, compute_session_cost
 
-from ._pricing import PRICE_TABLE_ENV_VAR, known_model_keys, resolve_model_for_call
+from ._pricing import (
+    ASSUME_LOCAL_ENV_VAR,
+    PRICE_TABLE_ENV_VAR,
+    is_local_model,
+    known_model_keys,
+    resolve_model_for_call,
+)
 from ._store import CapturedCall
 
 
@@ -215,15 +221,41 @@ def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCos
 
 
 def unknown_model_message(model_version: str) -> str:
+    if is_local_model(model_version):
+        # Phase 3 B1: a bare local-prefix match is no longer sufficient to
+        # auto-resolve to zero cost -- distinguish this from a genuinely
+        # unrecognized vendor with a specific, actionable remedy naming the
+        # exact opt-in mechanism, not the generic "register a custom price"
+        # text below (which would be actively misleading here: the model
+        # IS recognized, just not priced without an explicit assertion).
+        return (
+            f"cost not computed: model '{model_version}' carries a "
+            "local-model LiteLlm prefix (ollama_chat/, ollama/, or vllm/) "
+            "but was NOT priced at zero cost, because that prefix alone "
+            "cannot distinguish genuinely local/self-hosted inference from "
+            "Ollama Cloud -- a real paid product routed through the "
+            "identical prefix, where only the api_base/host differs, and "
+            "that field is not available at the point adk-tracegauge "
+            "captures usage (confirmed by reading google-adk's "
+            "models/lite_llm.py and models/llm_response.py directly -- see "
+            "_pricing.py's module docstring). A silently wrong $0.00 for a "
+            "paid Ollama Cloud call would be worse than this refusal. If "
+            f"'{model_version}' really is local/self-hosted, opt in "
+            f"explicitly by setting {ASSUME_LOCAL_ENV_VAR}=1 (asserts every "
+            "recognized local prefix) or "
+            f"{ASSUME_LOCAL_ENV_VAR}=<comma-separated prefixes> (e.g. "
+            "'vllm/' to assert only that one, leaving ollama_chat/ still "
+            "failing closed) before running your eval."
+        )
+
     known = ", ".join(known_model_keys())
     return (
         f"cost not computed: model '{model_version}' did not resolve against "
         f"adk-tracegauge's price table (Gemini, Claude, and GPT models "
         f"known: {known}). If this is a local/self-hosted model (Ollama, "
-        "vLLM) it should have resolved automatically to zero cost -- check "
-        "the captured model string actually carries one of the recognized "
-        "local prefixes (ollama_chat/, ollama/, vllm/); if it's routed "
-        "through a cloud platform whose pricing can differ from the "
+        "vLLM) it needs an explicit opt-in before it resolves to zero cost "
+        f"-- see the {ASSUME_LOCAL_ENV_VAR} environment variable; if it's "
+        "routed through a cloud platform whose pricing can differ from the "
         "first-party rate (Bedrock, Vertex AI, Azure), that's why it wasn't "
         "auto-resolved -- see _pricing.py's module docstring. Otherwise, "
         f"register a custom price by setting the {PRICE_TABLE_ENV_VAR} "

@@ -16,7 +16,11 @@ WHAT THIS DOES
     this script is exactly zero-cost and needs no API key or local model
     server to run. Swap `_FixedCostLlm()` for a real model string (e.g.
     `model="gemini-2.5-flash"`, or `model=LiteLlm(model="ollama_chat/qwen2.5:7b")`
-    for a $0-cost local model via Ollama) to see this against a real call.
+    for a $0-cost local model via Ollama) to see this against a real call --
+    for the local-Ollama case, also set `ADK_TRACEGAUGE_ASSUME_LOCAL=1`
+    first (Phase 3 B1: a bare `ollama_chat/` prefix alone no longer prices
+    at $0.00, since it's identical to Ollama Cloud's, a real paid product --
+    see README, "Pricing: Gemini, Claude, GPT, and local models").
 
 REAL FINDING FROM RUNNING THIS SCRIPT (Phase 2 W5), worth knowing before you
 wire this into CI: `adk eval`'s own PROCESS EXIT CODE does not reflect

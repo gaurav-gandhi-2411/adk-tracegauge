@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from adk_tracegauge._adapter import build_session_digest, unknown_model_message
-from adk_tracegauge._pricing import LOCAL_MODEL_KEY, PRICE_TABLE_ENV_VAR
+from adk_tracegauge._pricing import ASSUME_LOCAL_ENV_VAR, LOCAL_MODEL_KEY, PRICE_TABLE_ENV_VAR
 from adk_tracegauge._store import CapturedCall
 
 
@@ -212,14 +212,16 @@ def test_build_session_digest_resolves_litellm_prefixed_gpt_model():
     assert result.digest.turns[0].model == "gpt-5.1"
 
 
-def test_build_session_digest_local_model_resolves_to_zero_cost_key():
+def test_build_session_digest_local_model_resolves_to_zero_cost_key_once_asserted(monkeypatch):
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
     result = build_session_digest("inv-1", [_call(model="ollama_chat/qwen2.5:7b")])
     assert result.ok
     assert result.unresolved_model is None
     assert result.digest.turns[0].model == LOCAL_MODEL_KEY
 
 
-def test_build_session_digest_local_model_prices_at_zero_regardless_of_tokens():
+def test_build_session_digest_local_model_prices_at_zero_regardless_of_tokens(monkeypatch):
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
     result = build_session_digest(
         "inv-1", [_call(model="vllm/mistral-7b-instruct", prompt=5_000_000, output=1_000_000)]
     )
@@ -228,6 +230,24 @@ def test_build_session_digest_local_model_prices_at_zero_regardless_of_tokens():
     # build_session_digest only resolves the model key -- the actual $0.00
     # total comes from compute_session_cost picking up the table's 0.0
     # rates for this key (see test_evaluator.py's end-to-end assertion).
+
+
+def test_build_session_digest_local_model_fails_closed_without_opt_in(monkeypatch):
+    # Phase 3 B1 (release-blocking): a bare local-prefix match must NEVER
+    # resolve to zero cost without the caller's explicit assertion --
+    # Ollama Cloud (a real paid product) shares the identical prefix.
+    monkeypatch.delenv(ASSUME_LOCAL_ENV_VAR, raising=False)
+    result = build_session_digest("inv-1", [_call(model="ollama_chat/qwen2.5:7b")])
+    assert not result.ok
+    assert result.unresolved_model == "ollama_chat/qwen2.5:7b"
+
+
+def test_unknown_model_message_for_unasserted_local_model_names_the_opt_in_remedy(monkeypatch):
+    monkeypatch.delenv(ASSUME_LOCAL_ENV_VAR, raising=False)
+    message = unknown_model_message("ollama_chat/qwen2.5:7b")
+    assert ASSUME_LOCAL_ENV_VAR in message
+    assert "ollama_chat/qwen2.5:7b" in message
+    assert "Ollama Cloud" in message
 
 
 def test_build_session_digest_fails_closed_on_bedrock_routed_claude():

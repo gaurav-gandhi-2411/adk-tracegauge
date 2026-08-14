@@ -6,6 +6,7 @@ from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.evaluator import EvalStatus
 from google.genai import types as genai_types
 
+from adk_tracegauge._pricing import ASSUME_LOCAL_ENV_VAR
 from adk_tracegauge._store import CapturedCall, UsageStore
 from adk_tracegauge.evaluator import METRIC_NAME, CostEfficiencyEvaluator, CostThresholdCriterion
 
@@ -566,11 +567,15 @@ def test_stale_price_warning_names_only_the_stale_model_not_a_fresh_one(monkeypa
     )
 
 
-def test_local_model_prices_at_zero_and_passes_with_explicit_rationale():
-    # Phase 2 W3: a local/self-hosted model must resolve to cost 0.0 with a
-    # real PASSED verdict (trivially under any positive threshold) and an
-    # explicit, named rationale -- never a silent default, never the old
-    # score=None behavior an unresolved model gets.
+def test_local_model_prices_at_zero_and_passes_with_explicit_rationale(monkeypatch):
+    # Phase 2 W3 / Phase 3 B1: an ASSERTED local/self-hosted model must
+    # resolve to cost 0.0 with a real PASSED verdict (trivially under any
+    # positive threshold) and an explicit, named rationale -- never a
+    # silent default, never the old score=None behavior an unresolved
+    # model gets. Since Phase 3 B1, this requires the explicit
+    # ADK_TRACEGAUGE_ASSUME_LOCAL opt-in (see the fail-closed test below
+    # for the un-asserted case).
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
     store = UsageStore()
     store.record(
         "inv-1",
@@ -590,12 +595,17 @@ def test_local_model_prices_at_zero_and_passes_with_explicit_rationale():
     assert pir.score == 0.0
     assert pir.eval_status == EvalStatus.PASSED
     assert result.overall_eval_status == EvalStatus.PASSED
-    assert "local model, zero marginal cost" in pir.rubric_scores[0].rationale
+    rationale = pir.rubric_scores[0].rationale
+    assert "local model, zero marginal cost" in rationale
+    # Phase 3 B1: wording now names the explicit assertion this zero-cost
+    # result required -- not identical to the old implicit-default wording.
+    assert ASSUME_LOCAL_ENV_VAR in rationale
 
 
-def test_local_model_passes_even_at_a_zero_threshold():
+def test_local_model_passes_even_at_a_zero_threshold(monkeypatch):
     # cost <= threshold, and 0.0 <= 0.0 -- the strictest possible threshold
     # still passes a genuinely zero-cost local call.
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
     store = UsageStore()
     store.record(
         "inv-1",
@@ -614,6 +624,35 @@ def test_local_model_passes_even_at_a_zero_threshold():
     pir = result.per_invocation_results[0]
     assert pir.score == 0.0
     assert pir.eval_status == EvalStatus.PASSED
+
+
+def test_local_model_without_opt_in_reports_not_evaluated_not_a_silent_zero(monkeypatch):
+    # Phase 3 B1 (release-blocking): the core fix. Without the explicit
+    # ADK_TRACEGAUGE_ASSUME_LOCAL opt-in, a local-prefixed model must NEVER
+    # be priced at $0.00 -- Ollama Cloud shares the identical prefix.
+    monkeypatch.delenv(ASSUME_LOCAL_ENV_VAR, raising=False)
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="ollama_chat/qwen2.5:7b",
+            prompt_token_count=1_000,
+            candidates_token_count=500,
+            cached_content_token_count=0,
+            total_token_count=1_500,
+        ),
+    )
+    evaluator = _evaluator(store, threshold_usd=1_000.0)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    assert pir.score is None
+    assert pir.eval_status == EvalStatus.NOT_EVALUATED
+    rationale = pir.rubric_scores[0].rationale
+    assert "ollama_chat/qwen2.5:7b" in rationale
+    assert ASSUME_LOCAL_ENV_VAR in rationale
+    assert "Ollama Cloud" in rationale
 
 
 def test_litellm_prefixed_claude_model_prices_correctly_end_to_end():

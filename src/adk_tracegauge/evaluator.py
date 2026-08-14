@@ -329,8 +329,10 @@ def _priced_result(
         if turn_cost.model_key == LOCAL_MODEL_KEY:
             # Explicit, named, auditable per Phase 2 W3's requirement --
             # never silently a $0.00 line indistinguishable from a genuinely
-            # free-tier priced call.
-            line += " (local model, zero marginal cost)"
+            # free-tier priced call. Phase 3 B1: wording now names the
+            # explicit assertion this zero-cost result required, since it's
+            # no longer an implicit/default outcome -- see module docstring.
+            line += " (local model, zero marginal cost, asserted via ADK_TRACEGAUGE_ASSUME_LOCAL)"
         breakdown_lines.append(line)
     if session_cost.approximate:
         breakdown_lines.append(
