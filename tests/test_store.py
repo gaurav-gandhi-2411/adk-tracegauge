@@ -119,3 +119,39 @@ def test_clear_also_clears_recorded_parent_relationships():
     store.record_parent("child", "parent")
     store.clear()
     assert store.get_with_descendants("parent") == []
+
+
+# --- session_id tracking (Phase 3 B4) -------------------------------------
+
+
+def test_session_id_returns_none_for_unrecorded_invocation():
+    store = UsageStore()
+    assert store.session_id("nope") is None
+
+
+def test_record_session_then_session_id_round_trips():
+    store = UsageStore()
+    store.record_session("inv-1", "case-42")
+    assert store.session_id("inv-1") == "case-42"
+
+
+def test_record_session_is_independent_per_invocation_id():
+    store = UsageStore()
+    store.record_session("inv-1", "case-a")
+    store.record_session("inv-2", "case-b")
+    assert store.session_id("inv-1") == "case-a"
+    assert store.session_id("inv-2") == "case-b"
+
+
+def test_record_session_overwrites_a_prior_value_for_the_same_invocation():
+    store = UsageStore()
+    store.record_session("inv-1", "case-a")
+    store.record_session("inv-1", "case-a-retry")
+    assert store.session_id("inv-1") == "case-a-retry"
+
+
+def test_clear_also_clears_recorded_session_ids():
+    store = UsageStore()
+    store.record_session("inv-1", "case-42")
+    store.clear()
+    assert store.session_id("inv-1") is None

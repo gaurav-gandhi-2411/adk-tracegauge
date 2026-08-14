@@ -67,11 +67,35 @@ class UsageStore:
 
     _calls: dict[str, list[CapturedCall]] = field(default_factory=dict)
     _parents: dict[str, str] = field(default_factory=dict)
+    _session_ids: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record(self, invocation_id: str, call: CapturedCall) -> None:
         with self._lock:
             self._calls.setdefault(invocation_id, []).append(call)
+
+    def record_session(self, invocation_id: str, session_id: str) -> None:
+        """Records the ADK ``session.id`` a given invocation ran under --
+        captured by ``TraceGaugeUsagePlugin.before_run_callback`` from
+        ``invocation_context.session.id`` (Phase 3 B4, see snapshot.py's
+        module docstring for why this exists: it's the one caller-controlled,
+        stable-across-runs identifier available to a hand-rolled eval
+        harness, and therefore the pairing key ``tracegauge check --mode
+        paired`` uses -- unlike ``invocation_id``, which google-adk always
+        regenerates fresh and random on every run, confirmed by reading
+        ``evaluation_generator.py``'s ``Event.new_id()`` and
+        ``runners.py``'s ``new_invocation_context_id()``).
+        """
+        with self._lock:
+            self._session_ids[invocation_id] = session_id
+
+    def session_id(self, invocation_id: str) -> str | None:
+        """The session_id recorded for invocation_id via record_session, or
+        None if none was ever recorded (e.g. a store populated directly in a
+        test, or an ADK version whose InvocationContext this plugin could
+        not read a session from)."""
+        with self._lock:
+            return self._session_ids.get(invocation_id)
 
     def record_parent(self, invocation_id: str, parent_invocation_id: str) -> None:
         """Records that invocation_id was spawned during parent_invocation_id's
@@ -120,6 +144,7 @@ class UsageStore:
         with self._lock:
             self._calls.clear()
             self._parents.clear()
+            self._session_ids.clear()
 
 
 DEFAULT_USAGE_STORE = UsageStore()

@@ -89,7 +89,7 @@ warn_unused_ignores = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v"
-pythonpath = [".", "src"]
+pythonpath = [".", "src", "scripts"]
 
 [tool.coverage.run]
 omit = ["tests/*"]

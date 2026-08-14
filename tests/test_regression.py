@@ -22,7 +22,9 @@ from adk_tracegauge._regression import (
     MIN_N_DEFAULT,
     _percentile,
     bootstrap_diff_of_means,
+    bootstrap_mean_of_paired_deltas,
     evaluate_regression,
+    evaluate_regression_paired,
 )
 
 # --- _percentile -------------------------------------------------------
@@ -317,3 +319,155 @@ def test_false_positive_rate_under_pure_noise():
         "exceeds the generous upper bound -- investigate before trusting this gate "
         "(see module docstring for the nominal ~2.5% one-sided expectation)"
     )
+
+
+# --- Phase 3 B4: method field (which comparison a result came from) -----
+
+
+def test_evaluate_regression_result_method_is_two_sample():
+    result = evaluate_regression([0.01] * 40, [0.01] * 40)
+    assert result.method == "two_sample"
+
+
+def test_evaluate_regression_insufficient_data_result_method_is_two_sample():
+    result = evaluate_regression([0.01] * 5, [0.01] * 5)
+    assert result.method == "two_sample"
+
+
+def test_report_names_the_method_used():
+    result = evaluate_regression([0.01] * 40, [0.01] * 40)
+    assert "method=two_sample" in result.report()
+
+
+# --- bootstrap_mean_of_paired_deltas -------------------------------------
+
+
+def test_paired_bootstrap_ci_collapses_to_true_mean_for_constant_deltas():
+    deltas = [0.5] * 50
+    ci_lower, ci_upper = bootstrap_mean_of_paired_deltas(deltas, seed=42)
+    assert ci_lower == pytest.approx(0.5)
+    assert ci_upper == pytest.approx(0.5)
+
+
+def test_paired_bootstrap_ci_is_deterministic_given_a_fixed_seed():
+    deltas = [0.001, 0.0015, 0.0009, 0.0011, 0.0013] * 10
+    result_a = bootstrap_mean_of_paired_deltas(deltas, seed=7, n_boot=500)
+    result_b = bootstrap_mean_of_paired_deltas(deltas, seed=7, n_boot=500)
+    assert result_a == result_b
+
+
+def test_paired_bootstrap_rejects_empty_deltas():
+    with pytest.raises(ValueError, match="at least one delta"):
+        bootstrap_mean_of_paired_deltas([], seed=1)
+
+
+def test_paired_bootstrap_rejects_out_of_range_confidence():
+    with pytest.raises(ValueError, match="confidence"):
+        bootstrap_mean_of_paired_deltas([0.1], confidence=1.0)
+
+
+# --- evaluate_regression_paired: shape/contract --------------------------
+
+
+def test_evaluate_regression_paired_rejects_length_mismatch():
+    with pytest.raises(ValueError, match="same length"):
+        evaluate_regression_paired([0.01] * 30, [0.01] * 29)
+
+
+def test_evaluate_regression_paired_result_method_is_paired():
+    result = evaluate_regression_paired([0.01] * 30, [0.01] * 30)
+    assert result.method == "paired"
+
+
+def test_evaluate_regression_paired_refuses_below_min_n():
+    baseline = [0.01] * (MIN_N_DEFAULT - 1)
+    current = [0.02] * (MIN_N_DEFAULT - 1)
+
+    result = evaluate_regression_paired(baseline, current)
+
+    assert result.status == "insufficient_data"
+    assert result.ci_lower is None
+    assert result.ci_upper is None
+    assert result.method == "paired"
+
+
+def test_evaluate_regression_paired_reports_n_ci_and_effect_size_every_run():
+    baseline = [0.01] * 40
+    current = [0.01] * 40
+
+    result = evaluate_regression_paired(baseline, current)
+
+    assert result.n_baseline == 40
+    assert result.n_current == 40
+    assert result.ci_lower is not None
+    assert result.ci_upper is not None
+    report_text = result.report()
+    assert "method=paired" in report_text
+
+
+def test_evaluate_regression_paired_detects_a_consistent_per_pair_increase():
+    # Every pair increases by exactly $0.001 -- zero pair-to-pair variance in
+    # the DELTA (even though the underlying baseline/current values below
+    # vary a lot pair-to-pair), so the paired bootstrap CI collapses tightly
+    # around +0.001 and the gate must fire.
+    baseline = [0.01, 0.05, 0.002, 0.03, 0.08] * 10
+    current = [b + 0.001 for b in baseline]
+
+    result = evaluate_regression_paired(baseline, current, min_effect_usd=0.0, min_effect_pct=0.0)
+
+    assert result.status == "regression"
+    assert result.effect_usd == pytest.approx(0.001)
+    assert result.ci_lower is not None
+    assert result.ci_lower > 0.0
+
+
+def test_evaluate_regression_paired_no_regression_for_zero_deltas():
+    baseline = [0.01, 0.05, 0.002, 0.03, 0.08] * 10
+    current = list(baseline)  # identical -- every delta is exactly 0
+
+    result = evaluate_regression_paired(baseline, current)
+
+    assert result.status == "pass"
+    assert not result.statistically_significant
+
+
+def test_evaluate_regression_paired_significant_decrease_is_not_a_regression():
+    baseline = [0.10] * 40
+    current = [0.05] * 40  # every pair decreased -- not a build failure
+
+    result = evaluate_regression_paired(
+        baseline, current, min_effect_usd=0.0001, min_effect_pct=1.0
+    )
+
+    assert result.effect_usd < 0
+    assert not result.statistically_significant  # one-sided
+    assert result.status == "pass"
+
+
+def test_evaluate_regression_paired_effect_pct_is_none_when_baseline_mean_is_zero():
+    baseline = [0.0] * 40
+    current = [0.01] * 40
+    result = evaluate_regression_paired(baseline, current)
+    assert result.effect_pct is None
+
+
+def test_evaluate_regression_paired_out_powers_two_sample_when_baseline_and_current_share_case_structure():
+    """A minimal, fast (non-simulation) demonstration of WHY pairing helps:
+    ten synthetic "eval cases" with wildly different base costs (a
+    realistic shape -- see tests/test_regression_power.py's fuller,
+    simulation-based version of this same point for the actual measured
+    detection-rate comparison). A small, CONSISTENT per-case increase is
+    swamped by between-case variance for the unpaired two-sample test but
+    not for the paired test, which only ever looks at each case's own
+    delta.
+    """
+    case_levels = [0.001, 0.05, 0.002, 0.08, 0.003, 0.06, 0.0015, 0.09, 0.0025, 0.07] * 4
+    baseline = case_levels
+    current = [c + 0.0008 for c in case_levels]  # a small, uniform per-case bump
+
+    two_sample = evaluate_regression(baseline, current, min_effect_usd=0.0, min_effect_pct=0.0)
+    paired = evaluate_regression_paired(baseline, current, min_effect_usd=0.0, min_effect_pct=0.0)
+
+    assert not two_sample.statistically_significant  # swamped by case-to-case variance
+    assert paired.statistically_significant  # the per-case delta is a clean, constant +0.0008
+    assert paired.status == "regression"

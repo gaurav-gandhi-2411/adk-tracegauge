@@ -20,6 +20,7 @@ Snapshot JSON schema (schema_version=1)::
       "records": [
         {
           "invocation_id": "e-1234...",
+          "session_id": "case-42",
           "cost_usd": 0.004231,
           "tokens_input": 512,
           "tokens_output": 128,
@@ -42,6 +43,29 @@ recorded under ``skipped`` with the reason instead, and excluded from the
 ``records`` list ``tracegauge check`` runs its statistics over). This keeps
 a single unpriceable invocation from poisoning or silently dropping an
 entire snapshot -- the caller can see exactly what was skipped and why.
+
+``session_id`` (Phase 3 B4, additive field -- old schema_version=1 files
+without it still read back fine, with ``session_id=None`` per record) is
+the ADK ``session.id`` the invocation ran under, captured by
+``TraceGaugeUsagePlugin.before_run_callback`` via ``UsageStore.record_session``.
+It exists specifically as a PAIRING KEY for ``tracegauge check --mode
+paired``'s higher-power paired bootstrap (see ``_regression.py``'s module
+docstring for why pairing matters and B4's session report for the measured
+power difference): a hand-rolled eval harness that calls
+``runner.run_async(session_id=<stable-per-eval-case-id>, ...)`` -- e.g. the
+eval case's own id from its eval set file -- gets a ``session_id`` that is
+IDENTICAL across a baseline run and a current run of the SAME eval set,
+letting ``check`` match each eval case's current cost against its own
+baseline cost directly instead of comparing two unordered pools. This is
+NOT true of ``invocation_id`` itself, which google-adk always regenerates
+fresh and random on every run (confirmed by reading google-adk's own
+``evaluation_generator.py``'s ``Event.new_id()`` and ``runners.py``'s
+``new_invocation_context_id()``) -- ``invocation_id`` was considered and
+rejected as a pairing key for exactly this reason. A harness that lets ADK
+generate ``session_id`` randomly (the default when no ``session_id=`` is
+passed to ``run_async``) gets no pairing benefit and ``check --mode auto``
+falls back to the original two-sample comparison, which is the correct,
+honest behavior for that case -- not a bug.
 """
 
 from __future__ import annotations
@@ -70,6 +94,11 @@ class SnapshotRecord:
     tokens_cache_read: int
     models: list[str]
     call_count: int
+    session_id: str | None = None
+    """The ADK session.id this invocation ran under, if the plugin could
+    capture one -- see module docstring. Defaults to None so a v1 snapshot
+    JSON file (written before this field existed) still deserializes via
+    ``SnapshotRecord(**r)`` with no KeyError."""
 
 
 @dataclass(frozen=True)
@@ -93,8 +122,25 @@ class Snapshot:
 
     def costs(self) -> list[float]:
         """The per-invocation cost_usd values -- the sample tracegauge check's
-        bootstrap gate runs its statistics over."""
+        (two-sample mode) bootstrap gate runs its statistics over."""
         return [r.cost_usd for r in self.records]
+
+    def costs_by_session_id(self) -> dict[str, float]:
+        """Per-``session_id`` TOTAL cost_usd, summing every record that
+        shares a session_id (an eval case can span more than one invocation
+        -- e.g. a multi-turn conversation -- so a "case's cost" is the sum
+        across its invocations, not any single one). Records with
+        ``session_id is None`` (no session was ever captured for them -- see
+        ``SnapshotRecord.session_id``'s docstring) are excluded entirely,
+        since ``None`` is not a real, comparable pairing key. Used by
+        ``pair_costs_by_session_id`` for ``tracegauge check --mode paired``.
+        """
+        totals: dict[str, float] = {}
+        for record in self.records:
+            if record.session_id is None:
+                continue
+            totals[record.session_id] = totals.get(record.session_id, 0.0) + record.cost_usd
+        return totals
 
 
 def build_snapshot(store: UsageStore, *, prices: dict[str, Any] | None = None) -> Snapshot:
@@ -155,6 +201,7 @@ def build_snapshot(store: UsageStore, *, prices: dict[str, Any] | None = None) -
                 tokens_cache_read=sum(t.cache_read for t in digest.turns),
                 models=sorted({t.model for t in digest.turns}),
                 call_count=len(digest.turns),
+                session_id=store.session_id(invocation_id),
             )
         )
 
@@ -204,12 +251,36 @@ def read_snapshot(path: str | Path) -> Snapshot:
     )
 
 
+def pair_costs_by_session_id(
+    baseline: Snapshot, current: Snapshot
+) -> tuple[list[float], list[float], list[str]]:
+    """Builds the ALIGNED (baseline_costs, current_costs) lists Phase 3 B4's
+    ``tracegauge check --mode paired`` needs, by matching each snapshot's
+    ``costs_by_session_id()`` on the session_ids present in BOTH -- session
+    ids present in only one snapshot are silently excluded (a case that ran
+    in one snapshot but not the other has nothing to pair against; this is
+    not an error, just not a pairable observation).
+
+    Returns ``(baseline_costs, current_costs, matched_session_ids)``, all
+    three the same length and index-aligned, sorted by session_id for
+    determinism (so re-running against the identical two files always
+    produces the identical ordering, independent of dict iteration order).
+    """
+    baseline_by_session = baseline.costs_by_session_id()
+    current_by_session = current.costs_by_session_id()
+    matched = sorted(set(baseline_by_session) & set(current_by_session))
+    baseline_costs = [baseline_by_session[k] for k in matched]
+    current_costs = [current_by_session[k] for k in matched]
+    return baseline_costs, current_costs, matched
+
+
 __all__ = [
     "SNAPSHOT_SCHEMA_VERSION",
     "Snapshot",
     "SnapshotRecord",
     "SnapshotSkip",
     "build_snapshot",
+    "pair_costs_by_session_id",
     "read_snapshot",
     "write_snapshot",
 ]

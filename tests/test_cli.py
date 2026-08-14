@@ -111,6 +111,8 @@ def test_parser_check_overrides_every_optional_flag():
             "500",
             "--seed",
             "7",
+            "--mode",
+            "paired",
         ]
     )
     assert args.confidence == pytest.approx(0.9)
@@ -119,6 +121,21 @@ def test_parser_check_overrides_every_optional_flag():
     assert args.min_n == 50
     assert args.n_boot == 500
     assert args.seed == 7
+    assert args.mode == "paired"
+
+
+def test_parser_check_mode_defaults_to_auto():
+    parser = build_parser()
+    args = parser.parse_args(["check", "--baseline", "b.json", "--current", "c.json"])
+    assert args.mode == "auto"
+
+
+def test_parser_check_mode_rejects_invalid_choice():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["check", "--baseline", "b.json", "--current", "c.json", "--mode", "bogus"]
+        )
 
 
 def test_parser_requires_a_subcommand():
@@ -235,3 +252,156 @@ def test_cmd_check_end_to_end_insufficient_data(tmp_path: Path, capsys: pytest.C
     assert exit_code == EXIT_INSUFFICIENT_DATA
     captured = capsys.readouterr()
     assert "INSUFFICIENT DATA" in captured.out
+
+
+# --- end-to-end: check subcommand --mode (Phase 3 B4) ---------------------
+
+
+def _write_snapshot_with_session_ids(
+    path: Path,
+    session_costs: dict[str, float],
+    model: str = "gemini-2.5-flash",
+):
+    """Writes a snapshot with one record per (session_id, cost) pair by
+    building the snapshot JSON directly (bypassing pricing entirely) --
+    --mode tests only need session_id + cost_usd, not a real priced call."""
+    from adk_tracegauge.snapshot import SNAPSHOT_SCHEMA_VERSION
+
+    records = [
+        {
+            "invocation_id": f"inv-{session_id}",
+            "session_id": session_id,
+            "cost_usd": cost,
+            "tokens_input": 0,
+            "tokens_output": 0,
+            "tokens_cache_read": 0,
+            "models": [model],
+            "call_count": 1,
+        }
+        for session_id, cost in session_costs.items()
+    ]
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": SNAPSHOT_SCHEMA_VERSION,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "records": records,
+                "skipped": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_cmd_check_mode_two_sample_explicit_ignores_session_ids(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    _write_snapshot_with_costs(baseline_path, n=40, prompt=1000)
+    _write_snapshot_with_costs(current_path, n=40, prompt=1000)
+
+    exit_code = main(
+        [
+            "check",
+            "--baseline",
+            str(baseline_path),
+            "--current",
+            str(current_path),
+            "--mode",
+            "two-sample",
+        ]
+    )
+
+    assert exit_code == EXIT_PASS
+    captured = capsys.readouterr()
+    assert "mode=two-sample" in captured.out
+    assert "method=two_sample" in captured.out
+
+
+def test_cmd_check_mode_auto_falls_back_to_two_sample_with_no_session_overlap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    _write_snapshot_with_costs(baseline_path, n=40, prompt=1000)  # no session_id on any record
+    _write_snapshot_with_costs(current_path, n=40, prompt=1000)
+
+    exit_code = main(["check", "--baseline", str(baseline_path), "--current", str(current_path)])
+
+    assert exit_code == EXIT_PASS
+    captured = capsys.readouterr()
+    assert "mode=two-sample" in captured.out
+    assert "falling back" in captured.out
+
+
+def test_cmd_check_mode_auto_uses_paired_when_enough_session_ids_overlap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    session_costs_baseline = {f"case-{i}": 0.01 for i in range(40)}
+    session_costs_current = {f"case-{i}": 0.01 for i in range(40)}  # identical -- no regression
+    _write_snapshot_with_session_ids(baseline_path, session_costs_baseline)
+    _write_snapshot_with_session_ids(current_path, session_costs_current)
+
+    exit_code = main(["check", "--baseline", str(baseline_path), "--current", str(current_path)])
+
+    assert exit_code == EXIT_PASS
+    captured = capsys.readouterr()
+    assert "mode=paired" in captured.out
+    assert "40 overlapping" in captured.out
+    assert "method=paired" in captured.out
+
+
+def test_cmd_check_mode_paired_explicit_detects_regression(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    session_costs_baseline = {f"case-{i}": 0.01 for i in range(40)}
+    session_costs_current = {f"case-{i}": 0.02 for i in range(40)}  # every case +$0.01
+    _write_snapshot_with_session_ids(baseline_path, session_costs_baseline)
+    _write_snapshot_with_session_ids(current_path, session_costs_current)
+
+    exit_code = main(
+        [
+            "check",
+            "--baseline",
+            str(baseline_path),
+            "--current",
+            str(current_path),
+            "--mode",
+            "paired",
+        ]
+    )
+
+    assert exit_code == EXIT_REGRESSION
+    captured = capsys.readouterr()
+    assert "mode=paired" in captured.out
+    assert "REGRESSION" in captured.out
+
+
+def test_cmd_check_mode_paired_explicit_fails_closed_on_insufficient_overlap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    # Only 3 overlapping session_ids -- well below the default min_n=30.
+    _write_snapshot_with_session_ids(
+        baseline_path, {"case-1": 0.01, "case-2": 0.01, "case-3": 0.01}
+    )
+    _write_snapshot_with_session_ids(current_path, {"case-1": 0.01, "case-2": 0.01, "case-3": 0.01})
+
+    with pytest.raises(SystemExit, match="requires >= 30 overlapping session_ids"):
+        main(
+            [
+                "check",
+                "--baseline",
+                str(baseline_path),
+                "--current",
+                str(current_path),
+                "--mode",
+                "paired",
+            ]
+        )

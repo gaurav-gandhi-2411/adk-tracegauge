@@ -55,6 +55,21 @@ Bootstrap*, 1993) -- below it, both the normal approximation implicit in
 "trust this interval" and the bootstrap's own resampling coverage become
 unreliable, especially for a right-skewed, non-negative distribution like
 per-invocation USD cost.
+
+Phase 3 B4 note: this ``min_n=30`` figure was cited by Phase 2 honestly as a
+rule of thumb, not independently derived from this project's own data --
+and Phase 2 never measured this gate's statistical POWER (the probability
+of actually detecting a real regression) at realistic sample sizes, only
+its false-positive rate at a single n=40. B4's power-grid measurement
+(``scripts/measure_regression_power.py``) found the unpaired two-sample
+test above does *not* reliably (>=80% detection) catch a true 10% cost
+regression until n is much larger than typical ADK eval-set sizes -- see
+that script's own docstring and the B4 session report for the full grid and
+the honest verdict. ``evaluate_regression_paired`` below is B4's
+implemented response: a paired bootstrap over per-eval-case cost deltas,
+which is substantially more powerful than the unpaired test at the same n
+whenever a real pairing key is available (see ``snapshot.py``'s
+``session_id`` field and ``_cli.py``'s ``--mode paired``).
 """
 
 from __future__ import annotations
@@ -89,6 +104,12 @@ the same two input distributions always produce the exact same CI and
 verdict, run to run, unless the caller explicitly asks for a different seed."""
 
 RegressionStatus = Literal["pass", "regression", "insufficient_data"]
+RegressionMethod = Literal["two_sample", "paired"]
+"""Which statistic ``RegressionCheckResult`` was computed with --
+``"two_sample"`` (``evaluate_regression``, the original Phase 2 W4 method:
+two independent samples) or ``"paired"`` (``evaluate_regression_paired``,
+Phase 3 B4: per-key cost deltas bootstrapped directly -- see module
+docstring)."""
 
 
 def _percentile(sorted_values: Sequence[float], q: float) -> float:
@@ -182,6 +203,11 @@ class RegressionCheckResult:
     seed: int
     statistically_significant: bool
     practically_significant: bool
+    method: RegressionMethod = "two_sample"
+    """Defaults to "two_sample" so every pre-Phase-3-B4 call site (both in
+    this codebase and any external caller constructing/consuming this
+    dataclass) keeps working unchanged -- only evaluate_regression_paired
+    sets "paired"."""
 
     def report(self) -> str:
         """Human-readable CLI output. Always includes n, CI bounds (when
@@ -189,8 +215,8 @@ class RegressionCheckResult:
         statistical-honesty requirement, not only on a failing verdict.
         """
         lines = [
-            f"tracegauge check: n_baseline={self.n_baseline} n_current={self.n_current} "
-            f"(min_n={self.min_n})",
+            f"tracegauge check [method={self.method}]: n_baseline={self.n_baseline} "
+            f"n_current={self.n_current} (min_n={self.min_n})",
             f"  mean_baseline=${self.mean_baseline:.6f}  mean_current=${self.mean_current:.6f}",
         ]
         if self.status == "insufficient_data":
@@ -297,6 +323,160 @@ def evaluate_regression(
         seed=seed,
         statistically_significant=statistically_significant,
         practically_significant=practically_significant,
+        method="two_sample",
+    )
+
+
+def bootstrap_mean_of_paired_deltas(
+    deltas: Sequence[float],
+    *,
+    confidence: float = DEFAULT_CONFIDENCE,
+    n_boot: int = DEFAULT_N_BOOT,
+    seed: int = DEFAULT_SEED,
+) -> tuple[float, float]:
+    """Percentile-bootstrap CI on ``mean(deltas)``, for an already-PAIRED
+    sample of per-key cost differences (``current[key] - baseline[key]``,
+    one delta per matched key -- see ``evaluate_regression_paired``).
+
+    This is a DIFFERENT bootstrap from ``bootstrap_diff_of_means``: there is
+    only ONE sequence here (the deltas), and each resample draws ``len(deltas)``
+    deltas with replacement and records their mean -- never two independent
+    resamples of a baseline/current pair. This is the standard paired
+    bootstrap prescription (Efron & Tibshirani, ch. 6): pairing collapses
+    "two groups" into "one sequence of differences" *before* any resampling
+    happens, which is exactly why it removes between-key (e.g.
+    between-eval-case) variance that the unpaired two-sample bootstrap in
+    ``bootstrap_diff_of_means`` cannot -- see the module docstring's Phase 3
+    B4 note and the power-grid comparison in
+    ``scripts/measure_regression_power.py``.
+
+    Raises ``ValueError`` if ``deltas`` is empty or ``confidence`` is not in
+    (0, 1) -- callers (``evaluate_regression_paired``) are expected to have
+    already enforced the minimum-n gate before calling this.
+    """
+    if not deltas:
+        raise ValueError("bootstrap_mean_of_paired_deltas requires at least one delta")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError(f"confidence must be in (0, 1), got {confidence!r}")
+
+    rng = random.Random(seed)
+    n = len(deltas)
+    means = [0.0] * n_boot
+    for i in range(n_boot):
+        means[i] = statistics.fmean(rng.choices(deltas, k=n))
+    means.sort()
+
+    alpha = 1.0 - confidence
+    ci_lower = _percentile(means, 100 * alpha / 2)
+    ci_upper = _percentile(means, 100 * (1 - alpha / 2))
+    return ci_lower, ci_upper
+
+
+def evaluate_regression_paired(
+    baseline_costs: Sequence[float],
+    current_costs: Sequence[float],
+    *,
+    confidence: float = DEFAULT_CONFIDENCE,
+    min_effect_usd: float = DEFAULT_MIN_EFFECT_USD,
+    min_effect_pct: float = DEFAULT_MIN_EFFECT_PCT,
+    min_n: int = MIN_N_DEFAULT,
+    n_boot: int = DEFAULT_N_BOOT,
+    seed: int = DEFAULT_SEED,
+) -> RegressionCheckResult:
+    """Paired-comparison variant of ``evaluate_regression`` (Phase 3 B4).
+
+    ``baseline_costs[i]`` and ``current_costs[i]`` MUST already be aligned --
+    i.e. index ``i`` in both sequences refers to the SAME underlying eval
+    case/key in both runs. ``_cli.py``'s ``--mode paired`` builds this
+    alignment from ``SnapshotRecord.session_id`` (present only when the
+    caller's own eval harness pinned a stable, caller-chosen ``session_id``
+    per eval case -- see ``snapshot.py`` and ``_plugin.py``'s
+    ``record_session``); this function itself does no key-matching and
+    trusts its caller entirely, raising ``ValueError`` on a length mismatch
+    since a silent zip-truncation would quietly mispair a real key's cost
+    against an unrelated one.
+
+    Statistically: computes ``delta[i] = current_costs[i] - baseline_costs[i]``
+    for every ``i``, then runs ``bootstrap_mean_of_paired_deltas`` on the
+    deltas directly (a ONE-sample bootstrap on the mean delta, not the
+    TWO-sample bootstrap ``evaluate_regression`` runs) -- this is the whole
+    reason a valid pairing is more powerful: per-eval-case variance (some
+    cases are just inherently pricier than others) cancels out in the
+    subtraction *before* any resampling, instead of contributing noise to
+    two separately-resampled group means. Same significance framework
+    otherwise: statistically significant iff the CI lower bound on the mean
+    delta is > 0; practically significant iff the observed mean delta clears
+    ``min_effect_usd`` OR ``min_effect_pct`` (percent relative to the mean
+    baseline cost, same denominator convention as ``evaluate_regression``);
+    a regression fires only when both hold. Below ``min_n`` pairs, refuses to
+    run the bootstrap and reports ``status="insufficient_data"``, exactly as
+    ``evaluate_regression`` does below ``min_n`` per group.
+    """
+    if len(baseline_costs) != len(current_costs):
+        raise ValueError(
+            "evaluate_regression_paired requires baseline_costs and current_costs to be the "
+            f"same length (already aligned by key) -- got {len(baseline_costs)} vs "
+            f"{len(current_costs)}. Build the aligned pair lists from a shared key "
+            "(e.g. SnapshotRecord.session_id) before calling this function."
+        )
+
+    n_pairs = len(baseline_costs)
+    mean_baseline = statistics.fmean(baseline_costs) if baseline_costs else 0.0
+    mean_current = statistics.fmean(current_costs) if current_costs else 0.0
+    deltas = [c - b for b, c in zip(baseline_costs, current_costs, strict=True)]
+    effect_usd = statistics.fmean(deltas) if deltas else 0.0
+    effect_pct = (effect_usd / mean_baseline * 100.0) if mean_baseline != 0.0 else None
+
+    if n_pairs < min_n:
+        return RegressionCheckResult(
+            status="insufficient_data",
+            n_baseline=n_pairs,
+            n_current=n_pairs,
+            mean_baseline=mean_baseline,
+            mean_current=mean_current,
+            effect_usd=effect_usd,
+            effect_pct=effect_pct,
+            ci_lower=None,
+            ci_upper=None,
+            confidence=confidence,
+            min_n=min_n,
+            min_effect_usd=min_effect_usd,
+            min_effect_pct=min_effect_pct,
+            n_boot=n_boot,
+            seed=seed,
+            statistically_significant=False,
+            practically_significant=False,
+            method="paired",
+        )
+
+    ci_lower, ci_upper = bootstrap_mean_of_paired_deltas(
+        deltas, confidence=confidence, n_boot=n_boot, seed=seed
+    )
+    statistically_significant = ci_lower > 0.0
+    practically_significant = abs(effect_usd) >= min_effect_usd or (
+        effect_pct is not None and abs(effect_pct) >= min_effect_pct
+    )
+    is_regression = statistically_significant and practically_significant
+
+    return RegressionCheckResult(
+        status="regression" if is_regression else "pass",
+        n_baseline=n_pairs,
+        n_current=n_pairs,
+        mean_baseline=mean_baseline,
+        mean_current=mean_current,
+        effect_usd=effect_usd,
+        effect_pct=effect_pct,
+        ci_lower=ci_lower,
+        ci_upper=ci_upper,
+        confidence=confidence,
+        min_n=min_n,
+        min_effect_usd=min_effect_usd,
+        min_effect_pct=min_effect_pct,
+        n_boot=n_boot,
+        seed=seed,
+        statistically_significant=statistically_significant,
+        practically_significant=practically_significant,
+        method="paired",
     )
 
 
@@ -308,7 +488,10 @@ __all__ = [
     "DEFAULT_SEED",
     "MIN_N_DEFAULT",
     "RegressionCheckResult",
+    "RegressionMethod",
     "RegressionStatus",
     "bootstrap_diff_of_means",
+    "bootstrap_mean_of_paired_deltas",
     "evaluate_regression",
+    "evaluate_regression_paired",
 ]

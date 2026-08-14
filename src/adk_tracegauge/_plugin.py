@@ -70,6 +70,17 @@ class TraceGaugeUsagePlugin(BasePlugin):
         if stack:
             self._store.record_parent(invocation_context.invocation_id, stack[-1])
         _ACTIVE_INVOCATIONS.set((*stack, invocation_context.invocation_id))
+        # Phase 3 B4: also record which ADK session.id this invocation ran
+        # under -- see UsageStore.record_session's docstring for why this
+        # (not invocation_id) is the pairing key `tracegauge check --mode
+        # paired` needs. A hand-rolled harness that calls
+        # `runner.run_async(session_id=..., ...)` with a caller-chosen,
+        # per-eval-case-stable id (e.g. the eval case's own id) makes this
+        # value stable across a baseline run and a current run of the SAME
+        # eval set; a harness that lets ADK generate a random session_id
+        # gets no pairing benefit, which is expected and documented, not a
+        # bug.
+        self._store.record_session(invocation_context.invocation_id, invocation_context.session.id)
 
     async def after_run_callback(self, *, invocation_context: InvocationContext) -> None:
         stack = _ACTIVE_INVOCATIONS.get()

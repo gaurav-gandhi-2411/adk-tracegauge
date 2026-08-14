@@ -197,6 +197,40 @@ async def test_after_run_callback_restores_stack_for_calls_following_a_nested_ch
 
 
 @pytest.mark.asyncio
+async def test_before_run_callback_records_the_invocation_context_session_id(mocker):
+    # Phase 3 B4: TraceGaugeUsagePlugin.before_run_callback also records
+    # invocation_context.session.id, the pairing key `tracegauge check
+    # --mode paired` uses -- see UsageStore.record_session's docstring.
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    ctx = mocker.MagicMock()
+    ctx.invocation_id = "inv-1"
+    ctx.session.id = "case-42"
+
+    await plugin.before_run_callback(invocation_context=ctx)
+
+    assert store.session_id("inv-1") == "case-42"
+
+
+@pytest.mark.asyncio
+async def test_before_run_callback_records_distinct_session_ids_per_invocation(mocker):
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    parent_ctx = mocker.MagicMock()
+    parent_ctx.invocation_id = "parent"
+    parent_ctx.session.id = "case-parent"
+    child_ctx = mocker.MagicMock()
+    child_ctx.invocation_id = "child"
+    child_ctx.session.id = "case-child"
+
+    await plugin.before_run_callback(invocation_context=parent_ctx)
+    await plugin.before_run_callback(invocation_context=child_ctx)
+
+    assert store.session_id("parent") == "case-parent"
+    assert store.session_id("child") == "case-child"
+
+
+@pytest.mark.asyncio
 async def test_after_run_callback_falls_back_to_filtering_on_non_lifo_mismatch(mocker):
     # Defensive path: if after_run_callback ever fires out of strict LIFO
     # order (shouldn't happen via ADK's own await-nested AgentTool pattern,
