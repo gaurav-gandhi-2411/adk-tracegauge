@@ -415,3 +415,89 @@ Two release-blocking findings from Phase 2's verification pass, fixed on the sam
       Full suite: 210 -> 245 tests passing (+35), 99% coverage (100% on `_pricing.py`, up from 99%;
       3 pre-existing uncovered lines elsewhere unrelated to this work, unchanged from Phase 2).
       ruff/ruff-format/mypy all clean. `git status` clean after both commits.
+- [x] B3 -- Upstream the two ADK-side eval-harness bugs Phase 2 found and documented but did not
+      fix; add a real local runtime guard for the one this package's own code path can detect;
+      prepare (not open) two upstream PRs. DONE 2026-08-15.
+      3.1: re-verified both bugs directly against the installed `google-adk==2.6.3` source in this
+      repo's own `.venv` (not trusted from Phase 2's summary). (a) `agent_evaluator.py::
+      _process_metrics_and_get_failures`, the `if scores:` block (installed 2.6.3: lines 713-719;
+      current `upstream/main` at the time of the fix, after an intervening `_get_metric_threshold`
+      refactor: lines ~822-828) -- `overall_eval_status = EvalStatus.PASSED if overall_score >=
+      threshold else EvalStatus.FAILED`, hardcoded higher-is-better, recomputed from
+      `statistics.mean(scores)` and never reads the per-invocation `eval_status` the evaluator
+      itself already computed correctly. Manifests whenever `AgentEvaluator.evaluate()` (not `adk
+      eval`/`LocalEvalService`, which read `eval_status` directly and are unaffected) evaluates a
+      metric whose own polarity is lower-is-better, at ANY real threshold -- symptom is an
+      `AssertionError` on a genuinely-passing run, or (worse, for a metric with a permissive
+      legacy-threshold sentinel) a silently-inverted pass/fail with no error at all. (b)
+      `cli_tools_click.py::cli_eval` computes and prints a real `eval_run_summary` (Tests
+      passed/Tests failed per eval set) but the function ends (installed 2.6.3 and current
+      `upstream/main` alike, verified on both) with no `sys.exit` call at all -- contrast with the
+      same file's own `run --query` (`sys.exit(exit_code)`) and `test` (`sys.exit(1)` on a missing
+      runner) commands. Manifests on every `adk eval` CLI invocation, pass or fail -- symptom is
+      the process exiting 0 regardless of the printed verdict, silently defeating any CI job that
+      gates on `adk eval`'s own exit code.
+      3.2: (a) confirmed `tests/test_agent_evaluator_integration.py` already had a test
+      *documenting* the limitation (from W2) but nothing emitting a real runtime warning -- added
+      one. First attempt (a call-stack walk for a frame inside `agent_evaluator.py` at
+      `evaluate_invocations()` time) empirically failed, confirmed live during development, not a
+      hypothetical: `LocalEvalService.evaluate()` forks every eval case into its own `asyncio.Task`
+      via `asyncio.as_completed`, which erases the physical call stack back to whichever caller
+      awaited it into existence -- identically for `AgentEvaluator.evaluate()` and `adk eval`, so a
+      stack check can't tell them apart at the point this evaluator's own code actually runs.
+      Replaced with a `contextvars.ContextVar` set for the duration of a real
+      `AgentEvaluator.evaluate()` call, via a defensive, best-effort monkeypatch of
+      `AgentEvaluator.evaluate` installed as an `adk_tracegauge` import side effect
+      (`_install_agent_evaluator_marker`, wrapped in `__init__.py`) -- Task creation copies the
+      *current* context (PEP 567), so a value set before the fork survives it; `adk eval` never
+      sets it. Found and documented a second real gap during this work: the very first
+      `AgentEvaluator.evaluate()` call in a process misses the warning if `adk_tracegauge` is
+      imported for the first time as a side effect of *that same call* loading the user's agent
+      module (the quickstart's own pattern) -- the wrap installs a moment too late for a call
+      already in progress; every call after the wrap is installed is detected correctly.
+      Workaround documented in README and `_install_agent_evaluator_marker`'s docstring: import
+      `adk_tracegauge` explicitly ahead of any `AgentEvaluator.evaluate()` call (e.g. in
+      `conftest.py`). Proven with a subprocess-based regression test
+      (`test_the_documented_first_call_gap_is_real_not_a_hypothetical_caveat`), not just asserted.
+      (b) confirmed `tracegauge check` already has real, distinguishable exit codes (0/1/3, Phase 2
+      W4) and confirmed the README already warned against relying on `adk eval`'s bare exit code
+      (Phase 2 W5) -- both pre-existing, no changes needed beyond citing exact line numbers.
+      7 new tests in `tests/test_agent_evaluator_integration.py`: the warning firing under a real
+      `AgentEvaluator.evaluate()` call (naming the ADK behavior + installed version), a direct
+      `evaluate_invocations()` call NOT tripping it, the documented first-call gap (subprocess),
+      and `_install_agent_evaluator_marker`'s own idempotency + graceful-degradation-on-failure
+      paths.
+      3.3/3.4: two upstream PRs prepared on `C:\Users\gaura\ml-projects\oss-contrib\adk-python`
+      (GG's fork), each on its own branch off a freshly-fetched `upstream/main`, committed locally,
+      NOT pushed, NOT opened -- `fix/cost-metric-threshold-directionality` (commit `c2131b70`) and
+      `fix/adk-eval-exit-code` (commit `32c8991d`). Checked for existing coverage first: issue
+      `google/adk-python#6725` (open, filed by GG in Phase 1) is related but distinct -- it's about
+      `LocalEvalService` discarding per-invocation results for a metric that's *permanently*
+      `NOT_EVALUATED` (a pure measurement metric with no pass/fail concept), not a metric whose real
+      `PASSED`/`FAILED` gets overridden backwards; neither of GG's other two open PRs (#6682, #6710)
+      touches either function. No existing issue/PR found for either bug via `gh issue
+      list`/`gh pr list --search` across multiple query phrasings. Full PR bodies, minimal
+      self-contained repro scripts (verified against real pre-fix/post-fix code, no
+      adk-tracegauge dependency), and the exact unrun `gh pr create` commands are in the session
+      report (not duplicated here) -- see also 3.5 below.
+      3.5: if PR #1 lands, `evaluator.py`'s `_warn_if_running_under_agent_evaluator` /
+      `_install_agent_evaluator_marker` mechanism and its dedicated tests could be deleted for
+      users on a patched google-adk -- but must stay for as long as this package supports the
+      `>=2.6.0,<2.8.0` pinned range, none of which will ever receive the fix. If PR #2 lands, no
+      adk-tracegauge code changes (it never depended on `adk eval`'s exit code), but the README's
+      "don't rely on `adk eval`'s exit code" warning becomes conditionally-true-by-version rather
+      than unconditionally true -- would need a version-gated caveat, not a deletion, since old
+      installs are still affected. Neither upstream fix removes the need for `tracegauge check`
+      itself (the CI regression gate is a distinct, additive capability, not a workaround).
+      Verification: adk-tracegauge full suite 245 -> 250 tests passing (+5, all new tests added to
+      test_agent_evaluator_integration.py alongside its 2 pre-existing tests, unchanged), 99%
+      coverage (3 pre-existing uncovered
+      lines, unchanged from Phase 2/B1/B2 -- `_cli.py:222`, `evaluator.py:404`, `snapshot.py:132`).
+      ruff check/ruff format --check/mypy src/ all clean. adk-python fork: both branches' own test
+      suites green (`test_agent_evaluator.py` 40 passed incl. 6 new; `test_cli_tools_click.py` eval
+      subset 15 passed incl. 2 new; full `tests/unittests/evaluation/` 844/838 passed on the
+      respective branches, zero regressions), pre-commit (ruff/isort/pyink/addlicense/codespell)
+      clean on all changed files. `git status` clean in both repos (adk-python's own
+      `runtime-config.json` autocrlf line-ending churn is a pre-existing, unrelated environmental
+      artifact -- confirmed via a same-named stash entry from an unrelated branch predating this
+      session -- deliberately left unstaged/uncommitted, not part of either PR's diff).
