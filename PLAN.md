@@ -333,3 +333,85 @@ deterministic replay, HTML report, failure clustering, LLM-judge scoring.
 
 Rules: zero-cost (local Ollama only, no paid API, never set ANTHROPIC_API_KEY); commit per work
 item on this feature branch; no PyPI publish, no tag, no merge to main without reporting first.
+
+## Phase 3
+
+Two release-blocking findings from Phase 2's verification pass, fixed on the same branch
+(`feat/cost-regression-gate`), same rules (zero-cost, no publish/tag/merge without reporting).
+
+- [x] B1 -- Ollama Cloud silent-zero fix. DONE 2026-08-14/15, commit `eac066e`. 1.1: confirmed
+      `is_local_model()` was a bare string-prefix check (`ollama_chat/`, `ollama/`, `vllm/`) on the
+      raw `model_version`, nothing else. 1.2: read google-adk's `models/lite_llm.py`,
+      `models/llm_response.py`, and `agents/context.py` directly -- confirmed NOT distinguishable:
+      `LlmResponse` (pydantic, `extra="forbid"`) is built from litellm's bare `response.model`
+      string with no host/endpoint field in its schema at all; `CallbackContext` (=
+      `agents/context.py`'s `Context`) and the `InvocationContext` it wraps expose no reference to
+      the underlying `LiteLlm` model client instance, which is the only place `api_base` is stored
+      (`LiteLlm._additional_args`). 1.3: took the "not distinguishable" branch -- new
+      `ADK_TRACEGAUGE_ASSUME_LOCAL` env var (`_pricing.py`), two forms: `1`/`true`/`yes`/`on`
+      (assert every recognized local prefix) or a comma-separated subset (e.g. `vllm/`, to trust
+      one prefix while `ollama_chat/` -- the exact prefix Ollama Cloud shares -- still fails
+      closed). New `is_local_model_asserted()` is the actual gate `resolve_model_for_call()` uses;
+      `is_local_model()` alone is now documented as structural-only, never sufficient. Without the
+      opt-in, a local-prefixed model returns `None` (NOT_EVALUATED upstream, consistent with
+      W2/W3's existing unpriceable-model handling), and `unknown_model_message()` gained a
+      dedicated branch naming the model string, the Ollama Cloud reasoning, and the exact remedy.
+      Rationale for the asserted-local case reworded to "local model, zero marginal cost, asserted
+      via ADK_TRACEGAUGE_ASSUME_LOCAL" (not identical to the old implicit-default wording). 1.4:
+      structural/property test iterates every entry in `_LOCAL_MODEL_PREFIXES` confirming none
+      resolve to zero cost without the opt-in; separate tests cover the `1`/true-spelling case, the
+      comma-separated allowlist case (including case-insensitivity and "a typo must never widen
+      trust"), and the asserted-path rationale wording.
+- [x] B2 -- promotional pricing time bomb fix. DONE 2026-08-14/15, commit `6d6f98a`. 2.1: full
+      audit of every `note` field in `gemini_prices.json` -- exactly two genuinely promotional
+      entries, `gemini-3.6-flash` and `gemini-3.7-flash` (promo through 2026-12-31). `claude-sonnet-5`
+      carries historical "introductory pricing" language but is a settled standard rate (re-verified
+      live against platform.claude.com: the vendor's own note confirms the scheduled 2026-09-01
+      increase "will not occur"); no other Claude/GPT entry mentions a promotional period.
+      `gemini-3.1-flash-lite` has no promo language, contrary to the risk the task instructions
+      flagged as worth checking. 2.2: schema gains `promo_until` (ISO date) + `standard_rate`
+      (`{input_usd_per_mtok, output_usd_per_mtok}`) per entry. New `_pricing._effective_rates()`
+      computes the effective rate for "today": promotional while `date.today() <= promo_until`
+      (boundary day inclusive -- matches vendor phrasing like "through December 31" and mirrors
+      `is_stale`'s own boundary convention), standard once past it (if `standard_rate` is known).
+      `ResolvedModel` gained `promo_until`/`promo_active`/`standard_rate_unknown`/
+      `standard_rate_{input,output}_usd_per_mtok` fields, computed in `_entry_to_resolved()`.
+      Critical finding during implementation: tracegauge's own `compute_turn_cost` reads
+      `prices["models"][key]["input_usd_per_mtok"]` directly off whatever dict it's given (confirmed
+      by reading `tes/cost.py`), with zero knowledge of `promo_until`/`standard_rate` -- so the
+      auto-switch has to rewrite the raw dict, not just a `ResolvedModel` object nobody reads. New
+      `effective_prices()` does that rewrite; `_adapter.price_digest` (the single sanctioned
+      `compute_session_cost` call site, per the existing structural guard) now wraps every `prices`
+      argument through it, so every real caller gets the switch automatically with zero
+      per-call-site opt-in. `tests/test_pricing_call_site.py`'s guard updated to assert the new
+      `prices=effective_prices(prices)` literal instead of the old `prices=prices` (still verifying
+      the value is derived from the caller's own argument, not a re-fetched default). Evaluator's
+      per-turn rationale states explicitly whether a promo is active (with expiry date) or has ended
+      ("standard rate applied automatically"). 2.3: `gemini-3.6-flash`/`gemini-3.7-flash` both
+      re-verified live against ai.google.dev -- the post-promo rate ($1.50/$7.50, effective
+      2027-01-01) is a confirmed, published figure, not provisional, so neither hits the
+      "genuinely unknown" branch. That branch is still fully implemented and tested:
+      `ResolvedModel.standard_rate_warning_due` fires when `standard_rate` is unset and `promo_until`
+      is within `PROMO_EXPIRY_WARNING_DAYS` (14, shared with 2.4's CI window) of today or already
+      past; an unparseable `promo_until` is treated as due (fail closed). New
+      `evaluator._promo_unknown_rate_warning()` surfaces this via both the rationale text and
+      `warnings.warn`, same pattern as the existing `_stale_price_warning`. 2.4:
+      `scripts/check_price_freshness.py` gained a second, independent check alongside the existing
+      90-day staleness gate -- fails if any entry's `promo_until` is within 14 days of today (real
+      output: `PROMOTIONAL ENTRIES EXPIRING SOON as of 2026-08-14 (within 14 days): - expiring-soon-model:
+      promo_until=2026-08-20 (6 day(s) left) -- ...`) or already past (real output: `PROMOTIONAL
+      ENTRIES ALREADY EXPIRED as of 2026-08-14: - already-expired-model: promo_until=2026-01-01
+      (expired 225 day(s) ago) -- standard_rate should now be in effect; verify it's actually being
+      applied ...`), reported as two distinct sections; verified live against the real bundled table
+      (`OK: all 22 price entries fetched within 90 days of 2026-08-15, and no promotional entry
+      expires within 14 days.`, exit 0) and against a synthetic table exercising both new failure
+      branches (exit 1). 2.5: pre-expiry/post-expiry/boundary/unknown-standard-rate tests all added,
+      following W1's existing pattern of computing dates as offsets from `date.today()` rather than
+      mocking the clock (`dataclasses.replace`-style for `ResolvedModel`-level tests, `monkeypatch.
+      setattr` on `load_gemini_prices` for full evaluator-level tests, matching the existing
+      `test_stale_price_warning_names_only_the_stale_model_not_a_fresh_one` pattern exactly). Boundary
+      choice documented and tested explicitly: the day `promo_until` itself is still promotional
+      (`>=` for expiry, not `>`).
+      Full suite: 210 -> 245 tests passing (+35), 99% coverage (100% on `_pricing.py`, up from 99%;
+      3 pre-existing uncovered lines elsewhere unrelated to this work, unchanged from Phase 2).
+      ruff/ruff-format/mypy all clean. `git status` clean after both commits.
