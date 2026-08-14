@@ -14,13 +14,23 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches pyproject.toml's requires-python floor (>=3.10) and classifiers
+        # (3.10-3.13) exactly -- previously only 3.11 was exercised despite the
+        # package claiming broader support (Phase 1 finding D3). Lint/format/mypy
+        # only need to run once (see the single-job steps below); ruff and mypy
+        # don't vary per interpreter, so running them on every matrix leg would be
+        # redundant CI minutes without adding coverage.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -28,15 +38,18 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --python ${{ matrix.python-version }}
 
       - name: Lint (ruff check)
+        if: matrix.python-version == '3.11'
         run: uv run ruff check .
 
       - name: Format check (ruff format)
+        if: matrix.python-version == '3.11'
         run: uv run ruff format --check .
 
       - name: Type check (mypy)
+        if: matrix.python-version == '3.11'
         run: uv run mypy src/
 
       - name: Unit tests
