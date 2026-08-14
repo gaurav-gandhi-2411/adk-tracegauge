@@ -1,0 +1,73 @@
+name: Price table correction
+description: A model's price in src/adk_tracegauge/data/gemini_prices.json is stale, wrong, or missing.
+labels: ["price-table"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This package refuses to price a model it can't verify a rate for
+        (see README, "Pricing") -- if a rate here is wrong, it either means
+        the vendor changed pricing since `fetched_on`, or the entry was
+        wrong when it was added. Either way, this is exactly the report
+        this template exists for. There's no automated price-scraping in
+        this repo by design (see CONTRIBUTING.md) -- a human checking the
+        actual pricing page, like you're about to, is the whole mechanism.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What's wrong?
+      options:
+        - A model's price is stale (source now shows a different rate)
+        - A model's price was wrong when added (never matched the source)
+        - A model is missing entirely (should be in the table, isn't)
+        - Something else about pricing (cache-read ratio, long-context tiering, etc.)
+    validations:
+      required: true
+
+  - type: input
+    id: model-key
+    attributes:
+      label: Model key (or the model_version string ADK reports, if it's missing)
+      description: e.g. "gemini-2.5-flash", or the raw string you observed if this model isn't in the table at all.
+      placeholder: "gemini-2.5-flash"
+    validations:
+      required: true
+
+  - type: input
+    id: source-url
+    attributes:
+      label: Source URL for the current, correct rate
+      description: The vendor's own live pricing page -- this becomes the entry's source_url.
+      placeholder: "https://ai.google.dev/gemini-api/docs/pricing"
+    validations:
+      required: true
+
+  - type: input
+    id: checked-on
+    attributes:
+      label: Date you checked the source (YYYY-MM-DD)
+      description: This becomes the entry's fetched_on -- see README's staleness-guard section for why this date matters.
+      placeholder: "2026-08-14"
+    validations:
+      required: true
+
+  - type: textarea
+    id: rates
+    attributes:
+      label: Correct input/output rates (USD per million tokens)
+      description: Include cache-read rate too if you have it -- this table's cache_multipliers entry is shared across every model, so a rate that doesn't share the table's 0.1x cache-read ratio needs a note, not a silent add (see _pricing.py's module docstring for why GPT-4/o-series was deliberately excluded for exactly this reason).
+      placeholder: |
+        input_usd_per_mtok: 0.30
+        output_usd_per_mtok: 2.50
+        cache_read ratio (if known): 0.1x
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else worth noting
+      description: Promotional/time-limited rates, context-length tiering thresholds, audio-input pricing that differs from text, etc.
+    validations:
+      required: false

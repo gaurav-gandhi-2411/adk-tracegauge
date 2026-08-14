@@ -1,0 +1,79 @@
+name: Bug report
+description: Something in adk-tracegauge behaved incorrectly, crashed, or produced a wrong number.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. This package fails closed on purpose (refuses
+        to guess at a cost rather than fabricate one) -- if you hit an
+        actionable error message instead of a crash, that's probably
+        working as intended; see `docs/troubleshooting.md` first. This
+        template is for genuine bugs: wrong numbers, unhandled crashes, or
+        behavior that contradicts the README/docstrings.
+
+  - type: input
+    id: version
+    attributes:
+      label: adk-tracegauge version
+      description: "`python -c \"import adk_tracegauge; print(adk_tracegauge.__version__)\"`"
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: adk-version
+    attributes:
+      label: google-adk version
+      description: "`python -c \"import google.adk; print(google.adk.__version__)\"`"
+      placeholder: "2.6.3"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.11.9"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen (a specific number, status, or output)?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened -- the full traceback or the actual (wrong) output, not a summary.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        The smallest script that reproduces this -- ideally something that
+        can be dropped into `examples/` and run directly, matching this
+        repo's own convention (every example is a real, run-and-verified
+        script, not a snippet). Include the model string and captured
+        token counts if this is about a wrong dollar figure.
+      render: python
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked `docs/troubleshooting.md` and this isn't one of the three documented cases there.
+          required: true
+        - label: I'm on a `google-adk` version within this package's pin (`>=2.6.0,<2.8.0` as of this writing -- check `pyproject.toml` for the current range).
+          required: false
