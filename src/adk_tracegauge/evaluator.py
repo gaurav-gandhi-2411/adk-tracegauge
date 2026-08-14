@@ -58,41 +58,49 @@ _METRIC_INFO = MetricInfo(
 
 
 def _no_usage_result(invocation: Invocation, expected: Invocation | None) -> PerInvocationResult:
+    message = (
+        "no usage captured for this invocation -- either TraceGaugeUsagePlugin "
+        "is not wired into this App's plugins list, or eval ran against a bare "
+        "root_agent (LocalEvalService's bare-agent path never fires plugins). "
+        "See README: 'The only path that reliably works'."
+    )
+    # rubric_scores/rationale never reach a caller going through ADK's
+    # LocalEvalService -- it discards PerInvocationResult for any metric
+    # reporting NOT_EVALUATED (this metric's permanent status), per invocation,
+    # unconditionally (google/adk-python#6725). warnings.warn is the only
+    # channel this diagnostic can reliably reach a user through.
+    warnings.warn(f"adk_tracegauge: {message}", stacklevel=2)
     return PerInvocationResult(
         actual_invocation=invocation,
         expected_invocation=expected,
         score=None,
-        rubric_scores=[
-            RubricScore(
-                rubric_id="cost_breakdown",
-                score=None,
-                rationale=(
-                    "no usage captured for this invocation -- either "
-                    "TraceGaugeUsagePlugin is not wired into this App's "
-                    "plugins list, or eval ran against a bare root_agent "
-                    "(LocalEvalService's bare-agent path never fires "
-                    "plugins). See README: 'Required: wrap your agent in "
-                    "an App'."
-                ),
-            )
-        ],
+        rubric_scores=[RubricScore(rubric_id="cost_breakdown", score=None, rationale=message)],
     )
 
 
 def _unresolved_model_result(
     invocation: Invocation, expected: Invocation | None, model_version: str
 ) -> PerInvocationResult:
+    message = unknown_model_message(model_version)
+    warnings.warn(f"adk_tracegauge: {message}", stacklevel=2)
     return PerInvocationResult(
         actual_invocation=invocation,
         expected_invocation=expected,
         score=None,
-        rubric_scores=[
-            RubricScore(
-                rubric_id="cost_breakdown",
-                score=None,
-                rationale=unknown_model_message(model_version),
-            )
-        ],
+        rubric_scores=[RubricScore(rubric_id="cost_breakdown", score=None, rationale=message)],
+    )
+
+
+def _streaming_anomaly_result(
+    invocation: Invocation, expected: Invocation | None, reason: str
+) -> PerInvocationResult:
+    message = f"cost not computed: {reason}"
+    warnings.warn(f"adk_tracegauge: {message}", stacklevel=2)
+    return PerInvocationResult(
+        actual_invocation=invocation,
+        expected_invocation=expected,
+        score=None,
+        rubric_scores=[RubricScore(rubric_id="cost_breakdown", score=None, rationale=message)],
     )
 
 
@@ -169,6 +177,17 @@ def _priced_result(
     if (stale_warning := _stale_price_warning(session_cost)) is not None:
         breakdown_lines.append(stale_warning)
 
+    # Same reasoning as _no_usage_result/_unresolved_model_result: this
+    # rationale is discarded by ADK's LocalEvalService before a caller going
+    # through AgentEvaluator/adk eval ever sees it (google/adk-python#6725),
+    # because this metric's eval_status is always NOT_EVALUATED. warnings.warn
+    # is the only channel guaranteed to survive that, successful result or not.
+    warnings.warn(
+        "adk_tracegauge cost breakdown for invocation "
+        f"{invocation.invocation_id}:\n" + "\n".join(breakdown_lines),
+        stacklevel=2,
+    )
+
     return PerInvocationResult(
         actual_invocation=invocation,
         expected_invocation=expected,
@@ -206,12 +225,22 @@ class CostEfficiencyEvaluator(Evaluator):
 
         per_invocation_results: list[PerInvocationResult] = []
         for actual, expected in zip(actual_invocations, resolved_expected, strict=True):
-            calls = self._store.get(actual.invocation_id)
+            # Includes calls captured under any invocation_id recorded (via
+            # before_run_callback/after_run_callback nesting -- see _plugin.py)
+            # as a descendant of this one, e.g. an AgentTool-delegated
+            # sub-agent's own real model calls, which ADK's own eval-event
+            # conversion never surfaces under the parent's invocation_id.
+            calls = self._store.get_with_descendants(actual.invocation_id)
             if not calls:
                 per_invocation_results.append(_no_usage_result(actual, expected))
                 continue
 
             adapted = build_session_digest(actual.invocation_id, calls)
+            if adapted.streaming_anomaly is not None:
+                per_invocation_results.append(
+                    _streaming_anomaly_result(actual, expected, adapted.streaming_anomaly)
+                )
+                continue
             if not adapted.ok:
                 per_invocation_results.append(
                     _unresolved_model_result(actual, expected, adapted.unresolved_model or "")

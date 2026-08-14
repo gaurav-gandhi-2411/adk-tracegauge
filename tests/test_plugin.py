@@ -84,3 +84,112 @@ def test_defaults_to_the_shared_singleton_store_when_none_given():
 
     plugin = TraceGaugeUsagePlugin()
     assert plugin._store is DEFAULT_USAGE_STORE
+
+
+@pytest.mark.asyncio
+async def test_partial_flag_on_llm_response_flows_into_captured_call(mocker):
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "inv-1"
+
+    response = _llm_response()
+    response.partial = True
+    await plugin.after_model_callback(callback_context=callback_context, llm_response=response)
+
+    assert store.get("inv-1")[0].partial is True
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_without_partial_set_defaults_to_false(mocker):
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "inv-1"
+
+    await plugin.after_model_callback(
+        callback_context=callback_context, llm_response=_llm_response()
+    )
+
+    assert store.get("inv-1")[0].partial is False
+
+
+@pytest.mark.asyncio
+async def test_before_run_callback_at_top_level_records_no_parent(mocker):
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    ctx = mocker.MagicMock()
+    ctx.invocation_id = "top-level"
+
+    await plugin.before_run_callback(invocation_context=ctx)
+    await plugin.after_run_callback(invocation_context=ctx)
+
+    assert store.get_with_descendants("top-level") == []  # no calls recorded, but no crash
+    assert store._parents == {}
+
+
+@pytest.mark.asyncio
+async def test_nested_before_run_callback_records_parent_relationship(mocker):
+    """Mirrors AgentTool.run_async: the parent's Runner.run_async is awaiting a
+    tool call that itself awaits a child Runner.run_async on the SAME plugin
+    instance, entirely within one asyncio task -- no create_task/gather."""
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    parent_ctx = mocker.MagicMock()
+    parent_ctx.invocation_id = "parent"
+    child_ctx = mocker.MagicMock()
+    child_ctx.invocation_id = "child"
+
+    await plugin.before_run_callback(invocation_context=parent_ctx)
+    await plugin.before_run_callback(invocation_context=child_ctx)
+    await plugin.after_run_callback(invocation_context=child_ctx)
+    await plugin.after_run_callback(invocation_context=parent_ctx)
+
+    assert store._parents == {"child": "parent"}
+
+
+@pytest.mark.asyncio
+async def test_after_run_callback_restores_stack_for_calls_following_a_nested_child(mocker):
+    """A model call made by the parent AFTER the nested child's run completes
+    must be attributed to the parent, not still nested under the child."""
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    parent_ctx = mocker.MagicMock()
+    parent_ctx.invocation_id = "parent"
+    child_ctx = mocker.MagicMock()
+    child_ctx.invocation_id = "child"
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "parent"
+
+    await plugin.before_run_callback(invocation_context=parent_ctx)
+    await plugin.before_run_callback(invocation_context=child_ctx)
+    await plugin.after_run_callback(invocation_context=child_ctx)
+    await plugin.after_model_callback(
+        callback_context=callback_context, llm_response=_llm_response()
+    )
+    await plugin.after_run_callback(invocation_context=parent_ctx)
+
+    assert store.get("parent") != []
+    assert "parent" not in store._parents  # never recorded as anyone's child
+
+
+@pytest.mark.asyncio
+async def test_after_run_callback_falls_back_to_filtering_on_non_lifo_mismatch(mocker):
+    # Defensive path: if after_run_callback ever fires out of strict LIFO
+    # order (shouldn't happen via ADK's own await-nested AgentTool pattern,
+    # but this must not crash or leak the wrong entries if it somehow does).
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    outer_ctx = mocker.MagicMock()
+    outer_ctx.invocation_id = "outer"
+    inner_ctx = mocker.MagicMock()
+    inner_ctx.invocation_id = "inner"
+
+    await plugin.before_run_callback(invocation_context=outer_ctx)
+    await plugin.before_run_callback(invocation_context=inner_ctx)
+    # Pop "outer" first, out of order, instead of "inner" (the true top).
+    await plugin.after_run_callback(invocation_context=outer_ctx)
+
+    from adk_tracegauge._plugin import _ACTIVE_INVOCATIONS
+
+    assert _ACTIVE_INVOCATIONS.get() == ("inner",)
