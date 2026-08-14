@@ -9,12 +9,17 @@ which ADK's own docstring names as "the ideal place to ... collect metrics
 on token usage." This plugin does exactly that, keyed by invocation_id so
 CostEfficiencyEvaluator can look it back up.
 
-Requires the agent to run through an App wrapper you build and drive
-yourself (see README, "The only path that reliably works") -- a bare
-root_agent never fires plugins at all, and AgentEvaluator/adk eval build
-their own bare Runner from root_agent regardless of what App you define,
-so this plugin only fires inside a hand-rolled Runner, never through ADK's
-own eval CLI/API.
+Using this class's before_run_callback/after_run_callback (needed for
+sub-agent rollup) requires the agent to run through an App wrapper you
+build and drive yourself (see README, "Sub-agent delegation") -- a bare
+root_agent never fires Plugin lifecycle hooks at all, and AgentEvaluator/
+adk eval build their own bare Runner from root_agent regardless of what
+App you define, so those two hooks only fire inside a hand-rolled Runner,
+never through ADK's own eval CLI/API. after_model_callback is different:
+the quickstart wires this same method directly onto the agent
+(`after_model_callback=plugin.after_model_callback`), bypassing Plugin
+lifecycle entirely, which is exactly why that path DOES work through
+`adk eval`/`AgentEvaluator` (see README, "Quickstart").
 
 Sub-agent delegation via AgentTool: AgentTool.run_async builds a brand-new
 Runner (its own session, its own InvocationContext) and, by default

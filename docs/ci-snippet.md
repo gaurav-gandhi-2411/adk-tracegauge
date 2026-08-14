@@ -4,8 +4,8 @@ Produced by Phase 2 W4 (see `PLAN.md`). This is the canonical, tested
 invocation shape for `adk-tracegauge`'s CI regression gate -- W5's README
 rewrite should embed this verbatim, not re-derive it.
 
-Requires `TraceGaugeUsagePlugin` to be wired into the `App` your eval
-entrypoint runs against (see README's "bare-agent limitation") -- otherwise
+Requires `TraceGaugeUsagePlugin` to be wired into the agent/`App` your eval
+entrypoint runs against (see README's "What this actually is") -- otherwise
 the snapshot will be empty and `tracegauge check` will report
 `insufficient_data`, not a false "pass".
 

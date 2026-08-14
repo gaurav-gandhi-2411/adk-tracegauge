@@ -88,8 +88,8 @@ Phase 2 W2 redesign, because it's load-bearing and not obvious from the code:
   between "documented in README/tests" and "a user actually sees this
   before hitting an unexplained AssertionError."
 
-- Requires TraceGaugeUsagePlugin to be wired into the same App this
-  evaluator runs against (see README, "bare-agent limitation"). Without it,
+- Requires TraceGaugeUsagePlugin to be wired into the agent/App this
+  evaluator runs against (see README, "What this actually is"). Without it,
   every invocation reports "no usage captured", not a cost of zero.
 
 - An invocation whose model isn't in adk-tracegauge's price table reports

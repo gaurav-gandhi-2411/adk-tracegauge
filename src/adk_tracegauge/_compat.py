@@ -123,7 +123,7 @@ def convert_events_to_eval_invocations(events: list[Event]) -> list[Invocation]:
 
     _affected_path_note = (
         "This only affects the hand-rolled Runner harness pattern (see README, "
-        "'The only path that reliably works') -- this package's own primary "
+        "'Sub-agent delegation') -- this package's own primary "
         "adk eval/AgentEvaluator integration (after_model_callback + a "
         "threshold-bearing metric) does not call this function at all and is "
         "unaffected."

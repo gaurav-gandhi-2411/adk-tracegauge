@@ -699,3 +699,99 @@ Two release-blocking findings from Phase 2's verification pass, fixed on the sam
       confirm zero residual diff anywhere before proceeding, not just re-checking the two files
       that were targeted. Full suite re-run and reconfirmed clean (293 passing, 99% coverage,
       ruff/mypy clean) after both incidents before this entry was finalized and committed.
+- [x] B6 -- README rewritten around a single, explicitly-argued hero path, with measured Phase 3
+      numbers; troubleshooting.md updated for real. DONE 2026-08-15.
+      6.1: hero picked is `tracegauge check` (the standalone CI regression gate), NOT the `adk
+      eval` metric-registration path that was the Phase 2 W5 quickstart. Argued explicitly, not
+      defaulted to build order: (a) `adk eval`'s own process exit code does not reflect
+      PASSED/FAILED (re-confirmed live this session, examples/01, exit 0 both PASS and FAIL runs)
+      -- fatal to using it alone for CI gating; (b) `AgentEvaluator.evaluate()` has the
+      source-confirmed backwards-polarity bug documented since Phase 2/B3 -- a second, independent
+      limitation of the ADK-eval-integration surface; (c) `tracegauge check` has real,
+      distinguishable exit codes (0/1/3) proven to work standalone, entirely this package's own
+      code; (d) B4 explicitly measured and characterized it as "the package's actual
+      statistically-validated differentiator," with honest, quantified caveats (two-sample
+      underpowered at realistic n=25) and a real shipped fix (`--mode paired`). The `adk eval`
+      metric path remains real and valuable (inline per-invocation cost visibility during eval
+      iteration, zero extra CLI tooling) but is now explicitly framed as secondary/complementary,
+      not hidden -- kept as its own top-level README section directly below the hero, not buried.
+      6.2: README restructured -- "## Quickstart: the CI cost-regression gate" leads (4 lines:
+      pip install + 2x `tracegauge snapshot` + 1x `tracegauge check`), followed immediately by real
+      pasted output and the explicit hero-vs-secondary justification inline. "## Also: a real
+      PASS/FAIL cost metric inside `adk eval`" follows as the clearly-labeled secondary path
+      (former Phase 2 W5 quickstart content, unchanged in substance, re-measured fresh). "What this
+      actually is" widened to describe `tracegauge snapshot`/`check` alongside the plugin/evaluator
+      (was ADK-eval-only framing). "What this is not" gained a closing sentence naming the B4 power
+      caveat explicitly, not just the older ADK-side limitations.
+      6.3: real measurements, taken fresh this session (not reused from Phase 2/3's own prior
+      reports) -- hero path: the 3 `tracegauge`-specific command lines (2x snapshot + 1x check,
+      run individually as real CLI subprocesses against `examples/03_ci_regression_gate.py`'s
+      existing deterministic baseline/current entrypoints) took 11.753s + 11.846s + 11.748s =
+      **35.347s wall-clock combined**, each dominated by cold `google-adk` import overhead (the
+      bootstrap comparison itself is sub-second) -- a real, previously-undocumented finding: even
+      `tracegauge check` alone pays the full ADK import cost, because `adk_tracegauge/__init__.py`
+      registers the eval metric as an import side effect regardless of which subcommand is
+      invoked. Output matched the previously-documented numbers exactly (mean_baseline=$0.008583,
+      mean_current=$0.009998, effect +16.49%, CI [+0.001085,+0.001744], exit code 1) -- same
+      deterministic seeds, confirming reproducibility, not just re-measuring. Secondary path
+      re-measured too: examples/01 31.4s (vs Phase 2's 31.6s -- consistent), examples/02 14.0s (vs
+      14.7s -- consistent), examples/03's own wrapper script 53.4s (includes 3 separate cold
+      subprocess imports via its own subprocess-based demo harness, not the same measurement as the
+      3 standalone CLI calls above).
+      6.4: all 3 examples run fresh this session, real output captured -- 01 ($2.80 cost, PASSED at
+      threshold=5.00/FAILED at threshold=1.00, exit 0 both times, real proof the adk-eval-exit-code
+      limitation is still live), 02 ($0.565 rolled-up total, root $0.525 + sub-agent $0.04,
+      unchanged), 03 (regression detected, exit 1, numbers match documented values exactly). No
+      example's expected output needed correction -- B1-B4's schema/behavior changes don't affect
+      any of the 3 examples' own code paths. Found and fixed unrelated docstring staleness while
+      reading these files closely (not itself an output-affecting bug, but a real broken
+      cross-reference a reader would hit): examples/01 and 02 both pointed at README section
+      headings ("Workaround for capturing usage inside adk eval/AgentEvaluator", "The only path
+      that reliably works", "Real terminal captures") that don't exist in the current README (and
+      didn't exist even before this session's restructuring -- stale since an earlier README
+      rewrite renamed sections without updating these pointers) -- retargeted to the actual current
+      headings. Same class of staleness found and fixed in `docs/ci-snippet.md` ("bare-agent
+      limitation") and 3 places in `src/adk_tracegauge/` itself (`evaluator.py`'s "bare-agent
+      limitation", `_plugin.py`'s and `_compat.py`'s "The only path that reliably works",
+      `_adapter.py`'s "Streaming" -- none of these were ever valid README headings in any version
+      read this session) -- fixed to point at real current headings ("What this actually is",
+      "Sub-agent delegation", "Known limitations"); `_plugin.py`'s docstring paragraph also
+      corrected on substance, not just the pointer -- it previously claimed `after_model_callback`
+      "never fires through ADK's own eval CLI/API" at all, which is false for the exact mechanism
+      the Quickstart depends on (extracting the bound method and wiring it directly onto the agent,
+      bypassing Plugin lifecycle entirely) -- the claim is only true for before_run_callback/
+      after_run_callback used via full Plugin registration; the docstring now distinguishes the two
+      mechanisms explicitly. grep-confirmed no test asserts any of the old literal stale strings
+      before editing.
+      6.5: troubleshooting.md audited entry by entry against current source, not assumed current.
+      Entry 1 (wrong google-adk version) and entry 3 (missing threshold): re-checked against
+      current source, text unchanged and still accurate, no re-trigger needed (behavior untouched
+      by B1-B4). Entry 2 (unknown/unresolvable model): **re-triggered live and found genuinely
+      stale** -- the captured warning text predated B1 and still said local models "should have
+      resolved automatically to zero cost," directly contradicting B1's actual current behavior
+      (opt-in required via `ADK_TRACEGAUGE_ASSUME_LOCAL`); re-ran the exact reproduction script live
+      this session, captured the current real warning text, replaced the stale capture, and added
+      an explicit dated note explaining what changed and why (so a reader who remembers the old
+      text isn't confused by the silent swap). Entry 2's own "Fix:" guidance had the same staleness,
+      also corrected. Added entry 4 (Ollama Cloud opt-in gap, B1) -- a local model now reports
+      NOT_EVALUATED instead of a silent $0.00 without the opt-in; real warning text captured live
+      this session via a fresh repro script. Added entry 5 (`tracegauge check` exit code 3 on a
+      small eval set) -- justified because the hero-path swap (6.1) makes this the single most
+      likely real failure mode a new user hits on their first CI run (a realistic small eval set
+      landing below `--min-n=30`), not merely a hypothetical internal error; real output captured
+      live this session from two genuine 10-invocation synthetic snapshots. Deliberately did NOT
+      add an entry for every possible internal error (e.g. malformed snapshot JSON, argparse
+      errors) -- judged unlikely enough for a real user to hit blind, and already covered generically
+      by argparse's own exit code 2. File's intro paragraph updated 3->5 entries, with an explicit
+      note on which entries were re-verified/added this session vs. carried from Phase 2 W5
+      unchanged.
+      Verification: full suite 293 passing (unchanged -- no test-affecting behavior changed, only
+      docs/docstrings/README), 99% coverage (unchanged, 3 pre-existing uncovered lines, same as
+      B5's close). ruff check/ruff format --check/mypy src/ all clean. All 4 badges (PyPI, CI,
+      Python versions, License) re-checked, all 4 return real HTTP 200 content (quick check only,
+      per instruction not to over-invest since Phase 2 already did the heavy lifting). All 3
+      examples re-run one final time after the docstring edits (01, 02 touched; 03 untouched) --
+      byte-identical output to the pre-edit run, confirming the docstring-only changes didn't affect
+      behavior. `git status` clean after commit; no unexpected files (scratch repro scripts and
+      snapshot JSON used for troubleshooting.md's live captures were written to and cleaned up from
+      the session scratchpad/tmp, never the repo).

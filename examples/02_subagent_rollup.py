@@ -4,8 +4,8 @@ WHAT THIS DOES
     Builds a real two-agent ADK app: a root agent that delegates one
     question to a sub-agent via `AgentTool` (agent-as-a-tool delegation),
     with `TraceGaugeUsagePlugin` wired into the App's plugin list (the
-    hand-rolled Runner harness pattern -- README, "The only path that
-    reliably works" -- needed here specifically because AgentTool rollup
+    hand-rolled Runner harness pattern -- README, "Sub-agent delegation"
+    -- needed here specifically because AgentTool rollup
     depends on `before_run_callback`/`after_run_callback`, which only fire
     through a real Runner's PluginManager; `after_model_callback` alone,
     example 01's workaround, does NOT get you rollup -- see README,

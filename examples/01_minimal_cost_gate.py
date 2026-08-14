@@ -1,11 +1,11 @@
-"""examples/01_minimal_cost_gate.py — the quickstart pattern, as a runnable script.
+"""examples/01_minimal_cost_gate.py — the secondary (adk eval metric) quickstart, as a runnable script.
 
 WHAT THIS DOES
     Registers adk-tracegauge's cost metric with a threshold, wires
     TraceGaugeUsagePlugin into an agent via `after_model_callback` (the
     documented workaround that lets usage capture survive `adk eval`'s own
-    bare-Runner construction -- see README, "Workaround for capturing usage
-    inside adk eval/AgentEvaluator"), then runs the REAL `adk eval` CLI
+    bare-Runner construction -- see README, "Also: a real PASS/FAIL cost
+    metric inside `adk eval`"), then runs the REAL `adk eval` CLI
     against it twice: once with a threshold above the real cost (PASSED),
     once below it (FAILED). Prints both real, unedited `adk eval` outputs
     and the real verdict parsed out of each.
@@ -38,8 +38,9 @@ HOW TO RUN
     `python examples/01_minimal_cost_gate.py`.)
 
 EXPECTED OUTPUT (abridged -- the real run also prints ADK's own startup
-warnings and a full results table; see README's "Real terminal captures"
-section for the complete, unedited output this exact script produces)
+warnings and a full results table; see README's "Also: a real PASS/FAIL
+cost metric inside `adk eval`" section for the complete, unedited output
+this exact script produces)
     === Run 1: threshold=$5.00 (above the real $2.80 cost) ===
     ...
     Overall Eval Status: PASSED

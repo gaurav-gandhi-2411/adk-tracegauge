@@ -108,7 +108,7 @@ def _group_streaming_calls(
                     "usage_metadata.total_token_count decreased between streamed "
                     f"chunks ({prev_total} -> {call.total_token_count}) for model "
                     f"'{call.model_version}' -- the assumption that every chunk "
-                    "carries a cumulative running total (see README, 'Streaming') "
+                    "carries a cumulative running total (see README, 'Known limitations') "
                     "does not hold for this response, so its cost cannot be trusted"
                 )
             prev_total = call.total_token_count
