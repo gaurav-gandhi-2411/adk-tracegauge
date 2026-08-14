@@ -795,3 +795,71 @@ Two release-blocking findings from Phase 2's verification pass, fixed on the sam
       behavior. `git status` clean after commit; no unexpected files (scratch repro scripts and
       snapshot JSON used for troubleshooting.md's live captures were written to and cleaned up from
       the session scratchpad/tmp, never the repo).
+- [x] B7 -- Final release-blocking verification packet: full suite against live google-adk 2.7.0
+      across all 4 CI-claimed Python versions, real sdist/wheel inspection, a genuinely fresh
+      pip-installed-wheel run from outside the repo, the complete current price table, fresh real
+      `adk eval` PASS/FAIL runs with persisted JSON, and the consolidated ROUTE-TO-GG list.
+      DONE 2026-08-15, commit `a580f8f`.
+      7.1: scratch venvs at short paths under `C:\Users\gaura\tmp\tgb7\p31{0,1,2,3}` (`uv sync
+      --frozen --python X` with `UV_PROJECT_ENVIRONMENT` redirected, then `uv pip install --python
+      <venv> --upgrade google-adk==2.7.0 --no-deps`). All 4 versions: **293 passed, 99% coverage**,
+      identical Missing-lines set (`_cli.py:317`, `evaluator.py:404`, `snapshot.py:178` -- the
+      pre-existing pragma-adjacent lines, unchanged in kind from Phase 2/B1-B6), ruff/mypy not
+      re-run per-version (redundant across interpreters per ci.yml's own single-job design, matched
+      here). No version-specific failure found -- google-adk 2.7.0 genuinely compatible across the
+      full 3.10-3.13 matrix, not just 3.11 (which the `.venv` default already covered).
+      7.2: `uv build --out-dir C:\Users\gaura\tmp\tgb7\dist` (matches `release.yml`'s own build
+      step). `tar tzf`/`python -m zipfile -l` on both real archives: `gemini_prices.json` -- the
+      ONLY data file under `src/adk_tracegauge/data/` (confirmed via glob, no second/renamed file
+      from B1/B2) -- is present in both the sdist (`src/adk_tracegauge/data/gemini_prices.json`)
+      and the wheel (`adk_tracegauge/data/gemini_prices.json`), confirmed by direct archive listing,
+      not by trusting `[tool.setuptools.package-data]`'s stated intent. `uvx twine check` PASSED on
+      both archives (matches `release.yml`'s own check step).
+      7.3: fresh venv (`uv venv ... --seed`) outside the repo, `pip install` of the actual local
+      wheel file (not PyPI). **Real problem found and fixed** (release-blocking, not cosmetic): the
+      installed `tracegauge` console-script entry point does NOT get the caller's cwd on
+      `sys.path` automatically (unlike `python -m adk_tracegauge._cli`, which Python itself gives
+      cwd on `sys.path[0]` for free) -- so the README quickstart's own literal first command,
+      `tracegauge snapshot --entrypoint my_eval_suite:...`, run from a plain external directory
+      after a real `pip install`, failed with `--entrypoint: could not import module
+      'my_eval_suite': No module named 'my_eval_suite'` even though the file sat right there in
+      cwd. Never caught before because both the source checkout (`pyproject.toml`'s
+      `pythonpath = [".", "src", "scripts"]`) and every prior session's own testing pattern
+      (`uv run python ...`, `python -m adk_tracegauge._cli`) already had cwd on `sys.path` one way
+      or another -- this is the first time the literal installed bare console script was run from a
+      directory with nothing else putting cwd there. FIXED: `_resolve_entrypoint` now inserts
+      `os.getcwd()` onto `sys.path` before `importlib.import_module`, mirroring `-m`'s own behavior
+      exactly; module docstring and `_cli.py`'s top docstring both updated to state this explicitly.
+      New regression test (`test_resolve_entrypoint_puts_cwd_on_syspath_for_the_bare_console_script`,
+      `tests/test_cli.py`) writes a module into a `tmp_path` genuinely absent from `sys.path`,
+      confirms the pre-fix failure mode (`assert str(tmp_path) not in sys.path`) before calling
+      `_resolve_entrypoint`, then confirms both success and the path's presence after -- cleans up
+      `sys.modules`/`sys.path` in a `finally` so it doesn't leak into other tests. Wheel rebuilt,
+      reinstalled (`--force-reinstall --no-deps`) into the same verify venv, hero path re-run for
+      real from `C:\Users\gaura\tmp\tgb7\outside` (outside the repo, no `PYTHONPATH`, using only the
+      installed wheel's `tracegauge.exe`): `snapshot`x2 + `check`, real output, exit code 1, numbers
+      matching the documented figures exactly (`mean_baseline=$0.008583 mean_current=$0.009998,
+      +16.49%, 95% CI [+0.001085,+0.001744]`) -- see the session report for the full verbatim
+      transcript.
+      7.4/7.5: complete current price table (22 entries: 10 Gemini incl. 2 long-context tiers, 4
+      Claude, 5 GPT, 1 local zero-cost) and fresh real `adk eval` PASS ($2.80 vs threshold $5.00)
+      /FAIL ($2.80 vs threshold $1.00) runs, driven this session against a PERSISTENT scratch
+      directory (not `tempfile.TemporaryDirectory`, so `.adk/eval_history/*.evalset_result.json`
+      survives for inspection -- found the eval-history path is actually `.adk/eval_history/`, not
+      the bare `eval_history/` examples/01's own docstring implies) -- both real persisted JSON
+      slices confirmed non-null (`score: 2.8`, `eval_status: 1` PASSED / `eval_status: 2` FAILED),
+      both real `adk eval` process exit codes confirmed still 0 regardless of verdict (the
+      documented, still-live ADK-side limitation). Full transcripts in the session report.
+      7.6: full ROUTE-TO-GG list compiled and cross-checked against every "TODO"/"deferred" mention
+      across Phase 2's `PHASE2_REPORT.md` and this file's Phase 3 entries (grep-verified, not
+      recalled from memory) -- see session report for the complete numbered list, including both
+      B3 upstream `gh pr create` commands reproduced exactly from `oss-contrib/adk-python`'s real
+      committed branches (`fix/cost-metric-threshold-directionality` @ `c2131b70`,
+      `fix/adk-eval-exit-code` @ `32c8991d` -- confirmed still local-only, not pushed to
+      `origin`/gaurav-gandhi-2411's fork, via `git branch -a`). Confirmed the Ollama Cloud pricing
+      gap is NOT a genuinely open item for this list -- B1 fully resolved it via
+      `ADK_TRACEGAUGE_ASSUME_LOCAL`, this was a definitive engineering resolution, not a deferred
+      judgment call.
+      Fix verification: full suite in the repo's own `.venv` -- **294 passed** (293 + 1 new
+      regression test), 99% coverage (same 3 pre-existing uncovered lines as every prior close this
+      phase), ruff check/ruff format --check/mypy src/ all clean. `git status` clean after commit.
