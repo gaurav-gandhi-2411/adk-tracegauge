@@ -567,6 +567,129 @@ def test_stale_price_warning_names_only_the_stale_model_not_a_fresh_one(monkeypa
     )
 
 
+# --- Phase 3 B2: promotional pricing rationale/warnings --------------------
+
+
+def test_promo_active_rationale_states_the_promo_is_active_and_its_expiry_date():
+    # gemini-3.6-flash is a REAL bundled entry, genuinely inside its
+    # promo window as of the date this table was fetched (promo_until
+    # 2026-12-31) -- no price-table patching needed for the "active" case.
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-3.6-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
+            cached_content_token_count=0,
+            total_token_count=2_000_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    rationale = pir.rubric_scores[0].rationale
+    # 1M input @ $0.75/Mtok + 1M output @ $3.75/Mtok = $4.50 (the
+    # PROMOTIONAL rate, since today is still within the promo window).
+    assert pir.score == pytest.approx(4.50)
+    assert "promotional rate, expires 2026-12-31" in rationale
+    assert "promotional period ended" not in rationale
+
+
+def test_promo_expired_rationale_states_standard_rate_applied_automatically(monkeypatch):
+    import copy
+    from datetime import date, timedelta
+
+    import adk_tracegauge._pricing as pricing_module
+    import adk_tracegauge.evaluator as evaluator_module
+
+    real_prices = pricing_module.load_gemini_prices()
+    patched = copy.deepcopy(real_prices)
+    expired_date = (date.today() - timedelta(days=10)).isoformat()
+    patched["models"]["gemini-3.6-flash"]["promo_until"] = expired_date
+    patched["models"]["gemini-3.6-flash"]["standard_rate"] = {
+        "input_usd_per_mtok": 1.50,
+        "output_usd_per_mtok": 7.50,
+    }
+
+    monkeypatch.setattr(pricing_module, "load_gemini_prices", lambda: patched)
+    monkeypatch.setattr(evaluator_module, "load_gemini_prices", lambda: patched)
+
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-3.6-flash",
+            prompt_token_count=1_000_000,
+            candidates_token_count=1_000_000,
+            cached_content_token_count=0,
+            total_token_count=2_000_000,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    rationale = pir.rubric_scores[0].rationale
+    # 1M input @ $1.50/Mtok + 1M output @ $7.50/Mtok = $9.00 (the STANDARD
+    # rate, applied automatically -- no manual table edit in this test).
+    assert pir.score == pytest.approx(9.00)
+    expected_phrase = (
+        f"promotional period ended {expired_date}; standard rate applied automatically"
+    )
+    assert expected_phrase in rationale
+    assert "promotional rate, expires" not in rationale
+
+
+def test_promo_unknown_standard_rate_warns_inside_the_pre_expiry_window(monkeypatch):
+    import copy
+    import warnings as warnings_module
+    from datetime import date, timedelta
+
+    import adk_tracegauge._pricing as pricing_module
+    import adk_tracegauge.evaluator as evaluator_module
+
+    real_prices = pricing_module.load_gemini_prices()
+    patched = copy.deepcopy(real_prices)
+    # Inside PROMO_EXPIRY_WARNING_DAYS (14) but no standard_rate published.
+    near_expiry = (date.today() + timedelta(days=3)).isoformat()
+    patched["models"]["gemini-3.6-flash"]["promo_until"] = near_expiry
+    patched["models"]["gemini-3.6-flash"].pop("standard_rate", None)
+
+    monkeypatch.setattr(pricing_module, "load_gemini_prices", lambda: patched)
+    monkeypatch.setattr(evaluator_module, "load_gemini_prices", lambda: patched)
+
+    store = UsageStore()
+    store.record(
+        "inv-1",
+        CapturedCall(
+            model_version="gemini-3.6-flash",
+            prompt_token_count=1_000,
+            candidates_token_count=500,
+            cached_content_token_count=0,
+            total_token_count=1_500,
+        ),
+    )
+    evaluator = _evaluator(store)
+
+    with warnings_module.catch_warnings(record=True) as caught:
+        warnings_module.simplefilter("always")
+        result = evaluator.evaluate_invocations([_invocation("inv-1")])
+
+    pir = result.per_invocation_results[0]
+    rationale = pir.rubric_scores[0].rationale
+    assert "PROMOTIONAL RATE EXPIRING WITHOUT A KNOWN STANDARD RATE" in rationale
+    assert "gemini-3.6-flash" in rationale
+    assert any(
+        "PROMOTIONAL RATE EXPIRING WITHOUT A KNOWN STANDARD RATE" in str(w.message)
+        and "gemini-3.6-flash" in str(w.message)
+        for w in caught
+    )
+
+
 def test_local_model_prices_at_zero_and_passes_with_explicit_rationale(monkeypatch):
     # Phase 2 W3 / Phase 3 B1: an ASSERTED local/self-hosted model must
     # resolve to cost 0.0 with a real PASSED verdict (trivially under any

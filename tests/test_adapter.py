@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-from adk_tracegauge._adapter import build_session_digest, unknown_model_message
-from adk_tracegauge._pricing import ASSUME_LOCAL_ENV_VAR, LOCAL_MODEL_KEY, PRICE_TABLE_ENV_VAR
+from copy import deepcopy
+
+from adk_tracegauge._adapter import build_session_digest, price_digest, unknown_model_message
+from adk_tracegauge._pricing import (
+    ASSUME_LOCAL_ENV_VAR,
+    LOCAL_MODEL_KEY,
+    PRICE_TABLE_ENV_VAR,
+    load_gemini_prices,
+)
 from adk_tracegauge._store import CapturedCall
 
 
@@ -248,6 +255,45 @@ def test_unknown_model_message_for_unasserted_local_model_names_the_opt_in_remed
     assert ASSUME_LOCAL_ENV_VAR in message
     assert "ollama_chat/qwen2.5:7b" in message
     assert "Ollama Cloud" in message
+
+
+def test_price_digest_switches_expired_promo_entry_to_its_standard_rate():
+    # Phase 3 B2: price_digest is the single sanctioned compute_session_cost
+    # call site, and must apply the promo-expiry auto-switch on every call
+    # through it -- exercised here with a real expired-promo entry,
+    # confirming the effective-rate rewrite actually reaches the computed
+    # dollar total, not just a ResolvedModel field nobody reads.
+    #
+    # build_session_digest always resolves against the BUNDLED table (it
+    # takes no prices= override), so the model used here must be a real
+    # bundled entry -- gemini-3.6-flash. A custom prices dict (a deep copy
+    # of the bundled table with that entry's promo_until moved into the
+    # past) is then handed to price_digest itself, which does accept an
+    # explicit override.
+    prices = deepcopy(load_gemini_prices())
+    prices["models"]["gemini-3.6-flash"]["promo_until"] = "2026-01-01"
+    prices["models"]["gemini-3.6-flash"]["standard_rate"] = {
+        "input_usd_per_mtok": 10.0,
+        "output_usd_per_mtok": 20.0,
+    }
+
+    result = build_session_digest(
+        "inv-1", [_call(model="gemini-3.6-flash", prompt=1_000_000, output=0)]
+    )
+    assert result.ok
+    session_cost = price_digest(result.digest, prices=prices)
+    # 1M input tokens at the STANDARD rate ($10.00/Mtok), not the stale
+    # promotional rate ($0.75/Mtok) -- $10.00, not $0.75.
+    assert session_cost.total_usd == 10.0
+
+
+def test_price_digest_does_not_mutate_the_bundled_table_in_place():
+    prices = load_gemini_prices()
+    before = prices["models"]["gemini-3.6-flash"]["input_usd_per_mtok"]
+    result = build_session_digest("inv-1", [_call(model="gemini-3.6-flash")])
+    assert result.ok
+    price_digest(result.digest, prices=prices)
+    assert prices["models"]["gemini-3.6-flash"]["input_usd_per_mtok"] == before
 
 
 def test_build_session_digest_fails_closed_on_bedrock_routed_claude():

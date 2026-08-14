@@ -12,7 +12,9 @@ from adk_tracegauge._pricing import (
     ASSUME_LOCAL_ENV_VAR,
     LOCAL_MODEL_KEY,
     PRICE_TABLE_ENV_VAR,
+    PROMO_EXPIRY_WARNING_DAYS,
     STALE_THRESHOLD_DAYS,
+    effective_prices,
     is_local_model,
     is_local_model_asserted,
     known_model_keys,
@@ -505,3 +507,195 @@ def test_cache_read_multiplier_verified_across_claude_and_current_gpt_generation
     # at all (see gpt4_and_o_series test above for the vendor that couldn't).
     assert pytest.approx(0.1) == 0.50 / 5.00
     assert pytest.approx(0.1) == 0.125 / 1.25
+
+
+# --- Phase 3 B2: promotional pricing expires automatically -----------------
+#
+# Dates are computed as offsets from date.today() rather than mocking the
+# clock -- same pattern as the existing STALE_THRESHOLD_DAYS boundary tests
+# above (test_is_stale_true_past_the_threshold etc.), which construct a
+# ResolvedModel with a fetched_on relative to "today" instead of injecting a
+# fake clock into the library.
+
+
+def _custom_prices_with_promo(promo_until: str, standard_rate: dict[str, float] | None) -> dict:
+    entry: dict[str, object] = {
+        "input_usd_per_mtok": 1.0,
+        "output_usd_per_mtok": 2.0,
+        "source_url": "https://example.invalid/pricing",
+        "fetched_on": date.today().isoformat(),
+        "note": "test-only promotional entry",
+        "promo_until": promo_until,
+    }
+    if standard_rate is not None:
+        entry["standard_rate"] = standard_rate
+    return {
+        "schema_version": 3,
+        "note": "test",
+        "cache_multipliers": {"read": 0.1, "write_5min": 0.0, "write_1hr": 0.0},
+        "models": {"promo-test-model": entry},
+        "model_patterns": [],
+        "default_model": "promo-test-model",
+        "approximate_threshold_pct": 25,
+    }
+
+
+def test_promo_rate_applies_while_within_the_promo_window():
+    prices = _custom_prices_with_promo(
+        promo_until=(date.today() + timedelta(days=5)).isoformat(),
+        standard_rate={"input_usd_per_mtok": 2.0, "output_usd_per_mtok": 4.0},
+    )
+    resolved = resolve_model("promo-test-model", prices)
+    assert resolved is not None
+    assert resolved.promo_active is True
+    assert resolved.input_usd_per_mtok == 1.0
+    assert resolved.output_usd_per_mtok == 2.0
+    assert resolved.standard_rate_unknown is False
+
+
+def test_standard_rate_applies_automatically_once_promo_has_expired():
+    prices = _custom_prices_with_promo(
+        promo_until=(date.today() - timedelta(days=1)).isoformat(),
+        standard_rate={"input_usd_per_mtok": 2.0, "output_usd_per_mtok": 4.0},
+    )
+    resolved = resolve_model("promo-test-model", prices)
+    assert resolved is not None
+    assert resolved.promo_active is False
+    # Automatic switch -- no manual table edit required, per 2.2.
+    assert resolved.input_usd_per_mtok == 2.0
+    assert resolved.output_usd_per_mtok == 4.0
+
+
+def test_promo_boundary_day_itself_is_still_promotional():
+    # Documented choice (2.5): the boundary day (promo_until itself) is
+    # PROMO, not standard -- matches vendor phrasing like "$0.75 through
+    # December 31, 2026" (valid through and including that date), and
+    # mirrors is_stale's own boundary convention (the boundary day is NOT
+    # yet stale -- same ">" vs "<=" direction of generosity).
+    prices = _custom_prices_with_promo(
+        promo_until=date.today().isoformat(),
+        standard_rate={"input_usd_per_mtok": 2.0, "output_usd_per_mtok": 4.0},
+    )
+    resolved = resolve_model("promo-test-model", prices)
+    assert resolved is not None
+    assert resolved.promo_active is True
+    assert resolved.input_usd_per_mtok == 1.0
+
+    # One day past the boundary: standard rate applies.
+    prices_next_day = _custom_prices_with_promo(
+        promo_until=(date.today() - timedelta(days=1)).isoformat(),
+        standard_rate={"input_usd_per_mtok": 2.0, "output_usd_per_mtok": 4.0},
+    )
+    resolved_next_day = resolve_model("promo-test-model", prices_next_day)
+    assert resolved_next_day is not None
+    assert resolved_next_day.promo_active is False
+    assert resolved_next_day.input_usd_per_mtok == 2.0
+
+
+def test_effective_prices_bakes_in_the_auto_switch_for_tracegauges_own_engine():
+    # effective_prices is what actually reaches tes.cost.compute_session_cost
+    # (which reads prices["models"][key]["input_usd_per_mtok"] straight off
+    # the dict it's given -- confirmed by reading tes/cost.py directly --
+    # with zero knowledge of promo_until/standard_rate), so the switch must
+    # be visible on the RAW DICT too, not just on a ResolvedModel object.
+    prices = _custom_prices_with_promo(
+        promo_until=(date.today() - timedelta(days=1)).isoformat(),
+        standard_rate={"input_usd_per_mtok": 2.0, "output_usd_per_mtok": 4.0},
+    )
+    effective = effective_prices(prices)
+    assert effective["models"]["promo-test-model"]["input_usd_per_mtok"] == 2.0
+    assert effective["models"]["promo-test-model"]["output_usd_per_mtok"] == 4.0
+    # Never mutates the original dict passed in.
+    assert prices["models"]["promo-test-model"]["input_usd_per_mtok"] == 1.0
+
+
+def test_effective_prices_leaves_active_promo_rate_untouched():
+    prices = _custom_prices_with_promo(
+        promo_until=(date.today() + timedelta(days=5)).isoformat(),
+        standard_rate={"input_usd_per_mtok": 2.0, "output_usd_per_mtok": 4.0},
+    )
+    effective = effective_prices(prices)
+    assert effective["models"]["promo-test-model"]["input_usd_per_mtok"] == 1.0
+
+
+def test_effective_prices_leaves_non_promotional_entries_untouched():
+    effective = effective_prices()
+    assert effective["models"]["gemini-2.5-flash"]["input_usd_per_mtok"] == 0.30
+
+
+def test_unknown_standard_rate_warns_once_inside_the_pre_expiry_window():
+    prices = _custom_prices_with_promo(
+        promo_until=(date.today() + timedelta(days=PROMO_EXPIRY_WARNING_DAYS - 1)).isoformat(),
+        standard_rate=None,
+    )
+    resolved = resolve_model("promo-test-model", prices)
+    assert resolved is not None
+    assert resolved.standard_rate_unknown is True
+    assert resolved.standard_rate_warning_due is True
+
+
+def test_unknown_standard_rate_does_not_warn_well_before_expiry():
+    prices = _custom_prices_with_promo(
+        promo_until=(date.today() + timedelta(days=PROMO_EXPIRY_WARNING_DAYS + 30)).isoformat(),
+        standard_rate=None,
+    )
+    resolved = resolve_model("promo-test-model", prices)
+    assert resolved is not None
+    assert resolved.standard_rate_unknown is True
+    assert resolved.standard_rate_warning_due is False
+
+
+def test_unknown_standard_rate_keeps_warning_after_expiry_not_just_at_the_instant():
+    prices = _custom_prices_with_promo(
+        promo_until=(date.today() - timedelta(days=30)).isoformat(),
+        standard_rate=None,
+    )
+    resolved = resolve_model("promo-test-model", prices)
+    assert resolved is not None
+    # Still using the last-known (promotional) rate -- never a fabricated
+    # guess -- but flagged as due for a loud warning.
+    assert resolved.input_usd_per_mtok == 1.0
+    assert resolved.standard_rate_warning_due is True
+
+
+def test_unparseable_promo_until_fails_closed_not_open():
+    prices = _custom_prices_with_promo(promo_until="not-a-date", standard_rate=None)
+    resolved = resolve_model("promo-test-model", prices)
+    assert resolved is not None
+    # Never silently auto-switches off a date it couldn't parse.
+    assert resolved.promo_active is True
+    assert resolved.standard_rate_unknown is True
+    assert resolved.standard_rate_warning_due is True
+
+
+def test_non_promotional_entry_never_promo_active_or_standard_rate_unknown():
+    resolved = resolve_model("gemini-2.5-flash")
+    assert resolved is not None
+    assert resolved.promo_until is None
+    assert resolved.promo_active is False
+    assert resolved.standard_rate_unknown is False
+    assert resolved.standard_rate_warning_due is False
+
+
+def test_bundled_gemini_3_6_and_3_7_flash_carry_the_confirmed_promo_schema():
+    # Re-verified live 2026-08-14 against ai.google.dev directly (Phase 3
+    # B2 2.3): both models publish a confirmed post-promo standard_rate.
+    for model_key in ("gemini-3.6-flash", "gemini-3.7-flash"):
+        resolved = resolve_model(model_key)
+        assert resolved is not None
+        assert resolved.promo_until == "2026-12-31"
+        assert resolved.standard_rate_unknown is False
+        assert resolved.standard_rate_input_usd_per_mtok == 1.50
+        assert resolved.standard_rate_output_usd_per_mtok == 7.50
+
+
+def test_claude_sonnet_5_is_not_flagged_as_promotional():
+    # Phase 3 B2 2.1/2.3: carries historical "introductory pricing" language
+    # in its own note, but re-verified live 2026-08-14 against
+    # platform.claude.com directly -- the vendor's own page states the
+    # scheduled increase "will not occur" and the rate "is now the standard
+    # price". Deliberately NOT given promo_until/standard_rate: there is no
+    # longer a future rate change to auto-switch to.
+    resolved = resolve_model("claude-sonnet-5")
+    assert resolved is not None
+    assert resolved.promo_until is None

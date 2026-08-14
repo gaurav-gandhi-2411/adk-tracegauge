@@ -242,6 +242,37 @@ def _price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCo
     return price_digest(digest, prices=prices)
 
 
+def _promo_unknown_rate_warning(session_cost: SessionCost) -> str | None:
+    """Returns a warning line if any priced turn's promotional rate is
+    within its pre-expiry warning window (or already past expiry) with no
+    published post-promo standard rate, else None. Same pattern as
+    _stale_price_warning: also emits a Python warning (Phase 3 B2 2.3) so
+    this is visible in logs, not only to a reader of this one rationale.
+    """
+    flagged = sorted(
+        {
+            tc.model_key
+            for tc in session_cost.turn_costs
+            if (resolved := resolve_model(tc.model_key)) is not None
+            and resolved.standard_rate_warning_due
+        }
+    )
+    if not flagged:
+        return None
+
+    message = (
+        f"PROMOTIONAL RATE EXPIRING WITHOUT A KNOWN STANDARD RATE: {', '.join(flagged)} "
+        "-- the post-promotional rate for this model has not been published/confirmed "
+        "anywhere in the price table, so the cost reported here may silently continue "
+        "at a stale promotional rate past the promo's expiry. Re-verify against the "
+        "vendor's own pricing page and add a standard_rate to the entry in "
+        "src/adk_tracegauge/data/gemini_prices.json -- see README 'Updating the price "
+        "table'."
+    )
+    warnings.warn(message, stacklevel=3)
+    return f"WARNING: {message}"
+
+
 def _stale_price_warning(session_cost: SessionCost) -> str | None:
     """Returns a warning line if any priced turn's table entry is stale, else None.
 
@@ -333,6 +364,19 @@ def _priced_result(
             # explicit assertion this zero-cost result required, since it's
             # no longer an implicit/default outcome -- see module docstring.
             line += " (local model, zero marginal cost, asserted via ADK_TRACEGAUGE_ASSUME_LOCAL)"
+        elif (
+            resolved_for_turn := resolve_model(turn_cost.model_key)
+        ) is not None and resolved_for_turn.promo_until:
+            # Phase 3 B2 2.2: the promo's active/expired status and expiry
+            # date must be explicit in the rationale text, not just baked
+            # silently into the dollar figure above.
+            if resolved_for_turn.promo_active:
+                line += f" (promotional rate, expires {resolved_for_turn.promo_until})"
+            else:
+                line += (
+                    f" (promotional period ended {resolved_for_turn.promo_until}; "
+                    "standard rate applied automatically)"
+                )
         breakdown_lines.append(line)
     if session_cost.approximate:
         breakdown_lines.append(
@@ -340,6 +384,8 @@ def _priced_result(
         )
     if (stale_warning := _stale_price_warning(session_cost)) is not None:
         breakdown_lines.append(stale_warning)
+    if (promo_warning := _promo_unknown_rate_warning(session_cost)) is not None:
+        breakdown_lines.append(promo_warning)
 
     # warnings.warn remains a second channel alongside the (now real,
     # LocalEvalService-visible) rubric_scores/eval_status -- useful for

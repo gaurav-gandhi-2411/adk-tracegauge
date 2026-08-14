@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "note": "Per-million-token USD rates for Gemini, Claude, and GPT models reachable from ADK agents (native Gemini backend, plus Claude/GPT via ADK's LiteLlm integration -- see google-adk's models/lite_llm.py). Historically Gemini-only (hence the filename/loader name -- kept for now, see _pricing.py's module docstring); Phase 2 W3 added Claude and current-generation GPT entries plus a zero-cost entry for local/self-hosted models (Phase 3 B1: local-model zero-cost pricing now requires the caller to opt in via ADK_TRACEGAUGE_ASSUME_LOCAL -- see the __local_zero_cost__ entry's own note and _pricing.py's module docstring for why: Ollama Cloud, a real paid product, shares the identical ollama_chat//ollama/ LiteLlm prefix as local Ollama). Prices change without notice -- verify against each entry's source_url before relying on a number for a real budget decision. Standard (interactive/online) tier only -- no Batch API pricing (ADK's live-agent plugin path never issues Batch API calls, confirmed by source grep of google-adk's models/plugins modules; a batch call is a separate async job-submission API that never flows through BasePlugin.after_model_callback). Text/image/video input rate only -- several vendors price audio input separately (typically higher); audio calls are priced at the text rate here, which under-charges audio-heavy invocations. schema_version 2 adds optional per-model long-context tiering (see 'long_context_threshold_tokens'/'long_context_model_key') -- verified P0 fix, Phase 2 W1.",
+  "schema_version": 3,
+  "note": "Per-million-token USD rates for Gemini, Claude, and GPT models reachable from ADK agents (native Gemini backend, plus Claude/GPT via ADK's LiteLlm integration -- see google-adk's models/lite_llm.py). Historically Gemini-only (hence the filename/loader name -- kept for now, see _pricing.py's module docstring); Phase 2 W3 added Claude and current-generation GPT entries plus a zero-cost entry for local/self-hosted models (Phase 3 B1: local-model zero-cost pricing now requires the caller to opt in via ADK_TRACEGAUGE_ASSUME_LOCAL -- see the __local_zero_cost__ entry's own note and _pricing.py's module docstring for why: Ollama Cloud, a real paid product, shares the identical ollama_chat//ollama/ LiteLlm prefix as local Ollama). Prices change without notice -- verify against each entry's source_url before relying on a number for a real budget decision. Standard (interactive/online) tier only -- no Batch API pricing (ADK's live-agent plugin path never issues Batch API calls, confirmed by source grep of google-adk's models/plugins modules; a batch call is a separate async job-submission API that never flows through BasePlugin.after_model_callback). Text/image/video input rate only -- several vendors price audio input separately (typically higher); audio calls are priced at the text rate here, which under-charges audio-heavy invocations. schema_version 2 added optional per-model long-context tiering (see 'long_context_threshold_tokens'/'long_context_model_key') -- verified P0 fix, Phase 2 W1. schema_version 3 adds optional 'promo_until' (ISO date) + 'standard_rate' ({input_usd_per_mtok, output_usd_per_mtok}) for time-limited promotional entries -- see _pricing.py's resolve_model/effective_prices, which automatically switch a promotional entry to its standard_rate once promo_until has passed, no manual table edit required (Phase 3 B2).",
   "cache_multipliers": {
     "read": 0.1,
     "write_5min": 0.0,
@@ -64,14 +64,24 @@
       "output_usd_per_mtok": 3.75,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
       "fetched_on": "2026-08-14",
-      "note": "CORRECTED 2026-08-14 (Phase 2 W1 P0 fix): prior table entry ($1.50/$7.50) was the POST-promotion rate, not the rate actually in effect. Google's published standard rate is $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after. This is a time-based tier the 90-day staleness guard will force a re-check on well before the 2026-12-31 change (re-verify on or before that date regardless of the staleness guard's own timing)."
+      "promo_until": "2026-12-31",
+      "standard_rate": {
+        "input_usd_per_mtok": 1.50,
+        "output_usd_per_mtok": 7.50
+      },
+      "note": "CORRECTED 2026-08-14 (Phase 2 W1 P0 fix): prior table entry ($1.50/$7.50) was the POST-promotion rate, not the rate actually in effect. Google's published standard rate is $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after. RE-VERIFIED live 2026-08-14 (Phase 3 B2): ai.google.dev states '$0.75 through December 31, 2026' / '$1.50 starting January 1, 2027' -- a confirmed, published post-promo rate, not provisional. promo_until/standard_rate added so _pricing.py's resolver auto-switches to the standard rate once 2026-12-31 has passed -- no manual table edit required."
     },
     "gemini-3.7-flash": {
       "input_usd_per_mtok": 0.75,
       "output_usd_per_mtok": 3.75,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
       "fetched_on": "2026-08-14",
-      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Standard rate $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after -- same promotional-period caveat as gemini-3.6-flash; re-verify before 2026-12-31."
+      "promo_until": "2026-12-31",
+      "standard_rate": {
+        "input_usd_per_mtok": 1.50,
+        "output_usd_per_mtok": 7.50
+      },
+      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Standard rate $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after -- same promotional-period caveat as gemini-3.6-flash; RE-VERIFIED live 2026-08-14 (Phase 3 B2), same confirmed post-promo figures. promo_until/standard_rate added so _pricing.py's resolver auto-switches to the standard rate once 2026-12-31 has passed -- no manual table edit required."
     },
     "gemini-3.1-flash-lite": {
       "input_usd_per_mtok": 0.25,
@@ -108,7 +118,7 @@
       "output_usd_per_mtok": 10.00,
       "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
       "fetched_on": "2026-08-14",
-      "note": "NEW 2026-08-14 (Phase 2 W3). IMPORTANT: this was announced as introductory pricing through 2026-08-31 with a scheduled increase to $3/$15 on 2026-09-01 -- the fetched pricing page's own dated note states that increase 'will not occur' and $2/$10 'is now the standard price'. Not a promotional rate to re-check on expiry; treat as standard going forward, but the 90-day staleness guard will still force a routine re-check. Cache-hit rate $0.20/Mtok = exactly 0.1x base input."
+      "note": "NEW 2026-08-14 (Phase 2 W3). IMPORTANT: this was announced as introductory pricing through 2026-08-31 with a scheduled increase to $3/$15 on 2026-09-01 -- the fetched pricing page's own dated note states that increase 'will not occur' and $2/$10 'is now the standard price'. RE-VERIFIED live 2026-08-14 (Phase 3 B2 2.1 promotional-entry audit): platform.claude.com's own note (id claude-sonnet-5-introductory-pricing) still confirms this exact wording -- deliberately NOT given promo_until/standard_rate fields, since there is no longer a scheduled future rate change to auto-switch to; this is a settled standard rate, not an active promo, despite the historical 'introductory pricing' language in its own note. The 90-day staleness guard still forces a routine re-check regardless. Cache-hit rate $0.20/Mtok = exactly 0.1x base input."
     },
     "claude-haiku-4-5": {
       "input_usd_per_mtok": 1.00,

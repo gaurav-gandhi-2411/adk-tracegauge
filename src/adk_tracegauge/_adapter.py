@@ -48,6 +48,7 @@ from tes.cost import SessionCost, compute_session_cost
 from ._pricing import (
     ASSUME_LOCAL_ENV_VAR,
     PRICE_TABLE_ENV_VAR,
+    effective_prices,
     is_local_model,
     known_model_keys,
     resolve_model_for_call,
@@ -216,8 +217,17 @@ def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCos
     ``compute_session_cost`` is called in ``src/``, so a future call site
     added elsewhere can't reintroduce the same bug by skipping this
     wrapper.
+
+    ``prices`` is passed through ``effective_prices`` before reaching
+    tracegauge's engine (Phase 3 B2) -- tracegauge's own
+    ``compute_turn_cost`` reads ``prices["models"][key]["input_usd_per_mtok"]``
+    directly off whatever dict it's given, with zero knowledge of this
+    package's ``promo_until``/``standard_rate`` schema fields, so the
+    automatic promo-expiry rate switch has to be applied here, on every
+    call through this single sanctioned call site, rather than relying on
+    every caller to remember to call ``effective_prices`` themselves.
     """
-    return compute_session_cost(digest, prices=prices)
+    return compute_session_cost(digest, prices=effective_prices(prices))
 
 
 def unknown_model_message(model_version: str) -> str:

@@ -84,6 +84,20 @@ sufficient on its own to price a call at $0.00 -- see
 for a genuinely paid Ollama Cloud call is strictly worse than a loud,
 actionable refusal to price (NOT_EVALUATED) -- see
 ``_adapter.unknown_model_message`` for the actionable remedy text.
+
+Phase 3 B2 (release-blocking fix): **promotional/introductory price
+entries can now expire without becoming silently wrong.** An entry may
+carry ``promo_until`` (ISO date) and ``standard_rate`` (the published
+post-promo input/output rate); ``resolve_model``/``resolve_model_for_call``
+report the *effective* rate for "today" automatically (the promotional
+rate while ``date.today() <= promo_until``, the standard rate once past
+it, no manual table edit required), and ``effective_prices`` below does
+the same for the raw dict tracegauge's own ``compute_session_cost`` reads
+directly (see that function's docstring for why the rewrite has to happen
+there and not inside tracegauge's engine). An entry whose promo is
+approaching or past expiry with no published ``standard_rate`` warns
+loudly (``ResolvedModel.standard_rate_warning_due``) rather than silently
+either freezing at a now-possibly-wrong number or guessing one.
 """
 
 from __future__ import annotations
@@ -178,6 +192,18 @@ asking the running process's own clock, and the whole point of this guard
 is to catch drift between the table's fetched_on and whatever day the
 check actually executes."""
 
+PROMO_EXPIRY_WARNING_DAYS = 14
+"""Shared lead-time window (days) for two related-but-distinct promotional-
+pricing guards (Phase 3 B2): (1) scripts/check_price_freshness.py's CI gate
+fails when any entry's promo_until is within this many days of "today" or
+already past; (2) ResolvedModel.standard_rate_warning_due (runtime) fires
+the same window early for a promotional entry with NO published
+standard_rate, so a user sees the "post-promo rate not yet confirmed"
+warning before the rate changes, not only after. One constant, not two
+independently-tuned magic numbers, since both exist for the same reason:
+give a human enough lead time before a promotional entry's pricing stops
+being trustworthy without a table update."""
+
 _PRICE_TABLE_CACHE: dict[str, Any] | None = None
 
 
@@ -225,6 +251,32 @@ class ResolvedModel:
     unaffected by schema_version 2 -- they keep getting the base (<=
     threshold) rate exactly as before."""
 
+    promo_until: str | None = None
+    """ISO date through which input_usd_per_mtok/output_usd_per_mtok above
+    are the PROMOTIONAL rate (schema_version 3+, Phase 3 B2). None for a
+    non-promotional entry. The rates on this ResolvedModel are already the
+    EFFECTIVE rate for "today" (promotional while promo_active, standard
+    once past promo_until and a standard_rate is known) -- see
+    _effective_rates/_entry_to_resolved; callers never need to apply the
+    switch themselves."""
+    promo_active: bool = False
+    """True iff promo_until is set and date.today() <= promo_until
+    (inclusive -- the boundary day itself is still promotional, matching
+    vendor phrasing like "$0.75 through December 31, 2026" and the same
+    day-inequality convention as is_stale's own boundary choice below).
+    Always False for a non-promotional entry."""
+    standard_rate_unknown: bool = False
+    """True iff promo_until is set but no standard_rate is published for
+    this entry -- the rates on this ResolvedModel remain the last-known
+    promotional figures even past expiry (never a fabricated guess), and
+    standard_rate_warning_due below is the loud signal that this needs a
+    human to re-verify."""
+    standard_rate_input_usd_per_mtok: float | None = None
+    standard_rate_output_usd_per_mtok: float | None = None
+    """The published post-promo rate, if known, regardless of whether it is
+    currently in effect -- None when standard_rate_unknown (or the entry
+    isn't promotional at all)."""
+
     @property
     def is_stale(self) -> bool:
         """True when this entry's fetched_on is older than STALE_THRESHOLD_DAYS."""
@@ -236,17 +288,123 @@ class ResolvedModel:
             return True
         return (date.today() - fetched).days > STALE_THRESHOLD_DAYS
 
+    @property
+    def standard_rate_warning_due(self) -> bool:
+        """True iff this entry is promotional, its post-promo standard_rate
+        is genuinely unknown, AND its promo_until is within
+        PROMO_EXPIRY_WARNING_DAYS of "today" or already past -- the loud
+        pre-expiry warning window from Phase 3 B2 2.3 (never just a silent
+        failure at the exact expiry instant). An unparseable promo_until is
+        treated as due (fail closed -- can't confirm it ISN'T due)."""
+        if not self.standard_rate_unknown or not self.promo_until:
+            return False
+        try:
+            promo_until_date = date.fromisoformat(self.promo_until)
+        except ValueError:
+            return True
+        return (promo_until_date - date.today()).days <= PROMO_EXPIRY_WARNING_DAYS
+
+
+def _effective_rates(entry: dict[str, Any]) -> tuple[float, float, bool, bool]:
+    """Returns (input_usd_per_mtok, output_usd_per_mtok, promo_active,
+    standard_rate_unknown) for `entry`, applying automatic promo-expiry
+    switching (Phase 3 B2). See ResolvedModel.promo_active/
+    standard_rate_unknown for what each flag means.
+
+    An entry with no promo_until is never promotional -- returns its base
+    rates verbatim, (promo_active, standard_rate_unknown) = (False, False).
+
+    An entry WITH promo_until:
+      - date.today() <= promo_until (inclusive, see ResolvedModel.
+        promo_active's docstring for the boundary-day rationale): returns
+        the entry's own (promotional) rates, promo_active=True.
+      - date.today() > promo_until and standard_rate is published: returns
+        standard_rate's rates instead -- automatic, no manual table edit.
+        promo_active=False, standard_rate_unknown=False.
+      - date.today() > promo_until and standard_rate is NOT published:
+        returns the entry's last-known (promotional) rates rather than
+        fabricating a post-promo number, with standard_rate_unknown=True
+        so callers surface a loud warning.
+      - An unparseable promo_until is treated as standard_rate_unknown=True
+        with promo_active held True -- fail closed: never silently
+        auto-switch off a date that couldn't be parsed.
+    """
+    promo_until = entry.get("promo_until")
+    if not promo_until:
+        return entry["input_usd_per_mtok"], entry["output_usd_per_mtok"], False, False
+
+    try:
+        promo_until_date = date.fromisoformat(promo_until)
+    except ValueError:
+        return entry["input_usd_per_mtok"], entry["output_usd_per_mtok"], True, True
+
+    promo_active = date.today() <= promo_until_date
+    standard_rate = entry.get("standard_rate")
+
+    if promo_active or standard_rate is None:
+        return (
+            entry["input_usd_per_mtok"],
+            entry["output_usd_per_mtok"],
+            promo_active,
+            standard_rate is None,
+        )
+
+    return standard_rate["input_usd_per_mtok"], standard_rate["output_usd_per_mtok"], False, False
+
+
+def effective_prices(prices: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Returns `prices` with every model entry's input_usd_per_mtok/
+    output_usd_per_mtok rewritten to its EFFECTIVE (promo-aware) rate for
+    "today" -- see _effective_rates.
+
+    This is the dict real pricing call sites must hand to tracegauge's
+    compute_session_cost/compute_turn_cost (via _adapter.price_digest,
+    which calls this internally -- Phase 3 B2), because that engine reads
+    prices["models"][key]["input_usd_per_mtok"] straight off whatever dict
+    it's given (confirmed by reading tes/cost.py directly) with zero
+    knowledge of promo_until/standard_rate -- the automatic promo-expiry
+    switch has to happen here, before the dict is handed over, not inside
+    tracegauge's own engine.
+
+    Returns a new dict (top level shallow-copied, each model entry
+    shallow-copied) -- never mutates the cached table in place, so this can
+    be called freshly every time pricing actually happens (same principle
+    as is_stale/ResolvedModel.promo_active: always evaluated against
+    date.today() at call time, never baked in at process-cache-load time).
+    """
+    if prices is None:
+        prices = load_gemini_prices()
+
+    effective_models: dict[str, Any] = {}
+    for model_key, entry in prices["models"].items():
+        input_rate, output_rate, _, _ = _effective_rates(entry)
+        new_entry = dict(entry)
+        new_entry["input_usd_per_mtok"] = input_rate
+        new_entry["output_usd_per_mtok"] = output_rate
+        effective_models[model_key] = new_entry
+
+    effective = dict(prices)
+    effective["models"] = effective_models
+    return effective
+
 
 def _entry_to_resolved(model_key: str, entry: dict[str, Any]) -> ResolvedModel:
+    input_rate, output_rate, promo_active, standard_rate_unknown = _effective_rates(entry)
+    standard_rate = entry.get("standard_rate")
     return ResolvedModel(
         model_key=model_key,
-        input_usd_per_mtok=entry["input_usd_per_mtok"],
-        output_usd_per_mtok=entry["output_usd_per_mtok"],
+        input_usd_per_mtok=input_rate,
+        output_usd_per_mtok=output_rate,
         note=entry.get("note", ""),
         fetched_on=entry.get("fetched_on", ""),
         source_url=entry.get("source_url", ""),
         long_context_threshold_tokens=entry.get("long_context_threshold_tokens"),
         long_context_model_key=entry.get("long_context_model_key"),
+        promo_until=entry.get("promo_until"),
+        promo_active=promo_active,
+        standard_rate_unknown=standard_rate_unknown,
+        standard_rate_input_usd_per_mtok=(standard_rate or {}).get("input_usd_per_mtok"),
+        standard_rate_output_usd_per_mtok=(standard_rate or {}).get("output_usd_per_mtok"),
     )
 
 
@@ -410,7 +568,9 @@ __all__ = [
     "ASSUME_LOCAL_ENV_VAR",
     "LOCAL_MODEL_KEY",
     "PRICE_TABLE_ENV_VAR",
+    "PROMO_EXPIRY_WARNING_DAYS",
     "ResolvedModel",
+    "effective_prices",
     "is_local_model",
     "is_local_model_asserted",
     "known_model_keys",

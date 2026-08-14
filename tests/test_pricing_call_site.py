@@ -12,6 +12,15 @@ so a second real caller could exist without reintroducing the bug. This
 test asserts no call site can bypass that wrapper -- it greps the actual
 source tree rather than trusting a code review comment to stay true
 forever.
+
+Phase 3 B2: price_digest now wraps the caller's `prices` through
+_pricing.effective_prices (the promo-expiry auto-switch -- see that
+function's docstring for why the rewrite has to happen here, since
+tracegauge's own compute_session_cost reads promo-unaware raw rates
+straight off whatever dict it's given) before calling compute_session_cost.
+The guard below was updated accordingly -- it still asserts the value fed
+to compute_session_cost's `prices=` kwarg is derived from the caller's own
+`prices` argument, not a re-fetched default or a hardcoded table.
 """
 
 from __future__ import annotations
@@ -42,9 +51,19 @@ def test_compute_session_cost_is_called_from_exactly_one_place():
 
     (rel_path, _lineno, call_line) = call_sites[0]
     assert rel_path.name == "_adapter.py"
-    assert "prices=prices" in call_line, (
+    # Phase 3 B2: the sole call site now wraps the caller's `prices` through
+    # effective_prices (applying the promo-expiry auto-switch) before handing
+    # it to compute_session_cost -- still derived from the CALLER's own
+    # `prices` argument, never a re-fetched default or a hardcoded table, so
+    # this doesn't reintroduce the original bug (see module docstring). The
+    # exact wrapping literal is asserted, not just "prices" appearing
+    # somewhere in the line, so a future edit that quietly drops the
+    # effective_prices() promo-switch (or drops the caller's own `prices`
+    # argument) still fails this guard.
+    assert "prices=effective_prices(prices)" in call_line, (
         "the sole call site must forward the required `prices` kwarg through "
-        f"unchanged, not a default or a differently-named variable: {call_line}"
+        "effective_prices() unchanged from the caller's own argument, not a "
+        f"default, a differently-named variable, or a bypassed switch: {call_line}"
     )
 
 
