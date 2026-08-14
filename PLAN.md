@@ -18,8 +18,18 @@ significant cost regression.
 - C6: OTel export ranks below gate work; deferred to Phase 3 per kickoff.
 
 ## Work items (sequenced — most share files, executed in dependency order on one branch)
-- [ ] W1 — Price correctness (P0, do first): schema audit, live pricing diff, tiering/cache-read/batch
+- [x] W1 — Price correctness (P0, do first): schema audit, live pricing diff, tiering/cache-read/batch
       discount checks, fixes, staleness guard + rationale field, price-freshness.yml CI, tests.
+      DONE 2026-08-14, commit 7107527. Findings: gemini-3.6-flash was priced at the wrong (post-promo)
+      rate; 3 models missing entirely (gemini-3.7-flash, gemini-3.1-flash-lite, gemini-3.1-pro-preview);
+      long-context tiering (>200k tokens) existed and was unmodeled for gemini-2.5-pro/gemini-3.1-pro-preview
+      -- now modeled via resolve_model_for_call + synthetic "<model>-long-context" table entries;
+      thoughts_token_count and tool_use_prompt_token_count were silently dropped (undercounting) -- thoughts
+      now folded into output cost, tool_use_prompt refused (fails closed, no verified rate). Cache-read
+      (0.1x) and batch-out-of-scope were re-verified and found already correct. STALE_THRESHOLD_DAYS
+      180->90. price_as_of now in every rationale. 67->97 tests passing, 99% coverage. Full diff table and
+      per-row verification tags in the session report (not yet written to docs/audit/PHASE2_REPORT.md --
+      that's the final wrap-up item at the bottom of this file, still open).
 - [ ] W2 — Threshold gate (fixes P0/D1): CostEfficiencyEvaluator redesigned to return real PASSED/FAILED,
       no path resolves to NOT_EVALUATED. Depends on W1 (price_as_of in rationale).
 - [ ] W3 — Multi-provider pricing (promoted): Claude/GPT price entries, local models → cost 0.0 + PASSED,
