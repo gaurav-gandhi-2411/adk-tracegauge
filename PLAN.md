@@ -1976,3 +1976,173 @@ version-dependent license claim) doesn't hold as a reason to fork a package GG o
       the licensing verification in S2.4, which required no fix). `git status` confirmed clean in
       both repos before and after. Zero paid API calls, zero `ANTHROPIC_API_KEY`. No subagent/fork
       dispatched at any point in either S2 or S3, per instruction.
+
+- [x] S4 -- Assess and fix the shipped default's real false-positive rate (Phase 4 R4.4 measured
+      ~3.93% at n=30/confidence=0.95, above the nominal 2.5%). DONE 2026-08-15. No subagent/fork
+      dispatched at any point, per instruction.
+
+      **4.1 -- Assessment: NOT acceptable.** A ~4% false-positive rate on a CI gate means roughly
+      1 in 25 genuinely clean runs fails the build for no real reason. For a tool whose entire
+      value proposition is being a *trustworthy* CI gate, this is a real product-credibility
+      failure, not only a statistics one -- a gate that cries wolf this often trains its users to
+      either ignore its failures ("probably just noise, re-run it") or disable it outright, both
+      of which destroy the actual product value (catching REAL regressions) regardless of how
+      statistically sound the underlying bootstrap is. Stated plainly before any further
+      measurement: this needed fixing, not just documenting more honestly.
+
+      **4.2 -- Full alpha x n x effect grid, 90 cells, 500 trials/cell (45,000 simulated `check`
+      verdicts).** `scripts/measure_regression_alpha_grid.py` (new, permanent, reuses Phase 3
+      B4/Phase 4 R4's exact generator: i.i.d. `max(0.0001, Gauss(mean, sd))`, mean=$0.010,
+      sd=$0.0015, sd scaling `sd*(1+effect)` under a true effect -- NOT a new distribution).
+      alpha<->confidence mapping verified by direct code read (`_one_sided_alpha`), not guessed:
+      this module's CI is two-sided at `confidence`, its LOWER bound used one-sided, so true
+      one-sided alpha = `(1-confidence)/2` -> `confidence = 1 - 2*alpha`. alpha=0.025->confidence
+      0.95 (old default), alpha=0.01->0.98, alpha=0.005->0.99. `min_n` forced to 2 and
+      `min_effect_usd`/`min_effect_pct` forced to 0.0 for every cell (isolates the underlying
+      bootstrap test's statistical behavior, same convention as B4's own grid -- a real `check`
+      run with default floors is at most as good as these numbers). `n_boot` reduced 10,000->1,000
+      for this survey, validated FIRST (not reused from B4's own validation, since a new dimension
+      -- tight alpha -- is now in play): 150 trials/cell at 4 cells spanning the riskiest
+      combinations (smallest n, tightest alpha) -- n=25/10%eff/alpha=0.025 (B4's own borderline
+      cell): 145/150=96.7% agreement with n_boot=10,000; n=10/0%eff/alpha=0.005: 150/150=100%;
+      n=50/10%eff/alpha=0.005: 146/150=97.3%; n=30/0%eff/alpha=0.01: 150/150=100% -- all
+      comfortably matching or exceeding B4's own 97.3% bar, n_boot=1,000 trusted for this survey.
+      For a FIXED (n, effect, trial), the SAME underlying data and bootstrap resample seed are
+      reused across all 3 alpha levels (confirmed by code read: `confidence` only selects which
+      percentile of the SAME resampled-diffs array is returned -- the resampling itself doesn't
+      depend on `confidence`) -- still >=500 GENUINE independent trials per cell, but a matched
+      (not independently-noisy) comparison across alpha at fixed (n, effect), which is a strictly
+      STRONGER design for 4.3's power-cost extraction, not a weaker one. Wall-clock: 906.0s
+      (~15 min). Raw grid persisted to `reports/alpha_grid_s4.json` (provenance artifact, rule
+      65b).
+
+      **FULL MEASURED GRID** (detection rate = fraction of 500 trials firing
+      `statistically_significant`; the 0% column is the false-positive rate at that (alpha, n)):
+
+      one-sided alpha=0.025 (confidence=0.95, the OLD default):
+
+      | n\effect% | 0% | 5% | 10% | 25% | 50% |
+      |---|---|---|---|---|---|
+      | 10 | 0.036 | 0.136 | 0.364 | 0.952 | 1.000 |
+      | 25 | 0.032 | 0.240 | 0.646 | 1.000 | 1.000 |
+      | 30 | 0.020 | 0.254 | 0.728 | 1.000 | 1.000 |
+      | 50 | 0.028 | 0.358 | 0.912 | 1.000 | 1.000 |
+      | 100 | 0.016 | 0.630 | 0.994 | 1.000 | 1.000 |
+      | 250 | 0.024 | 0.960 | 1.000 | 1.000 | 1.000 |
+
+      one-sided alpha=0.01 (confidence=0.98, the NEW shipped default):
+
+      | n\effect% | 0% | 5% | 10% | 25% | 50% |
+      |---|---|---|---|---|---|
+      | 10 | 0.022 | 0.084 | 0.276 | 0.888 | 1.000 |
+      | 25 | 0.012 | 0.142 | 0.514 | 1.000 | 1.000 |
+      | 30 | 0.012 | 0.162 | 0.584 | 1.000 | 1.000 |
+      | 50 | 0.016 | 0.248 | 0.834 | 1.000 | 1.000 |
+      | 100 | 0.004 | 0.484 | 0.990 | 1.000 | 1.000 |
+      | 250 | 0.006 | 0.894 | 1.000 | 1.000 | 1.000 |
+
+      one-sided alpha=0.005 (confidence=0.99, considered and rejected -- see 4.4):
+
+      | n\effect% | 0% | 5% | 10% | 25% | 50% |
+      |---|---|---|---|---|---|
+      | 10 | 0.014 | 0.064 | 0.230 | 0.846 | 1.000 |
+      | 25 | 0.008 | 0.092 | 0.436 | 0.992 | 1.000 |
+      | 30 | 0.006 | 0.126 | 0.488 | 1.000 | 1.000 |
+      | 50 | 0.008 | 0.202 | 0.762 | 1.000 | 1.000 |
+      | 100 | 0.002 | 0.374 | 0.974 | 1.000 | 1.000 |
+      | 250 | 0.000 | 0.846 | 1.000 | 1.000 | 1.000 |
+
+      **4.3 -- Power cost of each alpha at n=30 and n=50, for 10%/25%/50% effects** (extracted
+      directly from the grid above):
+
+      | n | effect | alpha=0.025 (0.95) | alpha=0.01 (0.98) | alpha=0.005 (0.99) | cost: 0.95->0.98 | cost: 0.95->0.99 |
+      |---|---|---|---|---|---|---|
+      | 30 | 10% | 72.8% | 58.4% | 48.8% | -14.4 pts | -24.0 pts |
+      | 30 | 25% | 100.0% | 100.0% | 100.0% | 0 | 0 |
+      | 30 | 50% | 100.0% | 100.0% | 100.0% | 0 | 0 |
+      | 50 | 10% | 91.2% | 83.4% | 76.2% | -7.8 pts | -15.0 pts |
+      | 50 | 25% | 100.0% | 100.0% | 100.0% | 0 | 0 |
+      | 50 | 50% | 100.0% | 100.0% | 100.0% | 0 | 0 |
+
+      The entire power cost of tightening alpha is concentrated in the 10%-effect column -- 25%
+      and 50% true regressions saturate at 100% detection under every alpha tested, at both n. At
+      `n=30` (`min_n` itself), power for a 10% effect never clears 80% under ANY alpha tested,
+      including the OLD default (72.8%) -- consistent with Phase 3 B4's own finding that `n=30`
+      alone was never a reliable-power point; this is not a new weakness introduced by this item.
+
+      **4.4 -- Recommended default: `confidence=0.98` (one-sided alpha=0.01), changed from
+      `0.95`.** Two explicit constraints, both measured, neither eyeballed:
+
+      1. Real shipped-configuration FPR (real floors, real `n_boot=10,000`, `n=30`, 500 trials x 2
+         independent seed bases, `scripts/measure_shipped_default_fpr.py`, new, permanent) at or
+         under ~2% (a defensible correction below the originally-intended nominal 2.5%, for safety
+         margin). MEASURED: confidence=0.95 (old): 23/500=4.60% + 21/500=4.20%, combined
+         **44/1000=4.4%** (reproduces Phase 4 R4.4's 4.60%/4.20% exactly with real `n_boot=10,000`
+         -- not a fluke). confidence=0.98 (new): 13/500=2.60% + 10/500=2.00%, combined
+         **23/1000=2.3%** -- within sampling noise of the ~2% target (combined-1000-trial standard
+         error ~0.9 points at 2 SE) and a >45% real reduction. confidence=0.99: 9/500=1.80% +
+         7/500=1.40%, combined **16/1000=1.6%** -- clears the target with more margin.
+      2. Power for a 10% true regression at `n=50` must not collapse. Floor set at **80%**,
+         explicitly justified by reusing this SAME codebase's own already-established
+         `ACHIEVED_POWER_TARGET` "reliable detection" convention (Phase 4 R4) rather than inventing
+         a new number. MEASURED (4.3's own table): confidence=0.95: 91.2%; confidence=0.98:
+         **83.4% (clears 80%)**; confidence=0.99: **76.2% (does NOT clear 80% -- a real collapse
+         by this project's own definition of "reliable")**.
+
+      confidence=0.99 was REJECTED specifically because it fails constraint 2, despite doing best
+      on constraint 1 -- tightening alpha always trades FPR for power, and 0.99 spends too much
+      power (n=50/10%-effect power drops a further 7.2 points past 0.98, for only 0.7 additional
+      points of FPR reduction, a poor trade at the margin). confidence=0.98 is the point that
+      clears both stated constraints. **Implemented**: `_regression.py`'s `DEFAULT_CONFIDENCE`
+      changed `0.95` -> `0.98`, with a docstring recording the full grid summary and rationale
+      (self-contained, doesn't require reading this PLAN.md entry to understand the choice).
+      `_cli.py`'s `--confidence` default follows automatically (imports the constant, no
+      hardcoded duplicate). README's Quickstart output, `examples/03_ci_regression_gate.py`'s
+      docstring, and `docs/ci-snippet.md` all re-captured/updated against the NEW real default
+      (real subprocess re-run, not hand-edited numbers) -- CI bounds widen slightly
+      (`[+0.001019, +0.001801]` vs the old `[+0.001085, +0.001744]`), achieved-power figure moves
+      `$0.000474/5.53%` -> `$0.000536/6.25%`, mean/effect unchanged (same generator/seed). README's
+      "Known limitations" section gained an explicit new bullet stating the FPR/power tradeoff in
+      prose, not just in a CHANGELOG entry, per this item's own requirement. `CHANGELOG.md`'s
+      Unreleased/Changed section documents this as a real behavior-affecting default change (any
+      caller not overriding `--confidence` sees different verdicts on borderline cases), with an
+      explicit escape hatch (`--confidence 0.95` for the old behavior).
+
+      **4.5 -- Practical-significance floor still independent; its own contribution measured.**
+      Re-read `evaluate_regression`/`evaluate_regression_paired` directly (not assumed from
+      memory): `statistically_significant` and `practically_significant` are computed
+      independently (`ci_lower > 0.0` vs. `abs(effect_usd) >= min_effect_usd or abs(effect_pct) >=
+      min_effect_pct`), then AND'd (`is_regression = statistically_significant and
+      practically_significant`) -- unchanged by this work item, confirmed still a real,
+      independent, two-question gate exactly per Phase 2/3's original design. **The floor's own
+      contribution, measured** (via `measure_shipped_default_fpr.py`'s STATISTICAL-ONLY vs. FULL
+      SHIPPED CONFIG branches, same generator, `n=30`, real `n_boot=10,000`, both confidence
+      levels): at BOTH confidence=0.95 and confidence=0.98, the statistical-only FPR (floors
+      disabled) is IDENTICAL, seed-for-seed, to the full-config FPR (floors enabled) -- 23/500 and
+      21/500 at 0.95; 13/500 and 10/500 at 0.98. **The default practical floor contributes ZERO
+      additional false-positive suppression at this n/variance combination**, at either the old or
+      the new confidence level -- confirming Phase 4 R4.4's own mechanism finding (the 5%-relative
+      floor sits only ~1.3 sampling standard errors from zero at `n=30`'s variance, too close to
+      filter any of the statistically-significant noise that slips through) generalizes across the
+      alpha change, not just the one confidence level it was originally observed at. This is
+      recorded as a permanent regression test
+      (`tests/test_regression.py::test_practical_floor_contributes_no_extra_fpr_suppression_at_shipped_defaults`),
+      not just a one-off measurement.
+
+      **Tests**: 357 -> 360 (+3: `test_default_confidence_is_098_per_s4_alpha_grid_decision`,
+      `test_default_confidence_corresponds_to_one_sided_alpha_of_one_percent`,
+      `test_practical_floor_contributes_no_extra_fpr_suppression_at_shipped_defaults`), 99%
+      coverage (`_regression.py` itself 100%, same 3 pre-existing uncovered lines elsewhere as
+      Phase 4, unrelated to this item). 3 pre-existing tests in `tests/test_regression_power.py`
+      initially broke (199/200 instead of 200/200 on a case-correlated 10%-effect cell) because
+      they implicitly relied on the module's `DEFAULT_CONFIDENCE` rather than pinning a value --
+      fixed by pinning them to an explicit `_HISTORICAL_CONFIDENCE=0.95` (documented as
+      intentional: those tests reproduce a SPECIFIC historical Phase 3 B4/Phase 4 R2 measurement
+      cited elsewhere in this file and in module docstrings, not "the current shipped default's
+      behavior" -- decoupling them from future `DEFAULT_CONFIDENCE` changes is the correct fix, not
+      a workaround) -- all 6 reproduce their originally-documented numbers exactly once pinned.
+      `test_cli.py`'s hardcoded-default test updated (`0.95` -> `0.98`). `ruff check`/`ruff format
+      --check`/`mypy src/` all clean. Final full-suite run: 360 passed, 99% coverage, 134.6s.
+      `git status` clean after commit. Not pushed, not tagged, not published. Zero paid API calls,
+      zero `ANTHROPIC_API_KEY` -- pure local stdlib statistics throughout, per this work item's
+      zero-cost constraint.
