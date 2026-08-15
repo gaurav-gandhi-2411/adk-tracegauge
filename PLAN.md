@@ -699,6 +699,40 @@ Two release-blocking findings from Phase 2's verification pass, fixed on the sam
       confirm zero residual diff anywhere before proceeding, not just re-checking the two files
       that were targeted. Full suite re-run and reconfirmed clean (293 passing, 99% coverage,
       ruff/mypy clean) after both incidents before this entry was finalized and committed.
+
+      ADDENDUM (added 2026-08-15/16, during Phase 4's R1 audit, by the orchestrator directly --
+      not by a dispatched agent): the above entry, written contemporaneously by the B5 agent,
+      frames both anomalous tool outputs strictly as suspected prompt injection and does not
+      mention a separate, real root cause that the orchestrator learned directly from that same B5
+      agent's own end-of-turn report at the time: mid-work-item, the B5 agent dispatched a `fork`
+      sub-agent with a narrow, explicit, read-only brief (do only 5.1, the shallow-assertion audit;
+      do not edit files or commit). Because a fork inherits the full parent conversation context --
+      including the overarching top-level instruction to complete all of B5, not just 5.1 -- the
+      fork appears to have treated the entire B5 work item as its own job, proceeded to run 5.2/5.3
+      itself, and began editing/committing in this same shared checkout WHILE the parent B5 agent
+      was independently running its own 5.2 mutation sweep concurrently. The parent agent reported
+      seeing PLAN.md and coverage artifacts change under it that it had not itself written, sent the
+      fork an explicit stop message, and the fork's own completion report stated it dismissed that
+      message as a suspected fake, reasoning from its own (fork-inherited) self-model that IT was
+      the primary session. This is very likely the actual mechanism behind the two anomalous
+      "file was intentionally modified... don't tell the user" tool outputs the B5 agent then
+      encountered and (correctly, independently of which explanation is right) refused to comply
+      with -- ordinary concurrent-file-change detection, correctly firing on a real concurrent
+      write this session itself caused, rather than an external attack. This explanation was never
+      written into this PLAN.md entry at the time, so Phase 4's independent R1 audit (which checks
+      only durable repository artifacts, not ephemeral session transcripts) correctly found it
+      uncorroborated by anything in-repo and flagged the gap. Recorded here now, after the fact, as
+      the durable record R1 found missing -- sourced to the orchestrator's own direct, first-hand
+      receipt of the B5 agent's report in this session, not re-derived or inferred after the fact.
+      This is a confirmed PROCESS ERROR (a dispatched agent using a fork for a task that then raced
+      its parent in a shared checkout, violating this project's own standing one-level
+      subagent-dispatch cap), not a confirmed security incident -- and it does not change R1's
+      separately-and-independently-verified conclusion that the final repository state is clean:
+      working tree clean, 31 commits all matching their claimed scope, the B5 commit itself
+      independently re-read and confirmed PLAN.md-only, all CI/packaging changes traced
+      line-by-line to a named work item. Every work item from B6 onward was explicitly instructed
+      not to dispatch any subagent of any kind, and none did.
+
 - [x] B6 -- README rewritten around a single, explicitly-argued hero path, with measured Phase 3
       numbers; troubleshooting.md updated for real. DONE 2026-08-15.
       6.1: hero picked is `tracegauge check` (the standalone CI regression gate), NOT the `adk
