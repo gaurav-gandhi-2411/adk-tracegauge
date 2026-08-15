@@ -1588,3 +1588,59 @@ re-duplicated here.
       this rewritten page now documents -- required threshold, `tracegauge check`, `--mode paired`
       keyed on `eval_case_id`, no external `tracegauge` dependency) is actually live on PyPI; PyPI
       currently still serves 0.2.0, which has none of this. Recorded as a numbered ROUTE-TO-GG item.
+
+## Phase 5
+
+Same branch (`feat/cost-regression-gate`), same rules. Prompted by a re-examination of Phase 4's
+R5 decision to fork the pricing arithmetic out of `tracegauge` -- the stated justification (a
+version-dependent license claim) doesn't hold as a reason to fork a package GG owns outright.
+
+- [x] S1 -- Blocking, done first: checked whether `tracegauge` (source repo:
+      `C:\Users\gaura\ml-projects\token-efficiency-scorer`, import name `tes`, live on PyPI at
+      0.10.1, last commit 2026-08-13) ships wrong dollar amounts TODAY, for real installs,
+      independent of anything in adk-tracegauge. DONE 2026-08-16, read-only (no fixes made in
+      either repo this item). Downloaded and diffed the actual published PyPI wheel against the
+      local checkout (byte-identical modulo CRLF) before trusting any finding against it --
+      confirms every result below reflects what a real `pip install tracegauge` gets today.
+
+      **CONFIRMED, independently re-verified: `tracegauge` has no price-table entries for
+      `claude-opus-5`/`claude-sonnet-5` -- the current Claude flagship models, and (since
+      `tracegauge`'s whole purpose is scoring Claude Code sessions) very likely the MAINLINE case
+      for real usage today, not an edge case.** Both fall through to a hardcoded
+      `default_model="claude-sonnet-4-6"` ($3/$15/Mtok). Real Sonnet-5 rate $2/$10/Mtok -> every
+      real Sonnet-5 call is overcharged 50%. Real Opus-5 rate $5/$25/Mtok -> every real Opus-5 call
+      is undercharged to 60% of true cost. A partial `[APPROXIMATE]` flag exists in `tes/report.py`
+      but is absent from `tes/cli.py` (the primary CLI surface) and never states direction or
+      magnitude even where it does appear.
+
+      **CONFIRMED: `tracegauge` never captures server-side tool billing** (e.g. Claude's web
+      search tool, $10/1,000 searches) -- `tes/adapt.py`'s usage parser reads only 4 token-count
+      fields, no `server_tool_use`-equivalent anywhere in the codebase. Silently dropped, zero
+      warning of any kind (worse than the model-default case, which at least partially flags).
+
+      **CONFIRMED: no staleness-guard mechanism exists at all** -- `as_of` is read only for a
+      display string, never compared against the current date; no `price-freshness.yml` analog in
+      `token-efficiency-scorer`'s own `.github/workflows/`. Table is 67 days stale with zero CI
+      signal, ever, unlike adk-tracegauge's own W1-built 90-day guard.
+
+      Cache-read/write multipliers and all 9 non-retired Claude model rates present in the table
+      were independently re-verified against the live `platform.claude.com/docs/en/about-claude/
+      pricing` page and found CORRECT, no fix needed there. Long-context tiering and thinking-token
+      handling were confirmed genuinely NOT APPLICABLE to Claude's current pricing model (Claude
+      doesn't tier by context length; thinking tokens already bill as part of `output_tokens`) --
+      those two adk-tracegauge (Gemini-specific) findings simply don't transfer.
+
+      **Classified as a published-package correctness incident, separate from and prior in
+      priority to the adk-tracegauge release** (which, per Phase 4 R5, already removed its
+      dependency on `tracegauge` entirely and is unaffected -- but real, independent `tracegauge`
+      users are not). Usage signal (pypistats, treated as an upper bound per its own mirror/CI
+      caveat): 169 downloads/week, 10 releases since 2026-06-07 -- actively maintained, actively
+      installed, not dormant. **Recommendation: patch release, `0.10.2`, fixing the model-table gap
+      and the server-tool-billing gap** -- not a yank (does nothing for users who already have
+      0.10.1 installed, disrupts anyone pinned to a `&gt;=0.10.0,&lt;0.11.0`-style range for no
+      corrective benefit, no crash/data-loss/security failure mode that would justify it over
+      patching) and not ship-as-is-with-a-note (the mainline-default-model finding means "known
+      issue" would leave the tool wrong for most real sessions by default). Not implemented this
+      item -- read-only mandate, reported for a human decision. Both the primary and the
+      independent-verifier pass CONFIRMED every one of the 5 checked claims with zero
+      contradictions -- see the session reports for the full per-claim evidence chain.
