@@ -2587,3 +2587,248 @@ at kickoff, not re-litigated this phase.
       coverage, `_regression.py` itself 100% (unchanged). `ruff check`: all checks passed.
       `ruff format --check`: 47 files already formatted. `mypy src/`: success, no issues, 11
       source files. `uv.lock` unchanged (no dependency change).
+
+- [x] T5 -- FINAL work item, closes the entire multi-phase build. Version bump, full 4-version
+      suite against live google-adk, fresh-wheel re-verification, package-content inspection,
+      adk-docs consistency check, and the final two-train ROUTE-TO-GG list. DONE 2026-08-15,
+      same branch, `adk-tracegauge` side plus one commit in `adk-docs`.
+
+      **5.1 -- version bump + CHANGELOG.** `pyproject.toml` bumped `0.2.0` -> `0.3.0`.
+      `CHANGELOG.md`'s `[Unreleased]` section moved to a dated `[0.3.0] -- 2026-08-15` entry.
+      Cross-checked the pre-existing `[Unreleased]` content against `git log main..HEAD` (54
+      commits) and all 5 phase reports -- found it was NOT a complete summary, just whatever
+      had accumulated from Phase 2 plus a few later additions. **6 real gaps found and
+      filled**, each a genuine shipped capability/behavior change with zero CHANGELOG mention:
+      (1) Phase 3 B1's `ADK_TRACEGAUGE_ASSUME_LOCAL` opt-in requirement (the local-model Added
+      bullet still described the pre-B1 no-opt-in behavior); (2) Phase 3 B2's promotional-
+      pricing auto-expiry (`promo_until`/`standard_rate`); (3) `price-freshness.yml`'s CI job
+      itself (only its later `STALE_THRESHOLD_DAYS` tightening was mentioned, not its
+      existence); (4) Phase 3 B4/Phase 4 R2's `--mode {auto,two-sample,paired}` paired-
+      comparison gate -- a major CLI feature, completely unmentioned; (5) Phase 4 R4's
+      real-time achieved-power/MDE reporting -- the exact feature the README's own Quickstart
+      block leads with, absent from the changelog; (6) Phase 4 R7's wheel-only install
+      smoke-test CI job. Also updated the stale "three runnable...scripts" `examples/` bullet
+      to four (missed `04_paired_mode_via_adk_eval_cli.py`, added Phase 4 R2). Everything else
+      in the pre-existing `[Unreleased]` content (confidence retune, breaking threshold
+      requirement, multi-provider pricing, tracegauge dependency removal, console-script
+      rename, tiering/thinking-token/tool-token billing fixes) was already present and
+      accurate -- confirmed by reading each bullet against its cited phase work, not assumed
+      complete because it was already there.
+
+      **5.2 -- full suite, 4 Python versions, live google-adk.** PyPI JSON API confirmed the
+      live `google-adk` release is still `2.7.0` (`https://pypi.org/pypi/google-adk/json`,
+      `info.version`) -- same version Phase 2 W6/Phase 4 R7 already verified against, not a
+      new release to chase. Scratch venvs at `C:\Users\gaura\tmp\t5\v{310,311,312,313}` (short
+      paths, per the repeated Windows `MAX_PATH` lesson from Phase 2 W6/`RELEASING.md`'s own
+      documented trap) via `uv sync --frozen --python X` + `UV_PROJECT_ENVIRONMENT` redirect,
+      then `uv pip install --no-deps "google-adk[eval]==2.7.0"` over the locked base
+      (2.6.3 -> 2.7.0, same tolerate-the-pin-conflict pattern as Phase 2 W6.2):
+
+      | Python | Result | Coverage |
+      |---|---|---|
+      | 3.10.20 | 365/365 passed | 99% (identical per-file breakdown) |
+      | 3.11.15 | 365/365 passed | 99% (identical per-file breakdown) |
+      | 3.12.12 | 365/365 passed | 99% (identical per-file breakdown) |
+      | 3.13.5 | 365/365 passed | 99% (identical per-file breakdown) |
+
+      Zero code changes required on any version. Identical `Missing` lines across all 4
+      (`_cli.py:382`, `evaluator.py:404`, `snapshot.py:281` -- all pre-existing, unrelated to
+      this phase).
+
+      **5.3 -- fresh-wheel pass, renamed console script.** Built the 0.3.0 wheel (`uv build`),
+      installed into a genuinely fresh venv (`C:\Users\gaura\tmp\t5\fresh2`, Python 3.11, no
+      `--no-deps`, full resolution) with no relationship to the repo, ran everything from
+      `C:\Users\gaura\tmp\t5\workdir`/`evalhistory`/`qs` (outside the repo). Confirmed only
+      `adk-tracegauge.exe` is installed (`entry_points.txt`: `adk-tracegauge =
+      adk_tracegauge._cli:main`, no stray `tracegauge` entry) -- T3's rename holds in a real
+      install. All 4 examples run and byte-identical to their documented output: 01 (PASSED at
+      $5.00, FAILED at $1.00, both real cost $2.80, exit 0 both times); 02 (`$0.565000`
+      rolled-up); 03 (two-sample REGRESSION, `mean_baseline=$0.008583 mean_current=$0.009998`,
+      98% CI, exit 1); 04 (paired mode via the real `adk eval` `cli_eval` command,
+      `key=eval_case_id`, 32/32 matched, exit 1). Literal installed `adk-tracegauge.exe`
+      (not `python -m`/`uv run`) exercised directly for every hero-path shape: two-sample PASS
+      (identical baseline/current, exit 0), two-sample via `docs/ci-snippet.md`'s exact
+      flagged command (`--confidence 0.98 --min-effect-usd 0.0001 --min-effect-pct 5.0
+      --min-n 30`, exit 0, all flags accepted), `--mode paired` explicit request against a
+      snapshot with no eval-history join (fail-closed `SystemExit`, real overlap count named,
+      exit 1), `--eval-history <path>` end to end (a fresh 32-case `adk eval` CLI run via
+      `cli_eval`, not example 04's process -- confirmed `adk-tracegauge snapshot
+      --eval-history` reports "32/32 record(s) resolved to a real eval_case_id", then `check
+      --mode paired` reproduced example 04's exact numbers: `mean_baseline=$0.005306
+      mean_current=$0.007106`, 98% CI, exit 1), README's literal Quickstart bash block
+      (3 commands, real exit 0 PASS, same deterministic entrypoint called twice), and the
+      insufficient-data path (10-invocation snapshot pair, real exit 3, achieved-power line
+      still printed). All 3 runnable `docs/troubleshooting.md` Python code blocks (entries 2,
+      3, 4 -- unknown model, missing threshold, Ollama Cloud gap) reproduced byte-identical
+      captured text. **Zero discrepancies found** -- the second fresh-wheel pass in this
+      project's history to find none (after Phase 5 S5; Phase 3 B7, Phase 4 R7, and Phase 4
+      R3 each found a real bug).
+
+      **5.4 -- build + package-content inspection.** `uv build` -> `dist/adk_tracegauge-
+      0.3.0-py3-none-any.whl` + `.tar.gz`. `python -m zipfile -l` on the wheel and `tar tzf`
+      on the sdist both confirm `data/gemini_prices.json` genuinely packaged (wheel:
+      `adk_tracegauge/data/gemini_prices.json`, 17,960 bytes; sdist:
+      `adk_tracegauge-0.3.0/src/adk_tracegauge/data/gemini_prices.json`) -- re-verified, not
+      skipped because Phase 4 R7/B7 already passed this check once. Wheel's
+      `entry_points.txt` extracted and confirmed: `[console_scripts]\nadk-tracegauge =
+      adk_tracegauge._cli:main` -- exactly one entry, the renamed one, no stray `tracegauge`.
+      `uvx twine check dist/*`: **PASSED** on both artifacts.
+
+      **5.5 -- adk-docs consistency check.** `C:\Users\gaura\ml-projects\oss-contrib\adk-docs`,
+      branch `docs/adk-tracegauge-integration`, confirmed 2 commits ahead of `origin` (Phase 4
+      R3's rewrite + Phase 6 T3's console-script rename), working tree clean before starting.
+      Read `docs/integrations/adk-tracegauge.md` in full (287 lines) and cross-checked every
+      command/number against the actual 0.3.0 package fresh-wheel-tested in 5.3 -- **one real
+      staleness bug found**: the paired-mode captured-output block (lines 190-198) still
+      showed `95% CI [+0.001800, +0.001800]` from Phase 4 R3's original capture, predating
+      Phase 5 S4's confidence retune (default `0.95` -> `0.98`) -- this page was never
+      re-captured after that retune landed, even though `adk-tracegauge`'s own README/
+      examples were. Re-verified live: wrote a standalone reproduction of the page's own
+      documented `--eval-history` mechanism (32-case eval set, two agent packages, real `adk
+      eval` CLI via `cli_eval`, `adk-tracegauge snapshot --eval-history` + `check --mode
+      paired`, all via the literal installed 0.3.0 console script from
+      `C:\Users\gaura\tmp\t5\evalhistory`, outside both repos) -- real output is byte-identical
+      to the page's block except `95%` -> `98%`
+      (`mean_baseline=$0.005306 mean_current=$0.007106`, `+0.001800 USD (+33.93%)`, exit 1, all
+      unchanged). Fixed the single stale label. Checked every other command/number on the page
+      for the same class of drift (the `google-adk[eval]>=2.6.0,<2.8.0` pin, the
+      `ADK_TRACEGAUGE_ASSUME_LOCAL` mention, the `adk eval` metric quickstart's `$0.05`
+      threshold example) -- all still accurate, this was the only stale spot. Confirmed the
+      page's own stated sequencing constraint is still present (in the commit message of
+      `bec0f440`, not the page body itself -- the constraint governs when to push the branch,
+      not reader-facing content) and still accurate: "this PR must not merge before an
+      adk-tracegauge release carrying the Phase 4 API (0.3.0 per CHANGELOG.md, not yet
+      published -- PyPI still serves 0.2.0) is actually live" -- true today, 0.3.0 is built and
+      tested but genuinely not published (per this work item's own zero-publish constraint).
+      Committed the fix locally (`4181f2b7`, not pushed, per the branch's own gating).
+      `git status` clean in `adk-docs` after.
+
+      **5.6 -- final two-train ROUTE-TO-GG list.** See below (kept as its own subsection,
+      not folded into prose, since it's the literal executable artifact this phase produces
+      for GG).
+
+      **Verification:** full suite re-run in the repo's own primary `.venv`
+      (`uv sync --frozen && uv run pytest tests/ -v --cov=adk_tracegauge
+      --cov-report=term-missing`): **365/365 passed, 99% coverage**, identical per-file
+      breakdown to 5.2's 4-version matrix. `ruff check`: all checks passed. `ruff format
+      --check`: 47 files already formatted. `mypy src/`: success, no issues, 11 source files.
+      `git status`: clean in both `adk-tracegauge` (after this item's commits) and `adk-docs`.
+      No subagent/fork dispatched at any point in this work item, per instruction.
+
+### Final two-train ROUTE-TO-GG list (T5 5.6 -- supersedes all prior phase reports' lists)
+
+Cross-checked against Phase 2/3/4/5's own ROUTE-TO-GG lists (`docs/audit/PHASE{2,3,4,5}_
+REPORT.md`) plus this phase's own new items. **Verified, not assumed, immediately before
+writing this list**: `gcloud`-equivalent checks aren't applicable here (no cloud infra), but
+the equivalent due-diligence was done -- `token-efficiency-scorer`'s `fix/0.10.2-pricing-
+defects` branch (commit `e67fe91`, off `docs/releasing`) re-confirmed live: `git branch
+--show-current` = `fix/0.10.2-pricing-defects`, `git log -1` = `e67fe91`, `git status` clean,
+`pyproject.toml` on the branch reads `0.10.2` while `origin/master` still reads `0.10.1`
+(genuinely unpublished). `oss-contrib/adk-python`'s two upstream branches
+(`fix/cost-metric-threshold-directionality` @ `c2131b70`, `fix/adk-eval-exit-code` @
+`32c8991d`) both still exist locally and neither appears in `gh pr list --repo
+google/adk-python --author gaurav-gandhi-2411 --state all` -- genuinely still unopened, not
+silently forgotten-but-actually-done.
+
+**Dependency between the two trains: NONE -- verified, not assumed.** Per Phase 4 R5,
+`adk-tracegauge` removed its `tracegauge` PyPI dependency entirely; re-confirmed this session
+by reading `pyproject.toml`'s current `dependencies` list (`google-adk[eval]` only, with an
+explanatory comment citing R5) and by the fact that 5.2's full 4-version suite and 5.3's
+fresh-wheel pass both ran clean with `tracegauge` not installed anywhere in any of the 5
+scratch venvs used this session. **The two trains can ship in either order, or concurrently,
+with zero coordination required.**
+
+#### Train 1: `tracegauge` 0.10.2 (T1's work, in `token-efficiency-scorer`)
+
+1. **Review the branch**: `cd C:\Users\gaura\ml-projects\token-efficiency-scorer`, review
+   `git diff docs/releasing..fix/0.10.2-pricing-defects` (or `git log docs/releasing..
+   fix/0.10.2-pricing-defects -p`). Success signal: the diff matches Phase 6 T1's documented
+   scope (fail-closed `_resolve_model`, `claude-opus-5`/`claude-sonnet-5`/`claude-fable-5`/
+   `claude-mythos-5` price entries, minimum-viable staleness guard, `[NOT PRICED: ...]`
+   server-tool warning, `pyproject.toml`/`CHANGELOG.md` at `0.10.2`) -- nothing more, nothing
+   less.
+2. **Confirm the version landed correctly** (per this repo's own `RELEASING.md` "tag-must-
+   match-pyproject" gotcha): `grep "^version" pyproject.toml` on the branch reads `0.10.2`;
+   also check `tests/test_packaging.py`'s hardcoded `test_package_name_is_tracegauge`
+   assertion for the same string (`RELEASING.md`'s own documented third place versions hide).
+   Success signal: both say `0.10.2`.
+3. **Push and open a PR**: `git push -u origin fix/0.10.2-pricing-defects`, then `gh pr
+   create --repo gaurav-gandhi-2411/token-efficiency-scorer --base docs/releasing --head
+   fix/0.10.2-pricing-defects --title "fix(cost): stop silently mispricing unresolved/
+   missing-model calls" --body-file <path-to-e67fe91's-full-commit-message-or-PLAN.md's-
+   Phase-6-T1-entry>`. **Check first whether `docs/releasing` or `master`/`main` is the
+   actual current default/release branch** (T1's own branch was cut from `docs/releasing`,
+   not `master` -- confirm this is intentional and current before opening against it, not
+   copied blindly). Success signal: PR opens, CI (`ci.yml`) green.
+4. **Merge** (human merge -- this branch spans a real pricing-correctness fix touching
+   billing-relevant code, outside CC's own rule-70a auto-merge scope regardless of size).
+5. **Tag and push**: `git checkout master && git pull` (or `docs/releasing` if that's
+   confirmed the real release branch per step 3), `git tag v0.10.2`, `git push origin
+   v0.10.2`. Success signal: `release.yml` triggers.
+6. **Confirm the real publish, not just a green checkmark** (per `RELEASING.md`'s own explicit
+   warning): `gh run list --repo gaurav-gandhi-2411/token-efficiency-scorer --workflow
+   release.yml --limit 1`, then `gh run view <run-id> --repo gaurav-gandhi-2411/
+   token-efficiency-scorer --log | grep -A1 "View at"`. Success signal: a Sigstore
+   "Successfully verified SCT..." line and `View at: https://pypi.org/project/tracegauge/
+   0.10.2/`.
+7. **Post-publish verify from a fresh SHORT-path venv** (per `RELEASING.md`'s own documented
+   Windows `MAX_PATH` trap): `uv venv --python 3.11 C:\tg-verify`, `uv pip install --no-cache
+   tracegauge==0.10.2 --index-url https://pypi.org/simple/ --python
+   C:\tg-verify\Scripts\python.exe`, `C:\tg-verify\Scripts\tes.exe --version` (expect
+   `0.10.2`), confirm both `LICENSE`/`LICENSE-APACHE` ship in the dist-info. Success signal:
+   version matches, both license files present, no `ModuleNotFoundError`.
+8. **Publish** — already covered by steps 5-7 (tag-triggered, OIDC, no manual upload step in
+   this repo's process). Nothing further to do once step 6 confirms the real PyPI listing.
+
+#### Train 2: `adk-tracegauge` 0.3.0 -> `adk-docs` PR (this repo)
+
+1. **Review and push this branch**: `git push -u origin feat/cost-regression-gate`. Success
+   signal: branch appears on GitHub through this session's final commit. **Human merge
+   required** (carried from every prior phase report) -- this branch is far over rule-70a
+   gate 3's ~400-reviewable-line ceiling across 55+ commits spanning Phases 2-6; CC does not
+   auto-merge it.
+2. **Confirm the 4-version CI matrix AND the wheel-smoke-test job are green on GitHub's real
+   `ubuntu-latest` runners** -- only locally verified (Windows) across every phase including
+   this one's own 5.2. Success signal: all `ci.yml` jobs green on the pushed branch/PR.
+3. **Trigger `pypi-canary.yml` for real** (needs a pushed ref, deferred all session per the
+   branch being intentionally unpushed): `gh workflow run pypi-canary.yml --repo
+   gaurav-gandhi-2411/adk-tracegauge`. Success signal: a green run against the then-live
+   `google-adk` (2.7.0 as of this session, re-confirmed 5.2).
+4. **Open a PR from this branch into `main`**, wait for CI green, merge (human merge, per
+   item 1's reasoning).
+5. **Tag `v0.3.0` on `main`**, which triggers `release.yml` (build, `twine check`, OIDC
+   publish, GitHub Release creation) -- same tag-must-match-pyproject discipline as Train 1
+   applies here too (this session already confirmed `pyproject.toml` reads `0.3.0` on this
+   branch; re-confirm it landed on `main` before tagging, not just on the feature branch).
+6. **Confirm the real PyPI listing**, same "don't trust the green checkmark alone" discipline
+   as Train 1 step 6: `gh run list --repo gaurav-gandhi-2411/adk-tracegauge --workflow
+   release.yml --limit 1`, then check the run log for the real upload confirmation and
+   `https://pypi.org/project/adk-tracegauge/0.3.0/`.
+7. **Only then**, push the `adk-docs` branch: `cd C:\Users\gaura\ml-projects\oss-contrib\
+   adk-docs && git push origin docs/adk-tracegauge-integration` (updates PR #2128
+   automatically) -- carries this session's 5.5 staleness fix (`4181f2b7`) plus Phase 4 R3's
+   rewrite and Phase 6 T3's rename, 3 commits ahead of `origin` total. **Do NOT push before
+   step 6 confirms 0.3.0 is genuinely live** -- pushing early puts documentation for
+   commands/behavior (`adk-tracegauge check --mode paired`, the required-threshold
+   constructor, `--eval-history`) in front of real users before `pip install adk-tracegauge`
+   can actually reproduce them.
+8. **Upstream PR #1 -- threshold directionality** (prepared, re-confirmed unopened this
+   session): `cd C:\Users\gaura\ml-projects\oss-contrib\adk-python`, `git push -u origin
+   fix/cost-metric-threshold-directionality`, `gh pr create --repo google/adk-python --base
+   main --head gaurav-gandhi-2411:fix/cost-metric-threshold-directionality --title "fix
+   (evaluation): honor each metric's own eval_status in AgentEvaluator.evaluate()"
+   --body-file <path -- full body in PLAN.md's Phase 3 B3 entry>`. Success signal: PR opens,
+   referencing commit `c2131b70`. Independent of the 0.3.0 release itself -- can happen
+   before, during, or after Train 2's other steps.
+9. **Upstream PR #2 -- `adk eval` exit code** (prepared, re-confirmed unopened this session):
+   same repo, `git push -u origin fix/adk-eval-exit-code`, `gh pr create --repo
+   google/adk-python --base main --head gaurav-gandhi-2411:fix/adk-eval-exit-code --title
+   "fix(cli): adk eval process exit code now reflects PASSED/FAILED" --body-file <path --
+   full body in PLAN.md's Phase 3 B3 entry>`. Success signal: PR opens, referencing commit
+   `32c8991d`. Also independent of 0.3.0 -- no ordering constraint with item 8 or with the
+   0.3.0 release either.
+10. **Optional remote branch cleanup** (carried unresolved from Phase 2 through every
+    subsequent phase report): `git push origin --delete chore/0.1.0-release
+    chore/0.2.0-release chore/rc1-version-bump ci/pypi-trusted-publishing docs/releasing`.
+    Not blocking anything -- purely optional hygiene, deferred every phase per rule 55
+    (branch deletion is a standing pause-for-confirmation item).
