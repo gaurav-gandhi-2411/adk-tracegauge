@@ -24,19 +24,23 @@ return a ``UsageStore`` directly (e.g. if you built one explicitly with
 ``store=`` overrides in tests) -- if it does, that returned store is
 snapshotted instead of the default one.
 
-**`--mode` for `check`** (Phase 3 B4): `auto` (default), `two-sample`, or
-`paired`. `two-sample` is the original Phase 2 W4 method (two independent
-samples, `evaluate_regression`) -- always available, works with any
-snapshot. `paired` (`evaluate_regression_paired`) is substantially more
-statistically powerful at the same n, but requires both snapshots' records
-to carry a real, matching `session_id` (see `snapshot.py`'s docstring: this
-means your own eval harness must have called `runner.run_async(session_id=
-<stable-per-eval-case-id>, ...)` in both the baseline and current runs) --
-`check` refuses with a clear error naming the actual overlap count if
-`--mode paired` is requested explicitly but fewer than `--min-n` session
-ids overlap. `auto` uses `paired` when the overlap is >= `--min-n`, else
-transparently falls back to `two-sample` -- either way, the ACTUAL mode
-used is always printed, never silently assumed.
+**`--mode` for `check`** (Phase 3 B4, re-keyed Phase 4 R2): `auto` (default),
+`two-sample`, or `paired`. `two-sample` is the original Phase 2 W4 method
+(two independent samples, `evaluate_regression`) -- always available, works
+with any snapshot. `paired` (`evaluate_regression_paired`) is substantially
+more statistically powerful at the same n, but requires a real pairing key
+matched between both snapshots' records -- resolved by `snapshot.py`'s
+`resolve_pairing` via a fallback chain: (1) `eval_case_id`, populated when
+`tracegauge snapshot --eval-history <path>` was used for both runs (works
+with the DEFAULT `adk eval` CLI flow, no .evalset.json changes needed); (2)
+`session_id`, when a hand-rolled harness pinned `runner.run_async(session_id=
+<stable-per-eval-case-id>, ...)` in both runs (B4's original mechanism); (3)
+neither -- `check` refuses with a clear error naming the actual overlap
+count on whichever key was attempted if `--mode paired` is requested
+explicitly but fewer than `--min-n` keys overlap. `auto` uses `paired` when
+the best-available key's overlap is >= `--min-n`, else transparently falls
+back to `two-sample` -- either way, the ACTUAL mode AND the ACTUAL key used
+are always printed, never silently assumed.
 
 **Exit codes for `check`** (distinct on purpose -- see the work item's own
 requirement that "regression detected" and "insufficient data" not be
@@ -66,6 +70,7 @@ import os
 import sys
 from pathlib import Path
 
+from ._compat import load_eval_case_ids_by_session_id
 from ._regression import (
     DEFAULT_CONFIDENCE,
     DEFAULT_MIN_EFFECT_PCT,
@@ -77,7 +82,7 @@ from ._regression import (
     evaluate_regression_paired,
 )
 from ._store import DEFAULT_USAGE_STORE, UsageStore
-from .snapshot import Snapshot, pair_costs_by_session_id, read_snapshot, write_snapshot
+from .snapshot import PairingKey, Snapshot, read_snapshot, resolve_pairing, write_snapshot
 
 EXIT_PASS = 0
 EXIT_REGRESSION = 1
@@ -132,62 +137,85 @@ def _resolve_entrypoint(spec: str) -> UsageStore:
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     store = _resolve_entrypoint(args.entrypoint)
-    snapshot = write_snapshot(store, args.output)
+    eval_case_ids_by_session: dict[str, str] | None = None
+    if args.eval_history is not None:
+        eval_case_ids_by_session = load_eval_case_ids_by_session_id(args.eval_history)
+    snapshot = write_snapshot(store, args.output, eval_case_ids_by_session=eval_case_ids_by_session)
     skip_note = f", {len(snapshot.skipped)} skipped (unpriceable)" if snapshot.skipped else ""
+    resolved_note = ""
+    if args.eval_history is not None:
+        n_resolved = sum(1 for r in snapshot.records if r.eval_case_id is not None)
+        resolved_note = (
+            f", {n_resolved}/{len(snapshot.records)} record(s) resolved to a real eval_case_id "
+            f"via --eval-history {args.eval_history}"
+        )
     print(
-        f"tracegauge snapshot: wrote {len(snapshot.records)} record(s) to {args.output}{skip_note}"
+        f"tracegauge snapshot: wrote {len(snapshot.records)} record(s) to "
+        f"{args.output}{skip_note}{resolved_note}"
     )
     return 0
 
 
 def _resolve_check_mode(
     mode: str, baseline: Snapshot, current: Snapshot, min_n: int
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[float], list[float], list[str], PairingKey]:
     """Decides which comparison method `_cmd_check` actually runs, and
-    returns (resolved_mode, matched_session_ids) -- resolved_mode is always
-    "two-sample" or "paired", never "auto" (auto is resolved here, once).
+    returns (resolved_mode, paired_baseline_costs, paired_current_costs,
+    matched_keys, resolved_key) -- resolved_mode is always "two-sample" or
+    "paired", never "auto" (auto is resolved here, once). ``resolved_key``
+    (Phase 4 R2) is the ``PairingKey`` ``resolve_pairing`` actually picked
+    (``"eval_case_id"``, ``"session_id"``, or ``"none"``) -- always computed
+    and returned, even in two-sample mode, so `_cmd_check` can report it in
+    an `auto`-mode fallback message without a second call.
 
     "paired" is requested explicitly: returns "paired" regardless of overlap
     size -- `_cmd_check` itself refuses with SystemExit if the overlap is
     too small, rather than this function silently downgrading a request the
     caller was explicit about.
 
-    "auto" (the default): uses "paired" iff the number of session_ids
-    present in BOTH snapshots is >= min_n (enough for evaluate_regression_paired
-    to actually emit a verdict rather than insufficient_data); otherwise
-    "two-sample". Always deterministic given the two snapshots' contents.
+    "auto" (the default): uses "paired" iff the number of keys matched on
+    the best-available pairing key is >= min_n (enough for
+    evaluate_regression_paired to actually emit a verdict rather than
+    insufficient_data); otherwise "two-sample". Always deterministic given
+    the two snapshots' contents.
     """
-    _, _, matched = pair_costs_by_session_id(baseline, current)
+    paired_baseline, paired_current, matched, resolved_key = resolve_pairing(baseline, current)
     if mode == "paired":
-        return "paired", matched
+        return "paired", paired_baseline, paired_current, matched, resolved_key
     if mode == "two-sample":
-        return "two-sample", matched
+        return "two-sample", paired_baseline, paired_current, matched, resolved_key
     # mode == "auto"
-    return ("paired" if len(matched) >= min_n else "two-sample"), matched
+    resolved_mode = "paired" if len(matched) >= min_n else "two-sample"
+    return resolved_mode, paired_baseline, paired_current, matched, resolved_key
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
     baseline = read_snapshot(args.baseline)
     current = read_snapshot(args.current)
 
-    resolved_mode, matched_session_ids = _resolve_check_mode(
-        args.mode, baseline, current, args.min_n
+    resolved_mode, paired_baseline, paired_current, matched_keys, resolved_key = (
+        _resolve_check_mode(args.mode, baseline, current, args.min_n)
     )
 
     if resolved_mode == "paired":
-        paired_baseline, paired_current, matched_session_ids = pair_costs_by_session_id(
-            baseline, current
-        )
-        if args.mode == "paired" and len(matched_session_ids) < args.min_n:
+        if args.mode == "paired" and len(matched_keys) < args.min_n:
+            key_note = (
+                f"key={resolved_key}"
+                if resolved_key != "none"
+                else "no overlapping eval_case_id or session_id found at all"
+            )
             raise SystemExit(
-                f"--mode paired requires >= {args.min_n} overlapping session_ids between "
-                f"--baseline and --current, but only {len(matched_session_ids)} matched. "
-                "Pin a stable, per-eval-case session_id via runner.run_async(session_id=...) "
-                "in your eval harness for both runs, or pass --mode two-sample."
+                f"--mode paired requires >= {args.min_n} overlapping pairing keys between "
+                f"--baseline and --current, but only {len(matched_keys)} matched ({key_note}). "
+                "Pass --eval-history <path-to-adk-eval's-.evalset_result.json> to `tracegauge "
+                "snapshot` for both runs (resolves the stable, authored eval case id -- works "
+                "with the default `adk eval` CLI flow), or pin a stable session_id via "
+                "runner.run_async(session_id=...) in a hand-rolled harness, or pass "
+                "--mode two-sample."
             )
         print(
-            f"tracegauge check: mode=paired ({len(matched_session_ids)} overlapping "
-            "session_ids matched between baseline and current)"
+            f"tracegauge check: mode=paired (key={resolved_key}, {len(matched_keys)} overlapping "
+            f"{resolved_key}s matched between baseline and current)"
         )
         result = evaluate_regression_paired(
             paired_baseline,
@@ -203,9 +231,10 @@ def _cmd_check(args: argparse.Namespace) -> int:
         print(
             "tracegauge check: mode=two-sample"
             + (
-                f" (--mode auto: only {len(matched_session_ids)} overlapping session_ids "
-                f"< --min-n={args.min_n}, so falling back from paired -- see snapshot.py's "
-                "docstring for how to enable paired comparison)"
+                f" (--mode auto: best-available pairing key ({resolved_key}) only has "
+                f"{len(matched_keys)} overlapping match(es) < --min-n={args.min_n}, so falling "
+                "back from paired -- see snapshot.py's docstring for how to enable paired "
+                "comparison)"
                 if args.mode == "auto"
                 else ""
             )
@@ -250,6 +279,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_snapshot.add_argument(
         "--output", required=True, type=Path, help="Path to write the snapshot JSON."
+    )
+    p_snapshot.add_argument(
+        "--eval-history",
+        type=Path,
+        default=None,
+        help=(
+            "Phase 4 R2: path to an `adk eval`-written .evalset_result.json file "
+            "(<agents_dir>/<app_name>/.adk/eval_history/*.evalset_result.json) -- when given, "
+            "resolves each captured invocation's stable, authored eval_case_id by joining on "
+            "session_id, so `tracegauge check --mode paired` can pair by eval case id even "
+            "against the default `adk eval` CLI flow (no --eval-history means eval_case_id is "
+            "never populated and paired mode falls back to session_id, then two-sample)."
+        ),
     )
     p_snapshot.set_defaults(func=_cmd_snapshot)
 
@@ -316,10 +358,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Comparison method. 'two-sample': the original independent-samples bootstrap "
             "(evaluate_regression). 'paired': a per-eval-case paired bootstrap "
             "(evaluate_regression_paired), substantially more powerful at the same n but "
-            "requires matching session_id on both snapshots (see snapshot.py docstring) -- "
-            "fails with an actionable error if requested explicitly and too few session_ids "
-            "overlap. 'auto' (default): uses paired when enough session_ids overlap (>= "
-            "--min-n), else falls back to two-sample -- the resolved mode is always printed."
+            "requires a matching pairing key on both snapshots -- eval_case_id (preferred, via "
+            "`tracegauge snapshot --eval-history`) or session_id (see snapshot.py docstring) -- "
+            "fails with an actionable error if requested explicitly and too few keys overlap. "
+            "'auto' (default): uses paired when enough keys overlap (>= --min-n) on the "
+            "best-available key, else falls back to two-sample -- the resolved mode AND key are "
+            "always printed."
         ),
     )
     p_check.set_defaults(func=_cmd_check)

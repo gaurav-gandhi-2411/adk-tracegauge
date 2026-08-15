@@ -27,6 +27,7 @@ import random
 from measure_regression_power import compute_power_grid
 
 from adk_tracegauge._regression import evaluate_regression, evaluate_regression_paired
+from adk_tracegauge.snapshot import Snapshot, SnapshotRecord, resolve_pairing
 
 # --- smoke test: the power-grid harness itself does not bitrot -----------
 
@@ -200,3 +201,143 @@ def test_paired_comparison_false_positive_rate_is_not_wildly_miscalibrated():
 
     assert two_sample_rate <= 0.10
     assert paired_rate <= 0.10
+
+
+# --- Phase 4 R2: re-measured through the FULL snapshot/resolve_pairing -----
+# pipeline, keyed on eval_case_id (the corrected primary key) instead of
+# calling evaluate_regression_paired directly on hand-built lists -- this
+# verifies the key-resolution plumbing (Snapshot.costs_by_eval_case_id ->
+# pair_costs_by_eval_case_id -> resolve_pairing -> evaluate_regression_paired)
+# end to end, not just the underlying bootstrap math (already proven above
+# and unchanged -- evaluate_regression_paired itself was not touched by R2).
+# The task's own instruction: do not assume the eval-case-id-keyed pipeline
+# reproduces B4's session_id-keyed numbers just because the statistics are
+# identical -- verify the WHOLE pipeline, including the new key, end to end.
+
+
+def _snapshots_from_case_correlated_pair(
+    baseline_costs: list[float], current_costs: list[float], *, key: str
+) -> tuple[Snapshot, Snapshot]:
+    """Builds real Snapshot objects with one record per synthetic eval case,
+    keyed by ``eval_case_id`` (key="eval_case_id", simulating a `tracegauge
+    snapshot --eval-history`-resolved pair) or by ``session_id``
+    (key="session_id", simulating a hand-rolled harness with NO
+    --eval-history join -- B4's original mechanism, unchanged). Case ids are
+    identical between baseline and current (same eval set, same case
+    ordering), matching a real paired baseline/current pair."""
+
+    def _record(i: int, cost: float) -> SnapshotRecord:
+        case_id = f"case-{i}"
+        return SnapshotRecord(
+            invocation_id=f"inv-{case_id}",
+            cost_usd=cost,
+            tokens_input=0,
+            tokens_output=0,
+            tokens_cache_read=0,
+            models=[],
+            call_count=1,
+            eval_case_id=case_id if key == "eval_case_id" else None,
+            session_id=case_id if key == "session_id" else None,
+        )
+
+    baseline = Snapshot(
+        schema_version=2,
+        created_at="2026-01-01",
+        records=[_record(i, c) for i, c in enumerate(baseline_costs)],
+    )
+    current = Snapshot(
+        schema_version=2,
+        created_at="2026-01-01",
+        records=[_record(i, c) for i, c in enumerate(current_costs)],
+    )
+    return baseline, current
+
+
+def test_resolve_pairing_through_eval_case_id_key_reproduces_the_headline_4_3_result():
+    """The corrected-key equivalent of
+    test_paired_comparison_detects_a_10pct_case_correlated_regression_far_more_often
+    -- same n=25, same case-correlated +10% generator, same deterministic
+    seeding -- but every trial's pairing now goes through a real Snapshot
+    pair keyed on eval_case_id and resolve_pairing's actual key-selection
+    logic, exactly the path `tracegauge check --mode paired` runs when
+    `tracegauge snapshot --eval-history` was used for both the baseline and
+    current runs (the fix that makes paired mode reachable for the default
+    `adk eval` CLI flow -- see snapshot.py's module docstring).
+
+    MEASURED: eval_case_id-keyed = 200/200 = 1.000, matching B4's original
+    session_id-keyed 200/200 = 1.000 exactly (as expected -- the bootstrap
+    math evaluate_regression_paired runs is identical either way; what
+    changed is that the DATA now genuinely flows through resolve_pairing's
+    real key-resolution rather than being handed to evaluate_regression_paired
+    pre-aligned). Also confirms resolve_pairing's resolved_key is
+    "eval_case_id" on every trial, not "session_id" or "none" -- the key
+    fallback chain is exercising the intended branch, not accidentally
+    falling through.
+    """
+    detections = 0
+    resolved_keys: set[str] = set()
+    for trial in range(_N_TRIALS):
+        seed = _CASE_CORRELATED_SEED_BASE + hash((10.0, trial)) % 1_000_000
+        gen = random.Random(seed)
+        baseline_costs, current_costs = _generate_case_correlated_pair(gen, _N, 10.0)
+        baseline, current = _snapshots_from_case_correlated_pair(
+            baseline_costs, current_costs, key="eval_case_id"
+        )
+
+        paired_baseline, paired_current, matched, resolved_key = resolve_pairing(baseline, current)
+        resolved_keys.add(resolved_key)
+        assert len(matched) == _N  # every case paired, none dropped
+
+        result = evaluate_regression_paired(
+            paired_baseline,
+            paired_current,
+            min_n=2,
+            min_effect_usd=0.0,
+            min_effect_pct=0.0,
+            n_boot=_N_BOOT,
+            seed=trial,
+        )
+        if result.status == "regression":
+            detections += 1
+
+    assert resolved_keys == {"eval_case_id"}
+    assert detections / _N_TRIALS == 1.0
+
+
+def test_resolve_pairing_through_session_id_key_still_reproduces_the_same_result():
+    """The B4-original mechanism (hand-rolled harness, NO --eval-history --
+    only session_id captured) run through the SAME resolve_pairing pipeline,
+    confirming the fallback chain's second branch is equally correct and
+    unregressed by the R2 rework -- resolved_key must be "session_id" on
+    every trial (eval_case_id is never populated in this scenario), and the
+    detection rate must match the eval_case_id-keyed result exactly (same
+    underlying data, same statistic, only the key label differs).
+    """
+    detections = 0
+    resolved_keys: set[str] = set()
+    for trial in range(_N_TRIALS):
+        seed = _CASE_CORRELATED_SEED_BASE + hash((10.0, trial)) % 1_000_000
+        gen = random.Random(seed)
+        baseline_costs, current_costs = _generate_case_correlated_pair(gen, _N, 10.0)
+        baseline, current = _snapshots_from_case_correlated_pair(
+            baseline_costs, current_costs, key="session_id"
+        )
+
+        paired_baseline, paired_current, matched, resolved_key = resolve_pairing(baseline, current)
+        resolved_keys.add(resolved_key)
+        assert len(matched) == _N
+
+        result = evaluate_regression_paired(
+            paired_baseline,
+            paired_current,
+            min_n=2,
+            min_effect_usd=0.0,
+            min_effect_pct=0.0,
+            n_boot=_N_BOOT,
+            seed=trial,
+        )
+        if result.status == "regression":
+            detections += 1
+
+    assert resolved_keys == {"session_id"}
+    assert detections / _N_TRIALS == 1.0

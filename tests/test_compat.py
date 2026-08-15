@@ -12,6 +12,7 @@ actionable-error paths a genuinely broken internal would hit.
 from __future__ import annotations
 
 import builtins
+from pathlib import Path
 
 import pytest
 
@@ -98,3 +99,96 @@ def test_missing_convert_method_raises_actionable_runtimeerror(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="no longer has a"):
         _compat.convert_events_to_eval_invocations([])
+
+
+# --- load_eval_case_ids_by_session_id (Phase 4 R2) -------------------------
+
+
+def _write_eval_set_result(
+    path: Path, case_session_pairs: list[tuple[str, str]], eval_set_id: str = "my_eval_set"
+) -> None:
+    """Writes a real ADK EvalSetResult JSON file (the same shape
+    LocalEvalSetResultsManager writes to .adk/eval_history/*.evalset_result.json
+    after every `adk eval` run), using ADK's own pydantic models -- never
+    hand-written JSON that could silently drift from the real schema, same
+    discipline as examples/01_minimal_cost_gate.py's eval-set fixture."""
+    from google.adk.evaluation.eval_result import EvalCaseResult, EvalSetResult
+    from google.adk.evaluation.evaluator import EvalStatus
+
+    result = EvalSetResult(
+        eval_set_result_id=f"app_{eval_set_id}_1234567890",
+        eval_set_id=eval_set_id,
+        eval_case_results=[
+            EvalCaseResult(
+                eval_set_id=eval_set_id,
+                eval_id=eval_id,
+                final_eval_status=EvalStatus.PASSED,
+                overall_eval_metric_results=[],
+                eval_metric_result_per_invocation=[],
+                session_id=session_id,
+            )
+            for eval_id, session_id in case_session_pairs
+        ],
+    )
+    path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+
+
+def test_load_eval_case_ids_by_session_id_reads_a_real_adk_eval_history_file(tmp_path: Path):
+    path = tmp_path / "app_my_eval_set_123.evalset_result.json"
+    _write_eval_set_result(
+        path,
+        [("case_1", "___eval___session___aaa"), ("case_2", "___eval___session___bbb")],
+    )
+
+    mapping = _compat.load_eval_case_ids_by_session_id(path)
+
+    assert mapping == {
+        "___eval___session___aaa": "case_1",
+        "___eval___session___bbb": "case_2",
+    }
+
+
+def test_load_eval_case_ids_by_session_id_excludes_cases_with_no_session_id(tmp_path: Path):
+    path = tmp_path / "result.evalset_result.json"
+    _write_eval_set_result(path, [("case_1", "sess-a"), ("case_2", "")])
+
+    mapping = _compat.load_eval_case_ids_by_session_id(path)
+
+    assert mapping == {"sess-a": "case_1"}
+
+
+def test_load_eval_case_ids_by_session_id_on_empty_eval_set_result_returns_empty_map(
+    tmp_path: Path,
+):
+    path = tmp_path / "empty.evalset_result.json"
+    _write_eval_set_result(path, [])
+
+    assert _compat.load_eval_case_ids_by_session_id(path) == {}
+
+
+def test_load_eval_case_ids_by_session_id_raises_actionable_error_on_malformed_json(
+    tmp_path: Path,
+):
+    path = tmp_path / "not_really_an_eval_result.json"
+    path.write_text('{"totally": "unrelated json"}', encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="could not parse"):
+        _compat.load_eval_case_ids_by_session_id(path)
+
+
+def test_load_eval_case_ids_by_session_id_raises_actionable_error_when_eval_result_module_missing(
+    tmp_path: Path, monkeypatch
+):
+    path = tmp_path / "result.evalset_result.json"
+    _write_eval_set_result(path, [("case_1", "sess-a")])
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "google.adk.evaluation.eval_result":
+            raise ImportError("simulated: module moved")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(RuntimeError, match="could not import"):
+        _compat.load_eval_case_ids_by_session_id(path)

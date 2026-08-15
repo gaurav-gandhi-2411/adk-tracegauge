@@ -49,6 +49,13 @@ def _fixture_populates_default_store_and_returns_none() -> None:
     DEFAULT_USAGE_STORE.record("inv-default", _call())
 
 
+def _fixture_returns_store_with_session_id() -> UsageStore:
+    store = UsageStore()
+    store.record("inv-1", _call())
+    store.record_session("inv-1", "sess-a")
+    return store
+
+
 _fixture_not_callable_attr = 42  # not callable, used to test the "not callable" branch
 
 
@@ -238,6 +245,81 @@ def test_cmd_snapshot_end_to_end_writes_a_valid_file(
     assert raw["records"][0]["invocation_id"] == "inv-1"
     captured = capsys.readouterr()
     assert "wrote 1 record" in captured.out
+
+
+# --- end-to-end: snapshot subcommand --eval-history (Phase 4 R2) ----------
+
+
+def _write_eval_history_file(path: Path, case_session_pairs: list[tuple[str, str]]) -> None:
+    from google.adk.evaluation.eval_result import EvalCaseResult, EvalSetResult
+    from google.adk.evaluation.evaluator import EvalStatus
+
+    result = EvalSetResult(
+        eval_set_result_id="app_my_eval_set_123",
+        eval_set_id="my_eval_set",
+        eval_case_results=[
+            EvalCaseResult(
+                eval_set_id="my_eval_set",
+                eval_id=eval_id,
+                final_eval_status=EvalStatus.PASSED,
+                overall_eval_metric_results=[],
+                eval_metric_result_per_invocation=[],
+                session_id=session_id,
+            )
+            for eval_id, session_id in case_session_pairs
+        ],
+    )
+    path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+
+
+def test_cmd_snapshot_with_eval_history_resolves_eval_case_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out_path = tmp_path / "snap.json"
+    history_path = tmp_path / "app_my_eval_set_123.evalset_result.json"
+    _write_eval_history_file(history_path, [("case_1", "sess-a")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_with_session_id",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+        ]
+    )
+
+    assert exit_code == 0
+    raw = json.loads(out_path.read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 2
+    assert raw["records"][0]["session_id"] == "sess-a"
+    assert raw["records"][0]["eval_case_id"] == "case_1"
+    captured = capsys.readouterr()
+    assert "1/1 record(s) resolved to a real eval_case_id" in captured.out
+
+
+def test_cmd_snapshot_without_eval_history_leaves_eval_case_id_unpopulated(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out_path = tmp_path / "snap.json"
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_with_session_id",
+            "--output",
+            str(out_path),
+        ]
+    )
+
+    assert exit_code == 0
+    raw = json.loads(out_path.read_text(encoding="utf-8"))
+    assert raw["records"][0]["eval_case_id"] is None
+    captured = capsys.readouterr()
+    assert "resolved to a real eval_case_id" not in captured.out
 
 
 # --- end-to-end: check subcommand exit codes -----------------------------
@@ -432,7 +514,7 @@ def test_cmd_check_mode_paired_explicit_fails_closed_on_insufficient_overlap(
     )
     _write_snapshot_with_session_ids(current_path, {"case-1": 0.01, "case-2": 0.01, "case-3": 0.01})
 
-    with pytest.raises(SystemExit, match="requires >= 30 overlapping session_ids"):
+    with pytest.raises(SystemExit, match="requires >= 30 overlapping pairing keys"):
         main(
             [
                 "check",
@@ -444,3 +526,75 @@ def test_cmd_check_mode_paired_explicit_fails_closed_on_insufficient_overlap(
                 "paired",
             ]
         )
+
+
+# --- end-to-end: check subcommand --mode, eval_case_id key (Phase 4 R2) ---
+
+
+def _write_snapshot_with_eval_case_ids(
+    path: Path,
+    eval_case_costs: dict[str, float],
+    model: str = "gemini-2.5-flash",
+):
+    from adk_tracegauge.snapshot import SNAPSHOT_SCHEMA_VERSION
+
+    records = [
+        {
+            "invocation_id": f"inv-{eval_case_id}",
+            "eval_case_id": eval_case_id,
+            "cost_usd": cost,
+            "tokens_input": 0,
+            "tokens_output": 0,
+            "tokens_cache_read": 0,
+            "models": [model],
+            "call_count": 1,
+        }
+        for eval_case_id, cost in eval_case_costs.items()
+    ]
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": SNAPSHOT_SCHEMA_VERSION,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "records": records,
+                "skipped": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_cmd_check_mode_auto_prefers_eval_case_id_key_and_prints_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    eval_case_costs_baseline = {f"case-{i}": 0.01 for i in range(30)}
+    eval_case_costs_current = {f"case-{i}": 0.02 for i in range(30)}  # every case +$0.01
+    _write_snapshot_with_eval_case_ids(baseline_path, eval_case_costs_baseline)
+    _write_snapshot_with_eval_case_ids(current_path, eval_case_costs_current)
+
+    exit_code = main(["check", "--baseline", str(baseline_path), "--current", str(current_path)])
+
+    assert exit_code == EXIT_REGRESSION
+    captured = capsys.readouterr()
+    assert "mode=paired" in captured.out
+    assert "key=eval_case_id" in captured.out
+    assert "30 overlapping" in captured.out
+
+
+def test_cmd_check_mode_auto_prints_session_id_key_when_that_is_all_that_overlaps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    session_costs = {f"case-{i}": 0.01 for i in range(40)}
+    _write_snapshot_with_session_ids(baseline_path, session_costs)
+    _write_snapshot_with_session_ids(current_path, session_costs)
+
+    exit_code = main(["check", "--baseline", str(baseline_path), "--current", str(current_path)])
+
+    assert exit_code == EXIT_PASS
+    captured = capsys.readouterr()
+    assert "mode=paired" in captured.out
+    assert "key=session_id" in captured.out

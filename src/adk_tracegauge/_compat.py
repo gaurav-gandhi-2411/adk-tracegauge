@@ -46,6 +46,7 @@ signal on top of that, not a guarantee.
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import google.adk as _google_adk
@@ -161,4 +162,84 @@ def convert_events_to_eval_invocations(events: list[Event]) -> list[Invocation]:
     return convert(events)  # type: ignore[no-any-return]
 
 
-__all__ = ["convert_events_to_eval_invocations"]
+def load_eval_case_ids_by_session_id(path: str | Path) -> dict[str, str]:
+    """Phase 4 R2: reads an ADK-written ``.evalset_result.json`` file (the
+    persisted output of an ``adk eval`` CLI run -- see
+    ``LocalEvalSetResultsManager.save_eval_set_result``, which writes one to
+    ``<agents_dir>/<app_name>/.adk/eval_history/*.evalset_result.json`` after
+    every ``adk eval`` invocation) and returns a ``{session_id: eval_id}``
+    mapping -- one entry per eval case in the file.
+
+    This is the mechanism that makes eval case id reachable as a pairing key
+    for `adk eval`'s CLI path at all. adk-tracegauge's own capture surface
+    (``TraceGaugeUsagePlugin``'s callback signatures) has NO access to
+    eval_case_id during a live run -- confirmed by reading
+    ``InvocationContext``/``Session``/``Context`` (=``CallbackContext``)
+    directly: none of them carry an eval_case_id field anywhere.
+    eval_case_id is known only to ``LocalEvalService``/``EvaluationGenerator``,
+    entirely outside the agent-execution callback surface. The ONE place it
+    is genuinely available afterward is this persisted file, where ADK's own
+    ``EvalCaseResult`` carries both ``eval_id`` (the authored, stable id from
+    the .evalset.json) and ``session_id`` (the actual session the case ran
+    under, live-capturable via ``TraceGaugeUsagePlugin.after_model_callback``
+    -- see ``_plugin.py``). Joining on ``session_id`` (present in both this
+    file and adk-tracegauge's own captured snapshot records) recovers the
+    true eval_id per invocation -- see ``snapshot.py``'s ``build_snapshot``
+    ``eval_case_ids_by_session`` parameter and ``_cli.py``'s
+    ``--eval-history`` flag, the two real call sites.
+
+    Like ``convert_events_to_eval_invocations`` above, ``EvalSetResult``/
+    ``EvalCaseResult`` (``google.adk.evaluation.eval_result``) are not
+    exported from ``google.adk.evaluation``'s own ``__init__.py`` -- not
+    officially public API, same risk category as the other wrapped call in
+    this module -- so this is guarded the same way: an actionable
+    ``RuntimeError`` naming the installed version on an outright missing
+    module/class, rather than a bare ``ImportError``/``AttributeError``.
+    Malformed/foreign JSON at ``path`` (not really an ADK eval-history file)
+    also raises ``RuntimeError``, not a silent empty mapping -- a caller
+    passing the wrong file by mistake should learn about it immediately, not
+    fall through to two-sample mode without ever finding out why.
+
+    A case whose ``session_id``/``eval_id`` is empty (should not happen in
+    practice -- both are non-optional, non-default fields on
+    ``EvalCaseResult`` -- but pydantic's ``str = ""`` defaults mean an empty
+    string is structurally possible) is excluded from the mapping rather than
+    recorded as a real key: an empty string is not a usable pairing key.
+    """
+    installed = getattr(_google_adk, "__version__", "unknown")
+
+    try:
+        from google.adk.evaluation.eval_result import EvalSetResult
+    except ImportError as e:
+        raise RuntimeError(
+            "adk_tracegauge: could not import "
+            "google.adk.evaluation.eval_result.EvalSetResult -- this is a "
+            f"non-public ADK internal (installed google-adk=={installed}) and it "
+            "looks like it has moved or been removed in this release. This only "
+            "affects --eval-history-based eval-case-id pairing for `tracegauge "
+            "check --mode paired`; session_id-based pairing (a hand-rolled harness "
+            "pinning runner.run_async(session_id=...)) and two-sample mode are both "
+            "unaffected. Open an issue at "
+            "https://github.com/gaurav-gandhi-2411/adk-tracegauge/issues."
+        ) from e
+
+    raw = Path(path).read_text(encoding="utf-8")
+    try:
+        result = EvalSetResult.model_validate_json(raw)
+    except Exception as e:
+        raise RuntimeError(
+            f"adk_tracegauge: could not parse {path!s} as a google-adk "
+            "EvalSetResult (an `adk eval` .evalset_result.json file) -- is this "
+            "really the file `adk eval` wrote to "
+            "<agents_dir>/<app_name>/.adk/eval_history/*.evalset_result.json? "
+            f"Underlying error: {e}"
+        ) from e
+
+    return {
+        case.session_id: case.eval_id
+        for case in result.eval_case_results
+        if case.session_id and case.eval_id
+    }
+
+
+__all__ = ["convert_events_to_eval_invocations", "load_eval_case_ids_by_session_id"]

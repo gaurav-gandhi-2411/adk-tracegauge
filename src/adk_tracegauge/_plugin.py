@@ -21,6 +21,23 @@ the quickstart wires this same method directly onto the agent
 lifecycle entirely, which is exactly why that path DOES work through
 `adk eval`/`AgentEvaluator` (see README, "Quickstart").
 
+Phase 4 R2 finding: ``before_run_callback``/``after_run_callback`` (where
+session_id capture originally lived, Phase 3 B4) genuinely NEVER fire during
+`adk eval`/``AgentEvaluator.evaluate()`` -- both build their own bare
+``Runner`` internally with no ``App``/Plugin wiring at all, exactly as this
+docstring already said above for the *rollup* use of those two hooks. This
+means B4's session_id capture was not merely "sometimes stale because
+session_id itself regenerates" -- it was structurally NEVER POPULATED during
+`adk eval` in the first place, regardless of whether session_id happened to
+be stable. Fixed by ALSO capturing session_id from ``after_model_callback``
+(see below) -- the one hook proven to fire through `adk eval` (the
+quickstart's own direct-binding mechanism) -- sourced from
+``callback_context.session.id``, which is a real, always-present property on
+``Context``/``CallbackContext`` regardless of which hook reads it.
+``before_run_callback`` still also records it (harmless, unaffected) for the
+hand-rolled ``Runner``+``App`` harness path, where it fires strictly earlier
+per invocation.
+
 Sub-agent delegation via AgentTool: AgentTool.run_async builds a brand-new
 Runner (its own session, its own InvocationContext) and, by default
 (include_plugins=True), reuses the SAME plugin *instances* from the parent
@@ -104,6 +121,20 @@ class TraceGaugeUsagePlugin(BasePlugin):
     async def after_model_callback(
         self, *, callback_context: CallbackContext, llm_response: LlmResponse
     ) -> LlmResponse | None:
+        # Phase 4 R2: also record session_id here, not only in
+        # before_run_callback -- this is the ONE hook proven to fire during
+        # `adk eval`/AgentEvaluator.evaluate() (the quickstart binds this
+        # method directly onto the agent, bypassing Plugin lifecycle
+        # entirely; before_run_callback never fires in that path at all, see
+        # module docstring). callback_context.session is a real property on
+        # Context/CallbackContext regardless of which hook reads it, so this
+        # is available every time this method runs, not just when a full
+        # App+Plugin harness is used. Recording it once per model call
+        # (rather than once per invocation) is harmless -- record_session is
+        # a plain dict assignment, and session_id cannot change mid-
+        # invocation.
+        self._store.record_session(callback_context.invocation_id, callback_context.session.id)
+
         usage = llm_response.usage_metadata
         if usage is None:
             # A model turn that produced no usage_metadata (e.g. an error

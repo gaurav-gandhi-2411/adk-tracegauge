@@ -12,15 +12,17 @@ boundary: ``write_snapshot`` (in-process UsageStore -> JSON file, run at the
 end of an eval script) and ``read_snapshot`` (JSON file -> Snapshot, run by
 the ``check`` CLI subcommand, which never needs a live UsageStore at all).
 
-Snapshot JSON schema (schema_version=1)::
+Snapshot JSON schema (schema_version=2, Phase 4 R2 -- see below for what
+changed and why)::
 
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "created_at": "2026-08-14T12:00:00+00:00",
       "records": [
         {
           "invocation_id": "e-1234...",
           "session_id": "case-42",
+          "eval_case_id": "my_eval_case_7",
           "cost_usd": 0.004231,
           "tokens_input": 512,
           "tokens_output": 128,
@@ -47,25 +49,71 @@ entire snapshot -- the caller can see exactly what was skipped and why.
 ``session_id`` (Phase 3 B4, additive field -- old schema_version=1 files
 without it still read back fine, with ``session_id=None`` per record) is
 the ADK ``session.id`` the invocation ran under, captured by
-``TraceGaugeUsagePlugin.before_run_callback`` via ``UsageStore.record_session``.
-It exists specifically as a PAIRING KEY for ``tracegauge check --mode
-paired``'s higher-power paired bootstrap (see ``_regression.py``'s module
-docstring for why pairing matters and B4's session report for the measured
-power difference): a hand-rolled eval harness that calls
-``runner.run_async(session_id=<stable-per-eval-case-id>, ...)`` -- e.g. the
-eval case's own id from its eval set file -- gets a ``session_id`` that is
-IDENTICAL across a baseline run and a current run of the SAME eval set,
-letting ``check`` match each eval case's current cost against its own
-baseline cost directly instead of comparing two unordered pools. This is
-NOT true of ``invocation_id`` itself, which google-adk always regenerates
-fresh and random on every run (confirmed by reading google-adk's own
-``evaluation_generator.py``'s ``Event.new_id()`` and ``runners.py``'s
-``new_invocation_context_id()``) -- ``invocation_id`` was considered and
-rejected as a pairing key for exactly this reason. A harness that lets ADK
-generate ``session_id`` randomly (the default when no ``session_id=`` is
-passed to ``run_async``) gets no pairing benefit and ``check --mode auto``
-falls back to the original two-sample comparison, which is the correct,
-honest behavior for that case -- not a bug.
+``TraceGaugeUsagePlugin.before_run_callback``/``after_model_callback`` via
+``UsageStore.record_session``. B4 shipped this as the sole pairing key for
+``tracegauge check --mode paired``'s higher-power paired bootstrap (see
+``_regression.py``'s module docstring for why pairing matters).
+
+**Phase 4 R2 correction -- this was found to be broken for the primary
+`adk eval` CLI path, for TWO independent reasons, not one:**
+
+1. ``session_id`` itself is regenerated fresh and random on every `adk eval`
+   run UNLESS the eval case's own ``session_input.session_id`` is explicitly
+   authored in the .evalset.json file -- confirmed by reading google-adk's
+   ``local_eval_service.py`` (``_perform_inference_single_eval_item``: a
+   ``pinned_session_id`` is used only ``if initial_session`` and its
+   ``session_id`` is set; otherwise a fresh ``uuid.uuid4()``-based one is
+   generated via ``_get_session_id()``). Most .evalset.json files do not set
+   this -- it is an opt-in mechanism, not the default.
+2. Independently of (1): the ORIGINAL capture mechanism
+   (``before_run_callback``) never fires at all during `adk eval`/
+   ``AgentEvaluator.evaluate()`` -- both build their own bare ``Runner``
+   with no ``App``/Plugin wiring (see ``_plugin.py``'s module docstring).
+   So even a hand-authored, stable ``session_input.session_id`` was never
+   actually being captured through the CLI path, regardless of (1). This is
+   now fixed (session_id is also captured from ``after_model_callback``,
+   which does fire through `adk eval`) -- but reason (1) means session_id
+   still does not solve the default-case problem: an unauthored .evalset.json
+   still gets a fresh random session_id every run.
+
+**The fix: eval case id, not session_id, is now the PRIMARY pairing key.**
+``EvalCase.eval_id`` (confirmed by reading google-adk's ``eval_case.py``) is
+a required field read directly from the .evalset.json file -- authored,
+never regenerated, stable across every run of the same file, with no opt-in
+needed. The catch: it is genuinely UNREACHABLE from adk-tracegauge's live
+capture path -- ``InvocationContext``/``Session``/``Context`` (=
+``CallbackContext``) carry no eval_case_id field anywhere; it exists only in
+``LocalEvalService``/``EvaluationGenerator``'s own external bookkeeping,
+entirely outside the agent-execution callback surface this package hooks
+into. The one place it IS available is ADK's own persisted eval-history file
+(``<agents_dir>/<app_name>/.adk/eval_history/*.evalset_result.json``,
+written by `adk eval` after every run), whose ``EvalCaseResult`` entries
+carry BOTH ``eval_id`` and ``session_id`` per case -- so ``session_id``
+(now capturable live, see above) is the JOIN KEY that recovers the true,
+stable ``eval_id`` post-hoc. See ``_compat.load_eval_case_ids_by_session_id``
+and ``_cli.py``'s ``tracegauge snapshot --eval-history`` flag, the real
+mechanism that builds and applies this join.
+
+``eval_case_id`` (this field, additive, schema_version bumped 1->2 -- see
+``SNAPSHOT_SCHEMA_VERSION``) is the resolved-if-available result: populated
+by ``build_snapshot``'s ``eval_case_ids_by_session`` parameter when the
+caller supplies the eval-history join map (i.e. `tracegauge snapshot
+--eval-history <path>` was used), else ``None``.
+
+**The fallback chain `tracegauge check --mode {auto,paired}` actually
+uses** (see ``resolve_pairing`` below, and ``_cli.py``'s printed output,
+which always names which key was actually used -- never silently chosen):
+
+1. ``eval_case_id`` -- if any records in BOTH snapshots carry one (i.e.
+   ``--eval-history`` was used for both the baseline and current
+   `tracegauge snapshot` runs). Works for the DEFAULT `adk eval` CLI flow,
+   with no opt-in needed in the .evalset.json file at all.
+2. ``session_id`` -- if eval_case_id has zero overlap but session_id does
+   (a hand-rolled harness pinning ``runner.run_async(session_id=...)``
+   directly, B4's original mechanism -- still fully supported, unchanged).
+3. Neither -- falls back to (or fails closed to, for an explicit `--mode
+   paired` request) plain two-sample comparison, the original, always-safe
+   Phase 2 W4 method.
 """
 
 from __future__ import annotations
@@ -74,13 +122,27 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ._adapter import build_session_digest, price_digest
 from ._pricing import load_gemini_prices
 from ._store import UsageStore
 
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
+"""Bumped 1->2 in Phase 4 R2 for the new ``eval_case_id`` field (see module
+docstring). ``read_snapshot`` accepts BOTH 1 and 2 -- a v1 file is
+structurally still perfectly valid (every field ``eval_case_id`` would have
+added just defaults to ``None`` via ``SnapshotRecord(**r)``, the same
+pattern B4 used to add ``session_id`` without any version bump at all) and
+remains fully usable in two-sample mode and in session_id-keyed paired mode.
+The bump exists purely as accurate provenance -- schema_version=2 means "this
+file COULD carry eval_case_id", not a promise that it does (a v2 file
+written without ``--eval-history`` still has ``eval_case_id=None``
+everywhere, exactly like a v1 file) -- and to make a genuinely-unknown
+future version (3+) fail loudly via the explicit version check below rather
+than silently misparsing new fields this version of adk-tracegauge doesn't
+know about."""
+_READABLE_SCHEMA_VERSIONS = (1, 2)
 
 
 @dataclass(frozen=True)
@@ -99,6 +161,14 @@ class SnapshotRecord:
     capture one -- see module docstring. Defaults to None so a v1 snapshot
     JSON file (written before this field existed) still deserializes via
     ``SnapshotRecord(**r)`` with no KeyError."""
+    eval_case_id: str | None = None
+    """The stable, authored ``EvalCase.eval_id`` this invocation belongs to,
+    if resolved -- see module docstring's Phase 4 R2 section. Populated only
+    when ``build_snapshot``/``write_snapshot`` was given
+    ``eval_case_ids_by_session`` (i.e. `tracegauge snapshot --eval-history`
+    was used) AND this record's ``session_id`` was found in that map;
+    ``None`` otherwise (including for every pre-Phase-4-R2 snapshot file,
+    schema_version 1 or 2)."""
 
 
 @dataclass(frozen=True)
@@ -142,8 +212,29 @@ class Snapshot:
             totals[record.session_id] = totals.get(record.session_id, 0.0) + record.cost_usd
         return totals
 
+    def costs_by_eval_case_id(self) -> dict[str, float]:
+        """Per-``eval_case_id`` TOTAL cost_usd, summing every record that
+        shares an eval_case_id -- same summing rationale as
+        ``costs_by_session_id`` (an eval case can span more than one
+        invocation). Records with ``eval_case_id is None`` (not resolved --
+        see ``SnapshotRecord.eval_case_id``'s docstring) are excluded
+        entirely. Used by ``resolve_pairing`` for ``tracegauge check --mode
+        paired``'s PRIMARY pairing key as of Phase 4 R2.
+        """
+        totals: dict[str, float] = {}
+        for record in self.records:
+            if record.eval_case_id is None:
+                continue
+            totals[record.eval_case_id] = totals.get(record.eval_case_id, 0.0) + record.cost_usd
+        return totals
 
-def build_snapshot(store: UsageStore, *, prices: dict[str, Any] | None = None) -> Snapshot:
+
+def build_snapshot(
+    store: UsageStore,
+    *,
+    prices: dict[str, Any] | None = None,
+    eval_case_ids_by_session: dict[str, str] | None = None,
+) -> Snapshot:
     """Builds a Snapshot from a live UsageStore's currently-captured calls.
 
     Uses the exact same pricing path as ``CostEfficiencyEvaluator``
@@ -165,9 +256,21 @@ def build_snapshot(store: UsageStore, *, prices: dict[str, Any] | None = None) -
     invocation costs is still a real, meaningful distribution to drift-test
     -- callers who specifically need parent-rolled-up totals should snapshot
     the pre-rollup figures from their own harness instead.
+
+    ``eval_case_ids_by_session`` (Phase 4 R2, optional): a ``{session_id:
+    eval_id}`` map -- typically from ``_compat.load_eval_case_ids_by_session_id``
+    against ADK's own persisted eval-history file (see module docstring) --
+    used to populate each record's ``eval_case_id`` by looking up its
+    captured ``session_id``. A record whose ``session_id`` is ``None`` or
+    absent from the map gets ``eval_case_id=None`` (fails soft here, not
+    closed -- an invocation this package couldn't join is still a real,
+    prices-correctly invocation; it just can't participate in eval-case-id
+    paired mode, and session_id/two-sample fallback still cover it).
     """
     if prices is None:
         prices = load_gemini_prices()
+    if eval_case_ids_by_session is None:
+        eval_case_ids_by_session = {}
 
     records: list[SnapshotRecord] = []
     skipped: list[SnapshotSkip] = []
@@ -191,6 +294,7 @@ def build_snapshot(store: UsageStore, *, prices: dict[str, Any] | None = None) -
         digest = adapted.digest
         assert digest is not None  # adapted.ok guarantees this; narrows for mypy.
         session_cost = price_digest(digest, prices=prices)
+        session_id = store.session_id(invocation_id)
 
         records.append(
             SnapshotRecord(
@@ -201,7 +305,10 @@ def build_snapshot(store: UsageStore, *, prices: dict[str, Any] | None = None) -
                 tokens_cache_read=sum(t.cache_read for t in digest.turns),
                 models=sorted({t.model for t in digest.turns}),
                 call_count=len(digest.turns),
-                session_id=store.session_id(invocation_id),
+                session_id=session_id,
+                eval_case_id=(
+                    eval_case_ids_by_session.get(session_id) if session_id is not None else None
+                ),
             )
         )
 
@@ -214,15 +321,22 @@ def build_snapshot(store: UsageStore, *, prices: dict[str, Any] | None = None) -
 
 
 def write_snapshot(
-    store: UsageStore, output_path: str | Path, *, prices: dict[str, Any] | None = None
+    store: UsageStore,
+    output_path: str | Path,
+    *,
+    prices: dict[str, Any] | None = None,
+    eval_case_ids_by_session: dict[str, str] | None = None,
 ) -> Snapshot:
     """Builds a Snapshot from ``store`` and writes it to ``output_path`` as JSON.
 
     Returns the built Snapshot as well, so a caller (e.g. the ``tracegauge
     snapshot`` CLI subcommand) can report record/skip counts without
-    re-reading the file it just wrote.
+    re-reading the file it just wrote. ``eval_case_ids_by_session`` is
+    forwarded to ``build_snapshot`` unchanged -- see its docstring.
     """
-    snapshot = build_snapshot(store, prices=prices)
+    snapshot = build_snapshot(
+        store, prices=prices, eval_case_ids_by_session=eval_case_ids_by_session
+    )
     path = Path(output_path)
     path.write_text(json.dumps(asdict(snapshot), indent=2), encoding="utf-8")
     return snapshot
@@ -233,15 +347,18 @@ def read_snapshot(path: str | Path) -> Snapshot:
 
     Raises ``ValueError`` on a schema_version this version of adk-tracegauge
     doesn't know how to read, rather than silently misinterpreting a future
-    (or malformed) file's fields.
+    (or malformed) file's fields. Accepts BOTH schema_version 1 and 2 (see
+    ``SNAPSHOT_SCHEMA_VERSION``'s docstring for why 1 remains fully readable
+    -- it just never carries ``eval_case_id``, which correctly falls through
+    to session_id/two-sample fallback in ``resolve_pairing``).
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     schema_version = raw.get("schema_version")
-    if schema_version != SNAPSHOT_SCHEMA_VERSION:
+    if schema_version not in _READABLE_SCHEMA_VERSIONS:
         raise ValueError(
             f"{path}: unsupported snapshot schema_version {schema_version!r} "
-            f"(this version of adk-tracegauge reads schema_version "
-            f"{SNAPSHOT_SCHEMA_VERSION} only)"
+            f"(this version of adk-tracegauge reads schema_version(s) "
+            f"{_READABLE_SCHEMA_VERSIONS} only)"
         )
     return Snapshot(
         schema_version=schema_version,
@@ -274,13 +391,69 @@ def pair_costs_by_session_id(
     return baseline_costs, current_costs, matched
 
 
+def pair_costs_by_eval_case_id(
+    baseline: Snapshot, current: Snapshot
+) -> tuple[list[float], list[float], list[str]]:
+    """Same alignment as ``pair_costs_by_session_id``, keyed on
+    ``eval_case_id`` instead -- Phase 4 R2's PRIMARY pairing key. See
+    ``Snapshot.costs_by_eval_case_id`` and the module docstring's fallback
+    chain."""
+    baseline_by_case = baseline.costs_by_eval_case_id()
+    current_by_case = current.costs_by_eval_case_id()
+    matched = sorted(set(baseline_by_case) & set(current_by_case))
+    baseline_costs = [baseline_by_case[k] for k in matched]
+    current_costs = [current_by_case[k] for k in matched]
+    return baseline_costs, current_costs, matched
+
+
+PairingKey = Literal["eval_case_id", "session_id", "none"]
+
+
+def resolve_pairing(
+    baseline: Snapshot, current: Snapshot
+) -> tuple[list[float], list[float], list[str], PairingKey]:
+    """Implements Phase 4 R2's fallback chain -- the SINGLE place that
+    decides which pairing key ``tracegauge check --mode {auto,paired}``
+    actually uses, so the decision is made once and always reported (never
+    silently chosen -- see ``_cli.py``, which prints the returned
+    ``PairingKey`` on every paired-mode run).
+
+    1. ``eval_case_id`` -- used whenever it has ANY overlap between the two
+       snapshots (even a single matched case), since it is the more stable,
+       more trustworthy key when available at all (authored in the
+       .evalset.json, never regenerated -- see module docstring).
+    2. ``session_id`` -- used when eval_case_id has zero overlap but
+       session_id does (B4's original mechanism, unchanged).
+    3. ``"none"`` -- neither key has any overlap; returns empty lists. The
+       caller (``_cli.py``) is responsible for falling back to two-sample
+       (``auto`` mode) or failing closed with an actionable error (explicit
+       ``--mode paired``).
+
+    Returns ``(baseline_costs, current_costs, matched_keys, resolved_key)``,
+    all index-aligned and sorted by key for determinism, exactly like
+    ``pair_costs_by_session_id``/``pair_costs_by_eval_case_id`` individually.
+    """
+    ec_baseline, ec_current, ec_matched = pair_costs_by_eval_case_id(baseline, current)
+    if ec_matched:
+        return ec_baseline, ec_current, ec_matched, "eval_case_id"
+
+    s_baseline, s_current, s_matched = pair_costs_by_session_id(baseline, current)
+    if s_matched:
+        return s_baseline, s_current, s_matched, "session_id"
+
+    return [], [], [], "none"
+
+
 __all__ = [
     "SNAPSHOT_SCHEMA_VERSION",
+    "PairingKey",
     "Snapshot",
     "SnapshotRecord",
     "SnapshotSkip",
     "build_snapshot",
+    "pair_costs_by_eval_case_id",
     "pair_costs_by_session_id",
     "read_snapshot",
+    "resolve_pairing",
     "write_snapshot",
 ]
