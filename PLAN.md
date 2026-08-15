@@ -897,3 +897,206 @@ Two release-blocking findings from Phase 2's verification pass, fixed on the sam
       Fix verification: full suite in the repo's own `.venv` -- **294 passed** (293 + 1 new
       regression test), 99% coverage (same 3 pre-existing uncovered lines as every prior close this
       phase), ruff check/ruff format --check/mypy src/ all clean. `git status` clean after commit.
+
+## Phase 4
+
+Same branch (`feat/cost-regression-gate`), same rules (zero-cost, no publish/tag/merge without
+reporting first). R1 (a durable-repository-artifact audit of Phase 3's B5 incident and general
+repo state) ran earlier this phase -- its finding (the B5 fork-dispatch root cause was real but
+undocumented at the time) is recorded as the ADDENDUM inside Phase 3's B5 entry above, not
+re-duplicated here.
+
+- [x] R2 -- Corrected the paired-comparison regression-gate mode (Phase 3 B4) from a `session_id`
+      key that is unreachable for the primary `adk eval` CLI workflow to an `eval_case_id` key that
+      works against it, with a fallback chain. **This was a blocking correctness bug**: B4's
+      `--mode paired` shipped believing `session_id` was a stable, capturable pairing key for any
+      eval harness; it was neither, for the default `adk eval` CLI path. DONE 2026-08-15/16.
+
+      2.1 -- Identifier stability, read fresh from installed `google-adk` source (not from Phase 3's
+      own prior conclusion), for TWO `adk eval` runs on the SAME `.evalset.json` file:
+      - **eval case id** (`EvalCase.eval_id`) -- STABLE. `eval_case.py:150`, a required `str` field
+        on the pydantic model deserialized directly from the .evalset.json file, never regenerated.
+      - **eval set id** (`EvalSet.eval_set_id`) -- STABLE, same reasoning (`eval_set.py:27`).
+      - **invocation_id** -- REGENERATED, always. `runners.py:2096`:
+        `invocation_id = invocation_id or new_invocation_context_id()`; the eval path
+        (`evaluation_generator.py:432-449`, `_generate_inferences_for_single_user_invocation`) calls
+        `runner.run_async(user_id=..., session_id=..., new_message=...)` with no `invocation_id=`
+        argument, so a fresh one is always generated. Confirms Phase 3 B4's own finding, independently
+        re-derived from source, not trusted from the prior report.
+      - **session_id** -- CONDITIONAL, not flatly stable or flatly regenerated (a real correction to
+        Phase 3 B4's framing, which treated it as simply "caller-controlled"). Read
+        `local_eval_service.py:510-522` (`_perform_inference_single_eval_item`):
+        `pinned_session_id = initial_session.session_id if initial_session else None`;
+        `generated_session_id = None if pinned_session_id else self._session_id_supplier()`;
+        `session_id = pinned_session_id or generated_session_id`. `self._session_id_supplier`
+        defaults to `_get_session_id` (`local_eval_service.py:67-68`,
+        `f"{EVAL_SESSION_ID_PREFIX}{uuid.uuid4()}"`) and `cli_tools_click.py:1290-1296`
+        (`cli_eval`'s real `LocalEvalService(...)` construction) never overrides it. So: STABLE
+        *only if* the eval case's own `session_input.session_id` is explicitly authored in the
+        .evalset.json file (`eval_case.py:127-135`, `SessionInput.session_id`, "When unset, a random
+        session id is generated per case"); REGENERATED (fresh `uuid.uuid4()` every run) in the
+        default case, which is the common case -- most .evalset.json files never set this field.
+      - **session app_name/user_id** -- STABLE either way. `evaluation_generator.py:103-107`
+        (`_get_or_create_eval_session`): `app_name = initial_session.app_name if initial_session
+        else "EvaluationGenerator"`; `user_id = initial_session.user_id if initial_session else
+        "test_user_id"` -- either an authored constant or a hardcoded one, never randomized.
+
+      2.2 -- Capture-path trace: confirmed `adk eval` CLI -> `cli_tools_click.py:1102` `cli_eval` ->
+      `cli_tools_click.py:1290` constructs a real `LocalEvalService` -> `perform_inference`/`evaluate`
+      (`local_eval_service.py`). This is the actual code path, verified by grep, not assumed.
+      Traced each 2.1 identifier against adk-tracegauge's own capture surface
+      (`TraceGaugeUsagePlugin`'s callback signatures, `_plugin.py`):
+      - **eval_case_id: NEVER accessible.** Read `InvocationContext` (`invocation_context.py`),
+        `Session` (`sessions/session.py`), and `Context`/`CallbackContext` (`agents/context.py`)
+        directly -- none carry an eval_case_id field anywhere. It exists only in
+        `LocalEvalService`/`EvaluationGenerator`'s own external bookkeeping
+        (`InferenceRequest.eval_case_id`, `InferenceResult.eval_case_id`, `EvalCaseResult.eval_id`),
+        entirely outside the agent-execution callback surface this package hooks into.
+      - **session_id: accessible via `callback_context.session.id`** (`Context.session` property,
+        `agents/context.py:294-296`, wrapping `InvocationContext.session: Session`) -- available in
+        BOTH `before_run_callback` (`invocation_context.session.id`) and `after_model_callback`
+        (`callback_context.session.id`), the same underlying `Session` object either way.
+      - **THE REAL BUG, independent of 2.1's session_id-stability finding**: B4's session_id capture
+        (`UsageStore.record_session`) was called ONLY from `TraceGaugeUsagePlugin.before_run_callback`.
+        `before_run_callback`/`after_run_callback` are `BasePlugin` lifecycle hooks that fire ONLY
+        when an agent runs through a caller-built `App`+`Plugin` wrapper (confirmed:
+        `_plugin.py`'s own pre-existing docstring already said this) -- `adk eval`/
+        `AgentEvaluator.evaluate()` build their own bare `Runner` internally with NO App/Plugin
+        wiring at all (re-confirmed Phase 3 B3's finding, source-checked again this phase). The
+        package's OWN documented `adk eval` quickstart mechanism binds only
+        `after_model_callback=plugin.after_model_callback` directly onto the agent, bypassing
+        Plugin lifecycle entirely -- so `before_run_callback` NEVER fires during `adk eval`, meaning
+        `record_session` was NEVER CALLED at all through the primary documented path, regardless of
+        whether session_id itself happened to be stable that run. This is a second, independent
+        failure mode on top of 2.1's session_id-regeneration finding -- either one alone would have
+        broken paired mode for `adk eval`; both were present.
+
+      2.3 -- VERDICT, stated plainly: **B4's shipped `--mode auto`/`paired` was completely
+      unreachable for the primary documented `adk eval` CLI workflow, for two independent reasons**
+      (2.2's capture-path gap AND 2.1's session_id-instability-by-default), not one. It worked ONLY
+      for a hand-rolled `Runner`+`App`+`Plugin` harness that explicitly (a) wires
+      `TraceGaugeUsagePlugin` via `plugins=[...]` (not the quickstart's direct-binding shortcut) and
+      (b) pins a stable `session_id` itself via `runner.run_async(session_id=...)` -- exactly, and
+      only, how B4's own test suite (`test_cli.py`'s `_write_snapshot_with_session_ids` fixtures,
+      never a real `adk eval` invocation) validated it. This is worse than "sometimes works, sometimes
+      doesn't" -- it never worked for `adk eval` at all, session_id was simply never captured. Stated
+      without softening, per instruction.
+
+      2.4 -- Re-keying implementation. Confirmed the task's own hypothesis (eval case id is authored,
+      stable) via 2.1. Since eval_case_id is genuinely unreachable from any live callback (2.2), it is
+      recovered POST-HOC: ADK's own `LocalEvalSetResultsManager.save_eval_set_result`
+      (`local_eval_set_results_manager.py`) writes a real, persisted
+      `<agents_dir>/<app_name>/.adk/eval_history/*.evalset_result.json` file after every `adk eval`
+      run, whose `EvalSetResult.eval_case_results: list[EvalCaseResult]` (`eval_result.py:31-92`)
+      entries carry BOTH `eval_id` (stable, authored) and `session_id` (the actual session the case
+      ran under) per case -- the session_id in this file is the SAME value that, once capturable live
+      (see below), lands in adk-tracegauge's own snapshot records. Joining on session_id recovers the
+      true eval_id.
+      Implemented:
+      - `_plugin.py`: `TraceGaugeUsagePlugin.after_model_callback` now ALSO calls
+        `self._store.record_session(callback_context.invocation_id, callback_context.session.id)`
+        (previously only `before_run_callback` did) -- `after_model_callback` is the one hook proven
+        to fire through `adk eval` (the quickstart's direct-binding mechanism), fixing 2.2's real bug.
+        `before_run_callback`'s own call is left in place (harmless, still needed for the
+        App+Plugin-lifecycle harness path).
+      - `_compat.py`: new `load_eval_case_ids_by_session_id(path) -> dict[str, str]`, guarded the same
+        way as the pre-existing `convert_events_to_eval_invocations` wrapper (actionable
+        `RuntimeError` naming the installed version on an outright missing module/class, since
+        `google.adk.evaluation.eval_result` is not exported from `google.adk.evaluation`'s own
+        `__init__.py` -- not officially public API, same risk category).
+      - `snapshot.py`: `SnapshotRecord` gains `eval_case_id: str | None = None` (additive).
+        `build_snapshot`/`write_snapshot` gain `eval_case_ids_by_session: dict[str, str] | None`,
+        populating each record's `eval_case_id` by looking up its captured `session_id`.
+        `Snapshot.costs_by_eval_case_id()`, `pair_costs_by_eval_case_id()` mirror the existing
+        session_id equivalents. New `resolve_pairing(baseline, current) -> (baseline_costs,
+        current_costs, matched_keys, resolved_key)` is the SINGLE place the fallback chain is
+        decided: (1) `eval_case_id` if it has ANY overlap between the two snapshots; (2) `session_id`
+        if eval_case_id has none but session_id does; (3) `"none"` (empty lists) if neither does.
+      - `_cli.py`: `tracegauge snapshot` gains `--eval-history <path>`, which loads the join map and
+        threads it into `write_snapshot`. `tracegauge check`'s `_resolve_check_mode`/`_cmd_check`
+        now call `resolve_pairing` once and print the ACTUAL resolved key on every paired-mode run
+        (`mode=paired (key=eval_case_id, N overlapping ...)` or `key=session_id`) -- never silently
+        chosen, per the work item's own explicit requirement. The `--mode paired` explicit-request
+        failure message also names whichever key was attempted (or "no overlapping eval_case_id or
+        session_id found at all" if neither had any overlap).
+
+      2.5 -- Re-measured through the FULL new pipeline (`Snapshot` -> `resolve_pairing` ->
+      `evaluate_regression_paired`), not assumed from B4's session_id numbers.
+      `tests/test_regression_power.py`'s two new tests build real `Snapshot`/`SnapshotRecord` pairs
+      using B4's own case-correlated generator (n=25, +10% additive per-case regression, 200 trials,
+      n_boot=1000, `min_n`/`min_effect` floors disabled to isolate detection, same methodology as
+      B4's harness) -- one keyed on `eval_case_id` (simulating `--eval-history`-resolved snapshots,
+      the corrected `adk eval` path), one keyed on `session_id` (simulating the original hand-rolled-
+      harness path, unregressed). **MEASURED: eval_case_id-keyed = 200/200 = 1.000; session_id-keyed
+      = 200/200 = 1.000** -- both reproduce B4's original headline number exactly, and both assert
+      `resolve_pairing`'s `resolved_key` is the expected one on every trial (never falls through to
+      the wrong branch). This confirms the full plumbing end to end with the new key, not just that
+      the underlying bootstrap math (unchanged by this work item) still works in isolation.
+
+      2.6 -- Schema versioning: `SNAPSHOT_SCHEMA_VERSION` bumped 1->2 for the new `eval_case_id`
+      field. Decision: an old schema_version=1 file (or a v2 file written without `--eval-history`)
+      remains FULLY READABLE -- `read_snapshot` now accepts schema_version 1 OR 2
+      (`_READABLE_SCHEMA_VERSIONS = (1, 2)`), since `eval_case_id` is purely additive
+      (`SnapshotRecord(**r)` defaults it to `None` exactly like B4's own `session_id` field, which
+      was added without any version bump at all) -- a v1 file is fully usable in two-sample mode and
+      in session_id-keyed paired mode, only eval-case-id-keyed pairing is unavailable for it (falls
+      through `resolve_pairing`'s chain correctly, to session_id then two-sample). The bump exists
+      purely as accurate provenance ("this file COULD carry eval_case_id"), and so a genuinely
+      unknown future schema_version (3+) still fails loudly via the explicit version check rather
+      than silently misparsing unknown fields.
+
+      2.7 -- Real end-to-end proof: `examples/04_paired_mode_via_adk_eval_cli.py` (new, permanent,
+      real, runnable -- `uv run python examples/04_paired_mode_via_adk_eval_cli.py`). Writes a real
+      32-case EvalSet JSON file (n=32, above the real default `--min-n=30` -- a genuine gate-passing
+      verdict, not a demo that bypasses the real refusal floor) and two agent packages (a fake
+      `BaseLlm` with deterministic, case-dependent token usage -- real case-to-case cost heterogeneity
+      -- the "current" variant adds a fixed +6,000-prompt-token bump per case, a real uniform
+      regression). Runs the REAL `adk eval` CLI command -- literally `cli_eval`, the exact Click
+      command `adk eval` invokes -- via `click.testing.CliRunner`, in-process (so the SAME process's
+      `DEFAULT_USAGE_STORE` captures usage via `after_model_callback` and survives into the snapshot
+      step), once per agent, both against the SAME evalset file. A real gotcha found and documented
+      while building this: ADK's `_get_agent_module` (`cli_eval.py:72-75`) always loads the agent
+      package under the FIXED module name `"agent"` via `importlib.util.spec_from_file_location`,
+      and `__init__.py`'s own `from . import agent` relative import resolves against
+      `sys.modules["agent.agent"]`, which survives a naive re-import across two different agent
+      packages in the same process -- required an explicit `sys.modules` purge (`"agent"` and every
+      `"agent.*"` key) before each of the two `cli_eval` invocations; without it, both runs measured
+      byte-identical costs (confirmed live, this was the actual first failure mode hit while building
+      the proof, root-caused and fixed, not glossed over). This is an artifact of running two
+      in-process CLI invocations back to back for this proof script's own sake -- a real
+      `adk eval`-from-the-shell/CI workflow (a fresh process per invocation) never hits it.
+
+      **REAL OUTPUT (verbatim, this session)**:
+      ```
+      === 2.1/2.3 empirical proof: session_id regenerates, eval_id does not ===
+        case_0: session_id run1='___eval___session___d478c751-...' run2='___eval___session___fc8dfca5-...' (differ=True)
+        case_1: session_id run1='___eval___session___5cec9368-...' run2='___eval___session___9d653250-...' (differ=True)
+        case_10: session_id run1='___eval___session___8f183db1-...' run2='___eval___session___b8caea81-...' (differ=True)
+        ALL 32 session_ids differ between run1/run2: True
+        (eval_id set is IDENTICAL both runs: True)
+
+      === Real `tracegauge check --mode paired` output (against the two ADK-eval-CLI-produced snapshots) ===
+      tracegauge check: mode=paired (key=eval_case_id, 32 overlapping eval_case_ids matched between baseline and current)
+      tracegauge check [method=paired]: n_baseline=32 n_current=32 (min_n=30)
+        mean_baseline=$0.005306  mean_current=$0.007106
+        observed effect: +0.001800 USD (+33.93%), 95% CI [+0.001800, +0.001800] (n_boot=10000, seed=42)
+        statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+        REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
+
+      tracegauge check exit code: 1
+      ```
+      This is a genuine demonstration against the primary documented `adk eval` CLI workflow (not a
+      hand-rolled harness): paired mode resolved `key=eval_case_id`, matched all 32 cases, and
+      correctly detected the real injected regression with a real, non-degenerate exit code 1.
+
+      Tests: 294 -> 320 passing (+26: 6 in `test_compat.py`, 3 in `test_plugin.py`, 15 in
+      `test_snapshot.py`, 5 in `test_cli.py`, 2 in `test_regression_power.py` -- one existing
+      `test_integration.py` fixture strengthened, not counted as new, to give its bespoke fake
+      `callback_context` a `.session.id` matching real ADK's `CallbackContext` contract, which
+      `after_model_callback`'s new session capture now reads unconditionally). 99% coverage (3
+      pre-existing uncovered lines, unchanged in kind from every prior phase close --
+      `_cli.py`'s `if __name__=="__main__"` guard, `evaluator.py`'s pragma-adjacent branch,
+      `snapshot.py`'s defensive `if not calls: continue`). ruff check/ruff format --check/mypy src/
+      all clean. `git status` clean after commit. Zero paid API calls, zero `ANTHROPIC_API_KEY`,
+      zero live model calls anywhere in this work item (fake deterministic `BaseLlm` throughout,
+      matching the repo's own existing zero-cost testing pattern).
