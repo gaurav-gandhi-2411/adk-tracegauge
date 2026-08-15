@@ -70,6 +70,23 @@ implemented response: a paired bootstrap over per-eval-case cost deltas,
 which is substantially more powerful than the unpaired test at the same n
 whenever a real pairing key is available (see ``snapshot.py``'s
 ``session_id`` field and ``_cli.py``'s ``--mode paired``).
+
+Phase 4 R4 note: B4's power grid is a one-time, on-demand OFFLINE
+simulation against a synthetic generator -- useful for characterizing the
+gate in general, but silent about whether any ONE PARTICULAR ``check`` run's
+own actual sample (its real observed variance, its real n) is itself
+well- or under-powered. Every call to ``evaluate_regression``/
+``evaluate_regression_paired`` now ALSO computes, from THIS run's own
+observed data, the minimum effect size a verdict at this n/variance could
+reliably (80% power, matching B4's own "reliable" bar) detect at all --
+see the "Achieved statistical power" section below -- and prints it on
+EVERY run (pass, fail, or insufficient_data), plus an explicit warning
+when the caller's configured practical-significance floor is smaller than
+that achievable floor (i.e. the caller is nominally asking to catch
+smaller regressions than this run's own statistics can actually resolve).
+This makes the B4 power limitation visible at runtime, per-run, using real
+numbers from the real sample -- not only in documentation a user might
+never read.
 """
 
 from __future__ import annotations
@@ -84,7 +101,49 @@ from typing import Literal
 MIN_N_DEFAULT = 30
 """Minimum sample size per group before a bootstrap verdict is trusted --
 see module docstring for the n>=30 justification (CLT/bootstrap-stability
-rule of thumb, not a guess)."""
+rule of thumb, not a guess).
+
+Phase 4 R4, 4.3: explicitly RE-EXAMINED, not left unchanged by default.
+Measured (200 trials/cell, n_boot=1000, B4's exact generator/methodology,
+isolated statistical detection with min_effect floors disabled -- same
+convention as B4's own grid) the two-sample gate's detection rate for a true
+10% cost regression at n in {30, 35, 40, 45}: 71.5%, 79.0%, 77.5%, 83.0% --
+noisy (non-monotonic between 35 and 40 at this trial count, consistent with
+B4's own note that this harness has real trial-count noise) but clearly
+NOT reliably clearing the >=80% bar until somewhere around n=40-45 FOR THIS
+SPECIFIC (BASE_SD=$0.0015, 10%-effect) scenario.
+
+DECISION: kept at 30, not raised. Reasoning: min_n's actual statistical job
+is bootstrap/CLT-validity (the CI's own coverage behaving well), a property
+of the ESTIMATOR, independent of any particular effect size -- that
+justification is untouched by the above measurement. "Does the gate reach
+80% power for a 10% regression" is a DIFFERENT question, and it has no
+single correct answer at the package level: power depends jointly on n,
+the CALLER's own real cost variance, and the regression magnitude THAT
+CALLER cares about -- none of which this package can know in advance. The
+measurement above already shows this concretely: even n=45 only marginally
+clears 80% for THIS one synthetic variance/effect combination; a caller
+with higher cost variance, or one who cares about a 5% regression rather
+than 10%, would need a much larger n for the same 80% bar (B4's own grid:
+n=100 clears only 64.5% for a 5% effect) -- there is no single new min_n
+that generically fixes this, only one optimized for one arbitrary scenario.
+Raising min_n to any such value would also have a real, direct cost: it
+would make the gate categorically refuse (exit 3) on real ADK eval sets in
+the 30-44 range that are otherwise legitimate to compare, trading a
+marginal detection-confidence gain for the loss of ANY signal in a size
+range that is realistic for ADK eval sets (see README/`examples/
+03_ci_regression_gate.py`, n=40). 4.1/4.2 (this same work item, see
+``minimum_detectable_effect_usd``/``_below_floor_warning`` below) are the
+actually-general fix: instead of gatekeeping on one fixed n chosen for one
+assumed scenario, they compute the REAL achievable detection floor from
+THIS run's own actual data every time and warn explicitly when it exceeds
+the caller's own configured floor -- correctly adapting to whatever
+variance/effect-size-of-interest a given caller actually has, which a
+static min_n cannot. min_n=30 remains legitimately justified for the
+narrower CLT-validity role it was always defined for (n=10's own elevated
+FPR in B4's grid, 5.0% vs the ~2.5% nominal expectation, is real evidence
+FOR keeping SOME floor in the 20s-30s range -- just not evidence that the
+floor must chase 80%-power-for-a-10%-regression specifically)."""
 
 DEFAULT_CONFIDENCE = 0.95
 DEFAULT_MIN_EFFECT_USD = 0.0001
@@ -102,6 +161,12 @@ DEFAULT_SEED = 42
 """Hardcoded default per this project's determinism convention (rule 40) --
 the same two input distributions always produce the exact same CI and
 verdict, run to run, unless the caller explicitly asks for a different seed."""
+
+ACHIEVED_POWER_TARGET = 0.80
+"""The detection-rate bar Phase 4 R4's "achieved power" figure is computed
+against -- reuses B4's own "reliable" convention EXACTLY (Phase 3 B4:
+"reliability bar set at >=80% detection... a standard, defensible
+power-analysis convention"), not re-derived or redefined here."""
 
 RegressionStatus = Literal["pass", "regression", "insufficient_data"]
 RegressionMethod = Literal["two_sample", "paired"]
@@ -132,6 +197,304 @@ def _percentile(sorted_values: Sequence[float], q: float) -> float:
         return sorted_values[int(idx)]
     frac = idx - lower
     return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * frac
+
+
+# --- Anti-conservatism at small n: BCa/studentized assessment (Phase 4 R4, 4.5) --
+#
+# B4's grid measured the percentile bootstrap's own false-positive rate as
+# ANTI-conservative at small n -- 5.0% at n=10, 3.5% at n=25, vs a ~2.5%
+# nominal one-sided expectation (elevated, not merely noisy: B4's own note
+# ties this to "small-sample bootstrap CI coverage is known to degrade
+# there"). This section assesses whether a BCa (bias-corrected and
+# accelerated) or studentized bootstrap would fix it, per this work item's
+# own instruction to engage with the statistics for real rather than
+# hand-wave a "known limitation."
+#
+# BCa was IMPLEMENTED (as a throwaway experiment, not shipped -- see the R4
+# session report for the script) and EMPIRICALLY MEASURED against the exact
+# same generator/methodology as B4's grid, 300 trials/cell, n_boot=1000:
+#
+#     n     percentile FPR   BCa FPR
+#     10    6.00% (18/300)   5.33% (16/300)
+#     25    3.00% (9/300)    3.33% (10/300)
+#
+# NO measurable improvement -- the two methods are statistically
+# indistinguishable at this trial count (BCa is marginally BETTER at n=10 and
+# marginally WORSE at n=25, both well within sampling noise for 300 trials).
+# This matches the theoretical expectation, not just a lucky/unlucky
+# measurement: BCa's two corrections (z0, the bias-correction; a, the
+# acceleration/skewness constant) are specifically aimed at bootstrap
+# distributions that are BIASED or SKEWED relative to the true parameter --
+# which matters most for statistics like medians, ratios, or correlation
+# coefficients. A (difference of) SAMPLE MEANS under this project's own
+# generator (`max(0.0001, Gauss(mean, sd))`, mean=$0.010 sitting ~6.7 standard
+# deviations above the $0.0001 floor -- i.e. the floor essentially never
+# binds, so this is very close to plain unclipped Gaussian data) is already
+# close to unbiased and symmetric at these sample sizes, so BCa's z0 and a
+# correction terms are themselves close to zero, and its adjusted CI ends up
+# nearly identical to the plain percentile CI. The small-n anti-conservatism
+# B4 measured is better explained as a GENERIC small-sample bootstrap
+# coverage phenomenon (present for percentile, BCa, or otherwise, at n this
+# small) than as a bias/skewness problem specifically -- BCa targets the
+# latter, not the former, which is exactly why it did not move the number.
+#
+# Studentized (bootstrap-t) was NOT implemented or empirically tested --
+# assessed as NOT worth the attempt, for a stated, checkable reason (not
+# "seemed hard"): it requires an estimate of the standard error WITHIN each
+# individual resample (to studentize that resample's statistic), typically
+# via a nested/double bootstrap or a delta-method variance estimate computed
+# from the resample's own ~10-25 points. At this sample size, a resample
+# drawn with replacement can easily contain many duplicate/near-duplicate
+# values purely by chance, producing a spuriously tiny within-resample
+# variance estimate and hence an extreme, unstable t-statistic for that
+# resample -- a well-documented weakness of the studentized bootstrap at
+# small n (Efron & Tibshirani themselves flag this exact instability), and
+# the reason it is not generally recommended below roughly n=20-30 in the
+# first place -- i.e. exactly the regime this project needs it to help in.
+# Building a nested bootstrap (an inner bootstrap loop inside the outer one,
+# to estimate each resample's own SE) would also meaningfully violate the
+# module's stdlib-only performance assumption (B4's own note: "not remotely
+# performance-sensitive enough to need numpy's vectorization" -- true for a
+# single flat bootstrap, false for one nested inside another, an
+# order-of-magnitude-plus slowdown for the same n_boot).
+#
+# CONCLUSION: NEITHER fix is implemented. BCa was tried and empirically
+# shown not to help; studentized has a clear, stated theoretical reason to
+# expect it would make small-n behavior WORSE (more unstable), not better,
+# and was judged not worth empirically building out a nested bootstrap to
+# confirm what the literature already predicts. This remains a real, honest
+# limitation of the gate at small n -- not fixed this phase, and not
+# expected to be cheaply fixable via either of these two standard bootstrap
+# refinements. A genuinely different approach (e.g. a parametric/normal-
+# theory CI as a small-n fallback, at the cost of a distributional
+# assumption this package has otherwise avoided) is the more promising
+# direction if this is revisited -- noted as a real Phase 5 candidate, not
+# promised.
+
+
+# --- Achieved statistical power (Phase 4 R4) --------------------------------
+#
+# The bootstrap tests above have no closed-form power formula (unlike a
+# t-test). What follows is a PRINCIPLED APPROXIMATION, stated plainly as
+# such, not an exact calculation: it treats the percentile-bootstrap CI as
+# asymptotically equivalent to a normal-theory Wald CI centered at the
+# observed difference/delta mean with standard error ``SE`` -- the same
+# CLT-convergence argument the module docstring's own ``min_n=30``
+# justification already leans on (a percentile-bootstrap CI's coverage
+# converges to the normal-theory CI's as n grows). Under that approximation,
+# the minimum detectable effect (MDE) at one-sided significance level
+# ``alpha`` and power ``power`` is the textbook formula:
+#
+#     MDE = (z_{1-alpha} + z_{power}) * SE
+#
+# where ``z_p`` is the standard normal quantile (probit) function.
+#
+# This module's bootstrap CI is a TWO-SIDED (1-confidence) percentile
+# interval whose LOWER bound is then used as a ONE-SIDED test (see
+# ``evaluate_regression``'s ``statistically_significant = ci_lower > 0.0``)
+# -- so the test's TRUE one-sided alpha is ``(1 - confidence) / 2``, NOT
+# ``1 - confidence``. This is not a guess: Phase 2/B4's own measured
+# false-positive rates (~2.0-2.5% at confidence=0.95, large n) match
+# ``(1 - 0.95) / 2 = 0.025`` exactly, not ``1 - 0.95 = 0.05`` -- confirmed
+# against real prior measurements, not assumed (see ``_one_sided_alpha``).
+#
+# ACCURACY, validated against B4/R2's own empirically-measured grid
+# (``scripts/measure_regression_power.py``'s MEASURED GRID; generator:
+# BASE_MEAN=$0.010, BASE_SD=$0.0015, sd scaling ``sd * (1 + effect)`` under a
+# true effect -- the exact generator the grid was measured against).
+# Predicted (this approximation) vs. measured detection rate:
+#
+#     n     effect%   predicted   measured   |diff|
+#     10    10%       0.294       0.315      0.021
+#     25    5%        0.209       0.270      0.061
+#     25    10%       0.611       0.690      0.079
+#     50    5%        0.369       0.385      0.016
+#     50    10%       0.887       0.870      0.017
+#     100   10%       0.994       0.995      0.001
+#     250   10%       ~1.000      1.000      0.000
+#
+# See ``tests/test_regression.py``'s
+# ``test_achieved_power_approximation_matches_measured_grid_within_tolerance``
+# for the reproducible, asserted version of this table (same formula, same
+# hardcoded measured figures, real tolerance check). The approximation is
+# good to within ~2-8 percentage points across this range -- worst at n=25
+# (where it UNDER-predicts by 6-8 points, i.e. it is CONSERVATIVE there, not
+# overconfident) and excellent (<2 points) at n=50 and above. This is well
+# within what the approximation actually needs to do here: give an honestly-
+# labeled "you probably can't reliably detect anything smaller than about
+# $X" figure from THIS run's own data, not a precision statistical claim --
+# it is never presented as exact.
+
+
+def _normal_cdf(x: float) -> float:
+    """Standard normal CDF via ``math.erf`` (exact closed form, stdlib --
+    no approximation needed in this direction)."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _inverse_normal_cdf(p: float) -> float:
+    """Standard normal quantile function (probit), pure stdlib.
+
+    Uses Peter Acklam's rational approximation (accurate to ~1.15e-9 over
+    the full (0, 1) domain), followed by one step of Halley's-method
+    refinement against the EXACT ``_normal_cdf`` above -- cheap (one extra
+    ``erf`` call) and pushes the result to effectively machine precision
+    (~1e-15), removing any meaningful residual error from the rational
+    approximation alone. No numpy/scipy dependency needed for this (see
+    module docstring's stdlib-only rationale) -- ``scipy.stats.norm.ppf``
+    would otherwise be the obvious tool.
+    """
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"_inverse_normal_cdf requires p in (0, 1), got {p!r}")
+
+    # Rational approximation coefficients (Acklam).
+    a = (
+        -3.969683028665376e01,
+        2.209460984245205e02,
+        -2.759285104469687e02,
+        1.383577518672690e02,
+        -3.066479806614716e01,
+        2.506628277459239e00,
+    )
+    b = (
+        -5.447609879822406e01,
+        1.615858368580409e02,
+        -1.556989798598866e02,
+        6.680131188771972e01,
+        -1.328068155288572e01,
+    )
+    c = (
+        -7.784894002430293e-03,
+        -3.223964580411365e-01,
+        -2.400758277161838e00,
+        -2.549732539343734e00,
+        4.374664141464968e00,
+        2.938163982698783e00,
+    )
+    d = (
+        7.784695709041462e-03,
+        3.224671290700398e-01,
+        2.445134137142996e00,
+        3.754408661907416e00,
+    )
+    p_low = 0.02425
+    p_high = 1.0 - p_low
+
+    if p < p_low:
+        q = math.sqrt(-2.0 * math.log(p))
+        x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0
+        )
+    elif p <= p_high:
+        q = p - 0.5
+        r = q * q
+        x = ((((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q) / (
+            ((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0
+        )
+    else:
+        q = math.sqrt(-2.0 * math.log(1.0 - p))
+        x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0
+        )
+
+    # One Halley's-method refinement step against the exact CDF.
+    e = _normal_cdf(x) - p
+    u = e * math.sqrt(2.0 * math.pi) * math.exp(x * x / 2.0)
+    x = x - u / (1.0 + x * u / 2.0)
+    return x
+
+
+def _one_sided_alpha(confidence: float) -> float:
+    """See the "Achieved statistical power" note above for why this is
+    ``(1 - confidence) / 2``, not ``1 - confidence``."""
+    return (1.0 - confidence) / 2.0
+
+
+def _standard_error_two_sample(baseline: Sequence[float], current: Sequence[float]) -> float | None:
+    """Wald-approximation standard error of ``mean(current) - mean(baseline)``
+    from the OBSERVED sample variance of each group (``Var(mean) = s^2 / n``
+    for each independent group; variances add for the difference of two
+    independent means) -- the closed-form counterpart of what
+    ``bootstrap_diff_of_means`` estimates by resampling, used here for the
+    power approximation. Returns ``None`` if either group has fewer than 2
+    observations (sample variance is undefined for n<2)."""
+    if len(baseline) < 2 or len(current) < 2:
+        return None
+    return math.sqrt(
+        statistics.variance(baseline) / len(baseline) + statistics.variance(current) / len(current)
+    )
+
+
+def _standard_error_paired(deltas: Sequence[float]) -> float | None:
+    """Wald-approximation standard error of ``mean(deltas)`` -- the
+    one-sample analogue of ``_standard_error_two_sample``, for
+    ``evaluate_regression_paired``. Returns ``None`` if fewer than 2 deltas
+    (sample variance undefined)."""
+    if len(deltas) < 2:
+        return None
+    return statistics.stdev(deltas) / math.sqrt(len(deltas))
+
+
+def minimum_detectable_effect_usd(
+    standard_error: float | None,
+    *,
+    confidence: float,
+    power: float = ACHIEVED_POWER_TARGET,
+) -> float | None:
+    """The minimum true effect (in USD) this run's bootstrap test could
+    reliably (``power``, default ``ACHIEVED_POWER_TARGET``=80%) detect,
+    GIVEN the observed ``standard_error`` -- see the "Achieved statistical
+    power" note above for the formula, its derivation, and its validated
+    accuracy. Returns ``None`` when ``standard_error`` is ``None`` (couldn't
+    be estimated -- fewer than 2 samples in a group)."""
+    if standard_error is None:
+        return None
+    z_alpha = _inverse_normal_cdf(1.0 - _one_sided_alpha(confidence))
+    z_power = _inverse_normal_cdf(power)
+    return (z_alpha + z_power) * standard_error
+
+
+def _below_floor_warning(
+    *,
+    min_detectable_effect_usd: float | None,
+    min_effect_usd: float,
+    min_effect_pct: float,
+    mean_baseline: float,
+) -> str | None:
+    """Phase 4 R4, 4.2: if the caller's configured practical-significance
+    floor is below the minimum reliably-detectable effect (4.1), the
+    statistical test itself cannot reliably catch a real regression as
+    small as what the caller configured as "worth caring about" -- a
+    passing/clean verdict at this n/variance should not be read as strong
+    evidence of no regression at that floor.
+
+    ``min_effect_usd``/``min_effect_pct`` are OR'd in the real gate (either
+    clearing its own floor is enough for practical significance -- see
+    ``evaluate_regression``'s own docstring), so the EFFECTIVE configured
+    floor is whichever of the two is EASIER to clear, expressed on a common
+    USD basis (``min_effect_pct`` converted via ``mean_baseline``).
+
+    Returns ``None`` when ``min_detectable_effect_usd`` is ``None`` (no
+    estimate available) or the effective floor already meets/exceeds it (no
+    warning needed).
+    """
+    if min_detectable_effect_usd is None:
+        return None
+    pct_floor_usd = (min_effect_pct / 100.0) * mean_baseline if mean_baseline > 0.0 else math.inf
+    effective_floor_usd = min(min_effect_usd, pct_floor_usd)
+    if effective_floor_usd >= min_detectable_effect_usd:
+        return None
+    return (
+        f"the configured practical-significance floor (effectively ${effective_floor_usd:.6f}, "
+        f"from min_effect_usd=${min_effect_usd:.6f} OR min_effect_pct={min_effect_pct:.2f}%) is "
+        f"BELOW this run's minimum reliably-detectable effect at "
+        f"{int(ACHIEVED_POWER_TARGET * 100)}% power (~${min_detectable_effect_usd:.6f}, given the "
+        "observed variance and n) -- the statistical test cannot reliably catch a real "
+        "regression as small as your configured floor at this sample size. A clean/passing "
+        "result here should NOT be read as strong evidence of no regression at your configured "
+        "floor -- consider a larger eval set, a lower-variance cost metric, or an explicitly "
+        "higher floor."
+    )
 
 
 def bootstrap_diff_of_means(
@@ -208,16 +571,59 @@ class RegressionCheckResult:
     this codebase and any external caller constructing/consuming this
     dataclass) keeps working unchanged -- only evaluate_regression_paired
     sets "paired"."""
+    min_detectable_effect_usd: float | None = None
+    """Phase 4 R4, 4.1: the minimum effect this run's bootstrap test could
+    reliably (``power_target``) detect, given THIS run's observed variance
+    and n -- see the module's "Achieved statistical power" note. ``None``
+    when it could not be estimated (fewer than 2 samples in a group)."""
+    min_detectable_effect_pct: float | None = None
+    """Same as ``min_detectable_effect_usd``, expressed as a percentage of
+    ``mean_baseline`` -- ``None`` if that value is ``None`` OR
+    ``mean_baseline == 0.0`` (percent-of-zero undefined, same convention as
+    ``effect_pct``)."""
+    power_target: float = ACHIEVED_POWER_TARGET
+    """The power level ``min_detectable_effect_usd``/``_pct`` were computed
+    at -- always ``ACHIEVED_POWER_TARGET`` (80%) today, but carried as a
+    field (not just a module constant) so a future caller-configurable
+    power target doesn't require a schema change."""
+    power_warning: str | None = None
+    """Phase 4 R4, 4.2: populated when the configured practical-significance
+    floor is below ``min_detectable_effect_usd`` -- see
+    ``_below_floor_warning``. ``None`` when no warning applies."""
+
+    def _power_line(self) -> str:
+        """The "achieved power" line -- printed on EVERY run (pass, fail,
+        or insufficient_data), per 4.1's own requirement, not only on
+        failure."""
+        if self.min_detectable_effect_usd is None:
+            return (
+                "  achieved power: cannot be estimated this run (fewer than 2 samples in at "
+                "least one group -- no variance estimate available)."
+            )
+        pct_str = (
+            f" ({self.min_detectable_effect_pct:+.2f}% of mean baseline)"
+            if self.min_detectable_effect_pct is not None
+            else ""
+        )
+        return (
+            f"  achieved power: minimum reliably-detectable effect at "
+            f"{int(self.power_target * 100)}% power, given this run's observed variance/n, is "
+            f"~${self.min_detectable_effect_usd:.6f}{pct_str} "
+            "[normal approximation to the bootstrap CI -- see _regression.py module docstring "
+            "for validated accuracy]"
+        )
 
     def report(self) -> str:
         """Human-readable CLI output. Always includes n, CI bounds (when
-        computed), and the observed effect size -- per this work item's
+        computed), the observed effect size, and (Phase 4 R4) the achieved
+        power / minimum-detectable-effect figure -- per this work item's
         statistical-honesty requirement, not only on a failing verdict.
         """
         lines = [
             f"tracegauge check [method={self.method}]: n_baseline={self.n_baseline} "
             f"n_current={self.n_current} (min_n={self.min_n})",
             f"  mean_baseline=${self.mean_baseline:.6f}  mean_current=${self.mean_current:.6f}",
+            self._power_line(),
         ]
         if self.status == "insufficient_data":
             lines.append(
@@ -239,6 +645,8 @@ class RegressionCheckResult:
             f"(floors: min_effect_usd={self.min_effect_usd:.6f} OR "
             f"min_effect_pct={self.min_effect_pct:.2f}%)"
         )
+        if self.power_warning:
+            lines.append(f"  WARNING: {self.power_warning}")
         if self.status == "regression":
             lines.append(
                 "  REGRESSION: cost increased significantly (CI excludes zero) AND "
@@ -275,6 +683,24 @@ def evaluate_regression(
     effect_usd = mean_current - mean_baseline
     effect_pct = (effect_usd / mean_baseline * 100.0) if mean_baseline != 0.0 else None
 
+    # Phase 4 R4, 4.1/4.2: computed from THIS run's own observed sample,
+    # regardless of status -- see the module's "Achieved statistical power"
+    # note. Uses n<2-tolerant helpers so this never raises even when
+    # insufficient_data would otherwise short-circuit below.
+    standard_error = _standard_error_two_sample(baseline_costs, current_costs)
+    min_detectable_effect_usd = minimum_detectable_effect_usd(standard_error, confidence=confidence)
+    min_detectable_effect_pct = (
+        min_detectable_effect_usd / mean_baseline * 100.0
+        if min_detectable_effect_usd is not None and mean_baseline != 0.0
+        else None
+    )
+    power_warning = _below_floor_warning(
+        min_detectable_effect_usd=min_detectable_effect_usd,
+        min_effect_usd=min_effect_usd,
+        min_effect_pct=min_effect_pct,
+        mean_baseline=mean_baseline,
+    )
+
     if n_baseline < min_n or n_current < min_n:
         return RegressionCheckResult(
             status="insufficient_data",
@@ -294,6 +720,9 @@ def evaluate_regression(
             seed=seed,
             statistically_significant=False,
             practically_significant=False,
+            min_detectable_effect_usd=min_detectable_effect_usd,
+            min_detectable_effect_pct=min_detectable_effect_pct,
+            power_warning=power_warning,
         )
 
     ci_lower, ci_upper = bootstrap_diff_of_means(
@@ -324,6 +753,9 @@ def evaluate_regression(
         statistically_significant=statistically_significant,
         practically_significant=practically_significant,
         method="two_sample",
+        min_detectable_effect_usd=min_detectable_effect_usd,
+        min_detectable_effect_pct=min_detectable_effect_pct,
+        power_warning=power_warning,
     )
 
 
@@ -427,6 +859,22 @@ def evaluate_regression_paired(
     effect_usd = statistics.fmean(deltas) if deltas else 0.0
     effect_pct = (effect_usd / mean_baseline * 100.0) if mean_baseline != 0.0 else None
 
+    # Phase 4 R4, 4.1/4.2: see the identical note in evaluate_regression --
+    # the paired analogue uses the one-sample SE of the deltas directly.
+    standard_error = _standard_error_paired(deltas)
+    min_detectable_effect_usd = minimum_detectable_effect_usd(standard_error, confidence=confidence)
+    min_detectable_effect_pct = (
+        min_detectable_effect_usd / mean_baseline * 100.0
+        if min_detectable_effect_usd is not None and mean_baseline != 0.0
+        else None
+    )
+    power_warning = _below_floor_warning(
+        min_detectable_effect_usd=min_detectable_effect_usd,
+        min_effect_usd=min_effect_usd,
+        min_effect_pct=min_effect_pct,
+        mean_baseline=mean_baseline,
+    )
+
     if n_pairs < min_n:
         return RegressionCheckResult(
             status="insufficient_data",
@@ -447,6 +895,9 @@ def evaluate_regression_paired(
             statistically_significant=False,
             practically_significant=False,
             method="paired",
+            min_detectable_effect_usd=min_detectable_effect_usd,
+            min_detectable_effect_pct=min_detectable_effect_pct,
+            power_warning=power_warning,
         )
 
     ci_lower, ci_upper = bootstrap_mean_of_paired_deltas(
@@ -477,10 +928,14 @@ def evaluate_regression_paired(
         statistically_significant=statistically_significant,
         practically_significant=practically_significant,
         method="paired",
+        min_detectable_effect_usd=min_detectable_effect_usd,
+        min_detectable_effect_pct=min_detectable_effect_pct,
+        power_warning=power_warning,
     )
 
 
 __all__ = [
+    "ACHIEVED_POWER_TARGET",
     "DEFAULT_CONFIDENCE",
     "DEFAULT_MIN_EFFECT_PCT",
     "DEFAULT_MIN_EFFECT_USD",
@@ -494,4 +949,5 @@ __all__ = [
     "bootstrap_mean_of_paired_deltas",
     "evaluate_regression",
     "evaluate_regression_paired",
+    "minimum_detectable_effect_usd",
 ]

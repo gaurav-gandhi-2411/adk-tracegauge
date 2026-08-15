@@ -242,14 +242,23 @@ measured detection-power reasoning behind the default).
 `tracegauge check` with no overrides):
 
 ```
-tracegauge check: mode=two-sample (--mode auto: only 0 overlapping session_ids < --min-n=30, so
-falling back from paired -- see snapshot.py's docstring for how to enable paired comparison)
+tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
+overlapping match(es) < --min-n=30, so falling back from paired -- see snapshot.py's docstring for
+how to enable paired comparison)
 tracegauge check [method=two_sample]: n_baseline=10 n_current=10 (min_n=30)
   mean_baseline=$0.008408  mean_current=$0.008385
+  achieved power: minimum reliably-detectable effect at 80% power, given this run's observed
+  variance/n, is ~$0.001049 (+12.48% of mean baseline) [normal approximation to the bootstrap CI --
+  see _regression.py module docstring for validated accuracy]
   INSUFFICIENT DATA: each group needs >= 30 invocations for a statistically meaningful bootstrap
   CI (see adk_tracegauge._regression module docstring for the n>=30 rationale) -- refusing to emit
   a verdict.
 ```
+
+(Re-triggered Phase 4 R4 -- the "achieved power" line is new; the mean/exit-code numbers are
+byte-identical to the prior capture, confirming R4 is purely additive here. Note it prints even
+in the insufficient-data case, since even a too-small sample's own observed variance says
+something real about the achievable detection floor.)
 
 Real exit code: `3`.
 

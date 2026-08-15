@@ -1100,3 +1100,135 @@ re-duplicated here.
       all clean. `git status` clean after commit. Zero paid API calls, zero `ANTHROPIC_API_KEY`,
       zero live model calls anywhere in this work item (fake deterministic `BaseLlm` throughout,
       matching the repo's own existing zero-cost testing pattern).
+
+- [x] R4 -- Made the cost-regression gate honest about its own detection limits AT RUNTIME, not
+      just in docs (B4's own finding: 69% detection at n=25/10% regression, gate refuses below
+      n=30). Computed real achieved statistical power from each run's OWN observed sample,
+      re-examined `min_n` against the full grid, measured real FPR at `min_n` in the shipped
+      default configuration, and assessed (with a real implemented-and-measured experiment, not
+      just reasoning) whether a BCa/studentized bootstrap fixes the small-n anti-conservatism.
+      DONE 2026-08-15/16.
+
+      4.1 -- Achieved power: `_regression.py` gained a normal-approximation "minimum
+      reliably-detectable effect at 80% power" computation from the OBSERVED sample variance and
+      ACTUAL n at `check` time (never a lookup table). Bootstrap power has no closed form, so this
+      is a stated, principled APPROXIMATION: treats the percentile-bootstrap CI as asymptotically
+      equivalent to a normal-theory Wald CI (`MDE = (z_{1-alpha} + z_power) * SE`), the same
+      CLT-convergence argument `min_n=30`'s own justification already leans on. Two real findings
+      made this correct, not just plausible: (a) `_inverse_normal_cdf`/`_normal_cdf` had to be
+      built from scratch (Acklam's rational approximation + one Halley refinement step against
+      `math.erf`, pure stdlib, verified round-tripping to ~1e-9) since no numpy/scipy dependency is
+      taken (same stdlib-only rationale B4 already established); (b) the one-sided alpha this
+      module's test ACTUALLY uses is `(1-confidence)/2`, not `1-confidence` -- confirmed against
+      Phase 2/B4's own measured FPRs (~2.0-2.5% at confidence=0.95, matching `(1-0.95)/2=0.025`,
+      not `0.05`), not assumed; using the wrong alpha here would have silently produced numbers ~2x
+      too small. ACCURACY validated against B4/R2's own MEASURED grid at 7 (n, effect%) points --
+      good to within 2-8 percentage points, worst at n=25 (predicted 61.1%/measured 69.0% for 10%;
+      predicted 20.9%/measured 27.0% for 5%), near-exact (<2pt) at n>=50 -- reproduced as an
+      asserted test, not just a docstring table (`test_achieved_power_approximation_matches_
+      measured_grid_within_tolerance`). Both `evaluate_regression` and `evaluate_regression_paired`
+      now populate `min_detectable_effect_usd`/`_pct`/`power_target` on EVERY call (pass, fail, AND
+      insufficient_data -- an n<min_n sample still has enough points, n>=2, to estimate its own
+      achievable floor, which is arguably the MOST useful place to show it), and `report()` prints
+      an `achieved power:` line unconditionally, not only on failure.
+
+      4.2 -- Below-floor warning: `_below_floor_warning` compares the caller's configured
+      practical-significance floor against 4.1's MDE. Since `min_effect_usd`/`min_effect_pct` are
+      OR'd (either clearing is enough), the comparison uses the EASIER-to-clear of the two,
+      converted to a common USD basis via `mean_baseline` -- not just one of them arbitrarily. Real
+      example, captured live re-running `examples/03_ci_regression_gate.py` (n=40,
+      mean_baseline=$0.008583): achieved MDE ~$0.000474 (5.53%), default floor effectively
+      $0.0001 (the smaller of $0.0001 and 5% of $0.008583=$0.00042915) -- BELOW the MDE, so the
+      WARNING fires, verbatim: "the configured practical-significance floor (effectively $0.000100
+      ...) is BELOW this run's minimum reliably-detectable effect at 80% power (~$0.000474...) --
+      the statistical test cannot reliably catch a real regression as small as your configured
+      floor at this sample size." This is a REAL, live-triggered example (not hypothetical) using
+      this repo's own existing example, now re-captured into `examples/03_ci_regression_gate.py`'s
+      docstring, `README.md`'s Quickstart, and `docs/troubleshooting.md` entry 5 (the insufficient-
+      data case also shows the achieved-power line, no warning since floors don't apply there).
+
+      4.3 -- `min_n` re-examined against the grid, real measurement taken (not skipped): ran the
+      existing `compute_power_grid` harness (200 trials/cell, n_boot=1000, B4's exact
+      generator/methodology, isolated statistical detection) at n in {30, 35, 40, 45} for a 10%
+      effect: **71.5%, 79.0%, 77.5%, 83.0%** -- confirms n=30 itself doesn't clear the >=80% bar
+      for B4's own scenario either, with real measurement noise (non-monotonic 35->40) at this
+      trial count. DECISION: **kept `min_n=30`, not raised.** Reasoning (full version in
+      `_regression.py`'s `MIN_N_DEFAULT` docstring): `min_n`'s actual statistical job is
+      bootstrap/CLT-VALIDITY (a property of the estimator's own coverage, independent of any
+      specific effect size) -- that justification is untouched by the above measurement, which
+      answers a DIFFERENT question ("80% power for a 10% regression"). That different question has
+      no single package-level answer: power depends jointly on n, the caller's OWN real cost
+      variance, and the regression magnitude THAT caller cares about, none of which this package
+      can know in advance -- B4's own grid already proves no single min_n generalizes (n=100 clears
+      only 64.5% for a 5% effect). Raising min_n to chase one scenario's 80% bar would have a real
+      cost (refusing real 30-44-invocation eval sets that are otherwise legitimate to compare) for
+      a false sense of a "fixed" problem. 4.1/4.2 are the actually-general fix: they compute the
+      REAL achievable floor from each run's OWN data and warn explicitly, adapting correctly to
+      whatever variance/effect-of-interest a given caller actually has -- which a static min_n
+      cannot. n=10's own elevated FPR in B4's grid (5.0% vs ~2.5% nominal) remains real evidence for
+      keeping SOME floor in the 20s-30s range, just not evidence the floor must chase
+      80%-power-for-10%-regression specifically. No code changed as a result of this decision
+      (MIN_N_DEFAULT unchanged at 30) -- the docstring now documents the re-examination and its
+      real supporting measurement so a future reader doesn't have to take the decision on faith.
+
+      4.4 -- Real measured FPR at `min_n=30` (the value 4.3 kept), SHIPPED DEFAULT configuration --
+      real `confidence=0.95`, real `min_effect_usd=0.0001`/`min_effect_pct=5.0` (NOT bypassed, per
+      instruction -- this is the actual gate a user gets, not the isolated-statistical version B4's
+      grid used), real `n_boot=10,000`. 500 independent trials (seed base 500,000): **23/500 =
+      4.60%**. Independent adversarial re-check, different seed base (777,777), 500 trials:
+      **21/500 = 4.20%** -- consistent, not a seed artifact (combined ~44/1000=4.4%). **This is the
+      number that goes in the README**, and it is HIGHER than the ~2.5% nominal one-sided
+      expectation and higher than B4's own isolated two-sample n=25 figure (3.5%, floors bypassed)
+      -- a real, honest finding: at this project's own BASE_SD=$0.0015/mean=$0.010 generator (15%
+      relative cost variance), the practical floor (5% relative) sits only ~1.3 sampling standard
+      errors from zero at n=30, so it does NOT meaningfully suppress noise-driven statistical
+      significances at this n/variance combination -- the practical floor and small-n bootstrap
+      anti-conservatism compound rather than one masking the other. A fast, permanent regression
+      test (`test_false_positive_rate_at_min_n_with_real_default_config`, n_boot=2000 for
+      test-suite speed, 250 trials, measured 7/250=2.80%, consistent within sampling noise)
+      documents the authoritative 500-trial/n_boot=10,000 numbers in its own docstring per rule
+      65b provenance, with a generous non-tautological bound so it stays a real regression check.
+
+      4.5 -- BCa/studentized bootstrap assessed for real, not hand-waved. BCa was IMPLEMENTED as a
+      throwaway experiment (jackknife-based acceleration constant `a`, bias-correction `z0` via the
+      proportion of bootstrap replicates below the observed statistic, adjusted percentiles) and
+      EMPIRICALLY MEASURED against the identical generator/methodology as the percentile method,
+      300 trials/cell: **n=10: percentile 6.00% (18/300) vs. BCa 5.33% (16/300); n=25: percentile
+      3.00% (9/300) vs. BCa 3.33% (10/300)** -- NO measurable improvement, statistically
+      indistinguishable at this trial count (BCa marginally better at n=10, marginally worse at
+      n=25). This matches theory, not just this one measurement: BCa's corrections target bias/skew
+      in the bootstrap distribution RELATIVE TO the true parameter, which matters most for
+      statistics like medians/ratios/correlations -- a (difference of) sample MEANS under this
+      project's own near-unclipped-Gaussian generator (mean sits ~6.7 SDs above the floor) is
+      already close to unbiased and symmetric at these n, so BCa's z0/a correction terms are
+      themselves close to zero and its CI ends up nearly identical to the plain percentile one. The
+      measured small-n anti-conservatism is better explained as a GENERIC small-sample bootstrap
+      coverage phenomenon (present regardless of percentile-vs-BCa) than a bias/skew problem
+      specifically -- exactly why BCa didn't move the number. Studentized bootstrap was NOT
+      implemented or empirically tested -- assessed as not worth attempting for a stated, checkable
+      reason: it needs a per-resample standard-error estimate (typically via a NESTED/double
+      bootstrap), and at n=10-25 a with-replacement resample can easily contain many
+      duplicate/near-duplicate values by chance, producing a spuriously tiny within-resample
+      variance and an unstable t-statistic -- a well-documented weakness (Efron & Tibshirani
+      themselves flag it) that is exactly why studentized bootstrap isn't generally recommended
+      below n~20-30, the regime this project needs it to help in. A nested bootstrap would also
+      meaningfully violate the module's stdlib-only performance assumption (an order-of-magnitude-
+      plus slowdown for the same n_boot). CONCLUSION: neither implemented; BCa was tried and shown
+      not to help, studentized has a clear a-priori reason to expect it would make small-n behavior
+      WORSE and wasn't judged worth building a nested bootstrap just to confirm what the literature
+      already predicts. Full reasoning (including the empirical BCa numbers) is in `_regression.py`
+      module's new "Anti-conservatism at small n" section -- a real, honest, documented, unfixed
+      limitation, not concealed.
+
+      Verification: full suite 320 -> 348 passing (+28, all in `tests/test_regression.py`: probit/
+      CDF machinery, standard-error helpers, `minimum_detectable_effect_usd`, the grid-accuracy
+      validation, `_below_floor_warning`, `evaluate_regression`/`_paired` field/report integration,
+      and the 4.4 FPR regression test). 99% coverage (3 pre-existing uncovered lines, unchanged in
+      kind -- `_regression.py` itself reached 100%, 0 new uncovered lines). ruff check/ruff format
+      --check/mypy src/ all clean. Real output re-captured (not hand-edited) into
+      `examples/03_ci_regression_gate.py`'s docstring, `README.md`'s Quickstart block and Known
+      Limitations section, and `docs/troubleshooting.md` entry 5 -- every mean/effect/exit-code
+      number is BYTE-IDENTICAL to the pre-R4 capture, confirming R4 is purely additive to existing
+      behavior. `git status` clean after commit. Zero paid API calls, zero `ANTHROPIC_API_KEY`,
+      pure local stdlib statistics throughout (no numpy/scipy, matching the module's existing
+      constraint). No subagent/fork dispatched at any point in this work item, per instruction.
