@@ -1431,3 +1431,118 @@ re-duplicated here.
       `docs/troubleshooting.md`. `git status` clean after commit. Zero paid API calls, zero
       `ANTHROPIC_API_KEY`. No subagent/fork dispatched at any point in this work item, per
       instruction.
+- [x] R7 -- Made "genuinely fresh wheel-only install, run from outside the repo" the STANDARD
+      testing pattern applied to everything (not just the one command Phase 3 B7 happened to
+      test), with a permanent CI job so it can't silently regress again. DONE 2026-08-16.
+
+      7.1/7.2: `uv build` -> fresh venv (`C:\Users\gaura\tmp\tgr7\verify\venv`, short path,
+      Python 3.11) -> `uv pip install <wheel>` (no editable install, no `uv sync`, no repo on
+      `sys.path`/`PYTHONPATH`) -> ran everything from `C:\Users\gaura\tmp\tgr7\workdir` (outside
+      the repo entirely):
+      - **All 4 `examples/*.py`** (copied verbatim into the workdir, run via the venv's
+        `python.exe`): 01 (adk eval metric quickstart, PASS+FAIL, both real `adk eval` CLI
+        subprocess runs) -- byte-identical to README's captured output; 02 (sub-agent rollup) --
+        `$0.565000` rolled-up score, byte-identical; 03 (CI regression gate, snapshot+snapshot+check
+        as real subprocesses) -- byte-identical to README's Quickstart block, including the R4
+        achieved-power line and warning, real exit code 1; 04 (R2's paired-mode proof via the real
+        `adk eval` CLI, `cli_eval`) -- byte-identical to R2's own capture (`key=eval_case_id`, 32/32
+        matched, real exit code 1). None needed rewriting -- all 4 were already genuinely
+        self-contained (tempfile-based, no repo-relative paths), confirming R2/R4/R5's own examples
+        work already met this bar.
+      - **Literal installed console scripts, not `python -m`/`uv run`** (the truest test of the
+        wheel's own entry points): `adk.exe` and `tracegauge.exe`, resolved via
+        `shutil.which(..., path=<venv>/Scripts)`, both confirmed present and functional.
+        Secondary path (`adk eval` metric): a standalone script wrote a real agent
+        package+evalset, ran the literal `adk` executable via subprocess twice (threshold=$5.00 ->
+        `Overall Eval Status: PASSED`, `Score: 2.8`; threshold=$1.00 -> `FAILED`, `Score: 2.8`) --
+        both process exit code 0 (the documented ADK-side limitation, unaffected by this work item).
+        Hero path (`tracegauge snapshot`+`check`, two-sample): a real `my_eval_suite.py`
+        `--entrypoint` module, run against the literal `tracegauge.exe` three times (snapshot x2,
+        check) -- output byte-identical to README's Quickstart capture (`mean_baseline=$0.008583
+        mean_current=$0.009998`, exit code 1). Paired mode: already fully covered by example 04
+        above (the real `cli_eval` function, not a hand-rolled harness, matching R2's own proof
+        pattern) -- not independently re-run via literal executables since example 04 already
+        satisfies "not a hand-rolled harness" (it invokes the exact function `adk eval` itself
+        calls).
+      - **README.md's literal Quickstart bash block, run exactly as written** (substituting the
+        actual wheel install for the not-yet-published `pip install adk-tracegauge` line, and
+        writing a real `my_eval_suite.py` with the literal `run_and_return_store` name the block
+        references): all 3 `tracegauge` command lines succeeded, real exit code 0 (PASS, since the
+        same deterministic entrypoint was called twice -- correctly shows no regression, confirming
+        the commands are mechanically sound, not just conceptually described).
+      - **`docs/ci-snippet.md`'s literal `tracegauge check` invocation with every documented flag**
+        (`--confidence 0.95 --min-effect-usd 0.0001 --min-effect-pct 5.0 --min-n 30`) -- ran clean,
+        all flags accepted, exit code 0. The YAML workflow block itself is GitHub-Actions-specific
+        (not locally runnable as a whole) -- its constituent `uv run tracegauge ...` command lines
+        are the ones tested; the exit-code table below it is reference material, not code.
+      - **`docs/troubleshooting.md` entries 2, 3, 4** (self-contained Python code blocks): all
+        3 reproduced byte-identical to the documented text, from the wheel-only install.
+      - **`docs/troubleshooting.md` entry 5** (insufficient-data, exit code 3): no literal code
+        block in the doc (captured CLI output only) -- reconstructed an equivalent 10-invocation
+        two-sample case and confirmed the same behavior class: real exit code 3, `INSUFFICIENT
+        DATA` message, achieved-power line present even in the insufficient-data case, matching the
+        doc's own description.
+      - **README.md's illustrative-only blocks, explicitly excluded and why**: the two captured-
+        output blocks under Quickstart (lines ~23-35) and under "Also" (lines ~74-82) are outputs,
+        not commands. The agent-wiring Python fragments (lines ~47-61, ~114-123) and the JSON/bash
+        config fragments (~63-70) are not standalone-runnable (no eval driver in the fragment
+        itself) -- their exact code shape is already exercised for real via `examples/01`/`02` and
+        the secondary-path/hero-path scripts above, so not independently re-run as bare fragments.
+        **One exception, deliberately NOT skipped**: the `convert_events_to_eval_invocations`
+        fragment (README lines ~127-141) references an undefined `events` variable in isolation and
+        is NOT exercised by any existing example -- completed it into a real, standalone,
+        self-contained script (App+Plugin harness -> collect events -> `convert_events_to_eval_
+        invocations` -> `evaluate_invocations`) and ran it from the wheel-only install: real cost
+        `$0.005500`, `EvalStatus.PASSED`, converted 1 event to 1 real `Invocation`. This closes a
+        genuine coverage gap the instruction's "don't silently skip real runnable ones" rule exists
+        to catch.
+
+      **One real failure found and fixed** (`docs/troubleshooting.md` entry 1, the wrong-`google-
+      adk`-version reproduction): from a genuinely clean `uv pip install "google-adk[eval]==1.0.0"`
+      (full dependency resolution, not `--no-deps`), the documented repro command fails ONE IMPORT
+      FRAME EARLIER than documented -- `ModuleNotFoundError: No module named 'deprecated'`, raised
+      from `google/adk/tools/base_tool.py`, before Python ever reaches `adk_tracegauge/__init__.py`.
+      Root-caused, not just observed: `importlib.metadata.metadata("google-adk").get_all(
+      "Requires-Dist")` on the installed `google-adk==1.0.0` lists 52 entries, zero of which mention
+      `deprecated` under any extra -- `google-adk==1.0.0`'s own PyPI metadata never declares this
+      dependency at all, despite `base_tool.py` importing it unconditionally. A real, undeclared-
+      dependency packaging bug in that specific old release, independent of adk-tracegauge, that a
+      genuinely clean resolver hits today. Confirmed the documented text DOES still reproduce
+      exactly once `deprecated` is installed manually first -- this is exactly the class of bug this
+      whole work item exists to catch: Phase 2 W5's original capture almost certainly came from a
+      dev/editable-install venv that already had `deprecated` present transitively from some other
+      already-installed package, invisible until a genuinely clean, from-scratch resolution was
+      attempted. Fixed: `docs/troubleshooting.md` entry 1 now documents this exact gap, its root
+      cause, and the workaround, plus the file's own intro note now records that all 5 entries were
+      re-verified this phase from a wheel-only install. No adk-tracegauge source code changed by
+      this finding -- it is a documentation-accuracy fix, not a package bug.
+
+      7.3: new `wheel-smoke-test` job in `.github/workflows/ci.yml` (added as a second job,
+      independent of `lint-and-test`, no `needs:` -- deliberately runs and can fail on its own
+      merits even if the other job is skipped/cancelled): builds the wheel (`uv build`), creates a
+      fresh venv under `${{ runner.temp }}` (not the repo's own `.venv`), installs ONLY the built
+      wheel (`uv pip install <wheel>`, no editable, no source checkout), sets up a workdir also
+      under `${{ runner.temp }}` (no relationship to the checked-out repo beyond one copied example
+      file), then runs: (a) the hero path via the literal installed `tracegauge` console script
+      (snapshot x2 + check), asserting the specific expected exit code (1, the documented injected
+      regression) rather than treating any non-zero exit as a step failure -- a bare "fail on any
+      error" would have wrongly failed this smoke test on its own correct, documented behavior; (b)
+      `examples/03_ci_regression_gate.py` end to end via the fresh venv's `python.exe`. Verified the
+      job's actual logic locally before trusting it (`C:\Users\gaura\tmp\tgr7\ci_sim.sh`, run via
+      Monitor/background task) -- ran the identical sequence of steps (translated only for Windows
+      venv layout, `Scripts/` vs `bin/`; the commands and their order are otherwise identical to the
+      YAML): wheel build -> fresh venv -> wheel-only install -> unrelated workdir -> hero path with
+      exit-code assertion -> example 03 end to end. Real output: `hero path OK: tracegauge check
+      correctly exited 1 on the injected regression` followed by `=== ALL STEPS PASSED ===`,
+      overall script exit code 0.
+
+      Verification: full suite in the repo's own dev `.venv` -- **357 passed**, 99% coverage
+      (`_cost.py`/`_adapter.py`/`_compat.py`/`_plugin.py`/`_pricing.py`/`_regression.py`/`_store.py`/
+      `__init__.py` all 100%; 3 pre-existing uncovered lines unchanged in kind --
+      `_cli.py`'s `if __name__=="__main__"` guard, `evaluator.py`'s pragma-adjacent line,
+      `snapshot.py`'s defensive `if not calls: continue`). `ruff check`/`ruff format --check`/`mypy
+      src/` all clean. `git status` clean after commit. Zero paid API calls, zero
+      `ANTHROPIC_API_KEY`, zero live model calls anywhere in this work item (fake deterministic
+      `BaseLlm`s and synthetic `UsageStore` records throughout, matching the repo's existing
+      zero-cost testing pattern). No subagent/fork dispatched at any point in this work item, per
+      instruction.
