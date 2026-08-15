@@ -149,4 +149,5 @@ jobs:
 
       - name: One example end to end (examples/03_ci_regression_gate.py, as a real user would run it)
         working-directory: ${{ runner.temp }}/wheel-smoke-workdir
-        run: "${{ runner.temp }}/wheel-smoke-venv/bin/python" 03_ci_regression_gate.py
+        run: |
+          "${{ runner.temp }}/wheel-smoke-venv/bin/python" 03_ci_regression_gate.py
