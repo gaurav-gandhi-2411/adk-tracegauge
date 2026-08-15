@@ -243,7 +243,90 @@ FPR for power, and 0.99 spends too much power for a marginal further FPR
 gain over 0.98. confidence=0.98 (one-sided alpha=0.01) is the point that
 satisfies both stated constraints. See the S4 session report / PLAN.md's
 Phase 5 S4 entry for the full 90-cell grid and the 4.3 power-cost
-extraction at n=30/n=50 for 10/25/50% effects."""
+extraction at n=30/n=50 for 10/25/50% effects.
+
+Phase 7 U2, 2.3 -- RE-DECIDED after paired mode became the DEFAULT
+`--mode auto` preference (U1): this choice was made using ONLY two-sample
+data, before paired-by-default existed. Once paired is the primary path
+for most real runs, does its own different FPR/power profile change the
+optimal alpha tradeoff? Re-measured BOTH modes side by side on the SAME
+(confidence, n, effect) grid, at higher rigor than S4's original decision
+(2,000 trials/cell vs S4's 500, real Wilson-score CIs on every detection
+rate, not bare point estimates) -- confidence in {0.95, 0.98, 0.99} x n in
+{30, 50} x true effect in {0%, 10%, 25%}, statistical-only/floors-disabled
+(same convention as S4), `scripts/measure_regression_confidence_grid.py`,
+72,000 total simulated bootstrap evaluations, real wall-clock 902.8s.
+
+    TWO-SAMPLE (fallback path -- used when no pairing key resolves):
+    confidence  n=30 FPR              n=30 pow(10%)         n=50 FPR              n=50 pow(10%)
+    0.95        2.75% [2.12,3.56]%    72.05% [70.04,73.97]% 3.00% [2.34,3.84]%    88.40% [86.92,89.73]%
+    0.98        0.85% [0.53,1.36]%    57.80% [55.62,59.95]% 1.20% [0.81,1.78]%    81.25% [79.48,82.90]%
+    0.99        0.50% [0.27,0.92]%    49.10% [46.91,51.29]% 0.65% [0.38,1.11]%    74.20% [72.24,76.07]%
+
+    PAIRED (DEFAULT path whenever a pairing key resolves, U1):
+    confidence  n=30 FPR              n=30 pow(10%)         n=50 FPR              n=50 pow(10%)
+    0.95        2.55% [1.94,3.34]%    99.85% [99.56,99.95]% 3.70% [2.96,4.62]%    100.0% [99.81,100]%
+    0.98        1.40% [0.97,2.02]%    99.45% [99.02,99.69]% 1.80% [1.30,2.48]%    100.0% [99.81,100]%
+    0.99        0.90% [0.57,1.42]%    98.80% [98.22,99.19]% 1.10% [0.73,1.66]%    100.0% [99.81,100]%
+
+(25%-effect column omitted from both tables above: >=99.95% at every cell,
+both modes, all three confidence levels -- effectively saturated, carries
+no decision-relevant information here; see the full 18+18-cell grid in
+`reports/confidence_grid_u2.json` and PLAN.md's Phase 7 U2 entry.)
+
+Cross-check against S4's original 500-trial numbers: every cell above is
+within (or immediately adjacent to) S4's own 500-trial measurement's
+sampling noise -- e.g. two-sample n=50/10%-effect/confidence=0.98 was
+83.4% in S4's single run, now measured at 81.25% [79.48,82.90]% at 2,000
+trials, matching Phase 6 T4's independent finding that the 83.4% reading
+was itself on the high side of noise (T4's own re-measurements landed at
+79.6%/81.0%, averaging ~81.3% -- this grid's 81.25% point estimate lands
+almost exactly on that average). The re-measurement did not overturn any
+prior finding; it tightened them.
+
+**The decisive new fact, not visible from two-sample data alone**: paired
+mode's power for a 10% effect is already NEAR-CEILING at confidence=0.98
+(99.45% at n=30, 100.0% at n=50) and stays there even at confidence=0.99
+(98.80% at n=30, 100.0% at n=50) -- tightening confidence all the way to
+0.99 costs paired mode less than 1 percentage point of power at n=30 and
+literally nothing at n=50, because pairing's variance cancellation already
+puts the true effect many standard errors from zero at this sample size.
+Two-sample's profile is the opposite: the SAME tightening (0.98 -> 0.99)
+costs a real 8.70-point drop at n=30 (57.80% -> 49.10%) and, more
+importantly, drops n=50's power BELOW the project's own 80%-power
+"reliable detection" bar (81.25% -> 74.20%) -- reproducing, with a tighter
+CI, the exact criterion-2 failure that got confidence=0.99 rejected by S4
+in the first place.
+
+**DECISION: confidence stays at 0.98 -- the value does NOT change, but the
+reasoning now rests on BOTH modes, not just two-sample.** Two independent
+arguments, each sufficient alone: (1) there is no real headroom to buy by
+tightening further on the paired (now-default) path -- it is already
+essentially saturated at 0.98, so 0.99's FPR improvement there (1.40% ->
+0.90% at n=30) would be bought for almost nothing, but also cannot be
+used to justify a broader tightening; (2) tightening WOULD cost real,
+meaningful power on the two-sample path, which remains a live, real path
+(every run with no resolvable pairing key, insufficient overlap, or an
+explicit `--mode two-sample`) -- and that cost would push exactly the
+metric (n=50/10%-effect power) that S4's own criterion 2 was built to
+protect below its own 80% bar. Raising the shared confidence to 0.99 would
+therefore optimize for the path that needs it least (paired, already >99%
+power at 0.98) at the direct expense of the path that needs it most
+(two-sample, already only marginally-to-not reliable). Since this package
+ships ONE `DEFAULT_CONFIDENCE` shared by both `evaluate_regression` and
+`evaluate_regression_paired` (no per-mode confidence parameter exists
+today), the asymmetric evidence argues for leaving the shared constant
+where it already sits, not moving it toward either mode's individual
+optimum. A genuinely BETTER long-term design -- a paired-mode-specific,
+tighter confidence default, decoupled from two-sample's -- is a real,
+honest architectural option this grid surfaces (paired mode's FPR could
+likely go to 0.99 or beyond with near-zero power cost) but is a NEW
+capability (a second, mode-specific default), not a re-tuning of the
+existing single constant this work item was scoped to decide on; noted as
+a candidate for a future work item, not implemented here. See
+`scripts/measure_regression_confidence_grid.py` and PLAN.md's Phase 7 U2
+entry for the full 18+18-cell grid, both Wilson CIs, and this reasoning in
+full."""
 DEFAULT_MIN_EFFECT_USD = 0.0001
 """A tenth of a cent per invocation. Below this, an "increase" is not worth
 failing a build over even if statistically real -- see module docstring's

@@ -51,6 +51,31 @@ missing.
   grid, measured overlap rate on a real evalset, and the fresh-wheel
   end-to-end proof.
 
+### Verified unchanged (Phase 7 U2)
+- **`DEFAULT_CONFIDENCE` re-examined now that paired mode is the DEFAULT
+  `--mode auto` preference (U1), and CONFIRMED to stay at `0.98`** — Phase 5
+  S4's original tuning used two-sample data only, before paired-by-default
+  existed. Re-measured the deciding cells (confidence ∈ {0.95, 0.98, 0.99} ×
+  `n` ∈ {30, 50} × true effect ∈ {0%, 10%, 25%}) at 2,000 trials/cell (vs.
+  S4/T4's 500) with real Wilson score CIs on every cell, for BOTH modes side
+  by side (`scripts/measure_regression_confidence_grid.py`, 72,000 total
+  simulated bootstrap evaluations, 902.8s wall-clock). Finding: paired
+  mode's power for a 10% effect is already near-ceiling at 0.98 and barely
+  moves at 0.99 (99.45% → 98.80% at n=30; 100.00% → 100.00% at n=50) — no
+  real headroom to buy by tightening further on the now-default path.
+  Two-sample's power drops sharply over the same tightening (57.80% →
+  49.10% at n=30; 81.25% → 74.20% at n=50) and crosses BELOW the project's
+  own 80%-power "reliable detection" bar at n=50 — reproducing S4's original
+  criterion-2 rejection of 0.99, on the fallback path that is still real and
+  live whenever no pairing key resolves. Since one `DEFAULT_CONFIDENCE` is
+  shared by both modes, tightening it would optimize for the path that needs
+  it least at the expense of the path that needs it most — value unchanged,
+  reasoning now paired-mode-aware. See `_regression.py`'s `DEFAULT_CONFIDENCE`
+  docstring ("Phase 7 U2, 2.3") and `PLAN.md`'s Phase 7 U2 entry for the
+  full 18+18-cell grid and reasoning; `README.md`'s "Known limitations"
+  audited so every power/FPR/detection-rate figure in the doc now states its
+  trial count and a Wilson 95% CI, not a bare point estimate.
+
 Per this project's own 0.x convention (established at the 0.1.0 → 0.2.0
 "honest repositioning" bump): the middle number is where a breaking API
 change lands while still pre-1.0, not the first (SemVer's major-version-zero

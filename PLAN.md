@@ -3036,3 +3036,156 @@ without reporting first, no subagent/fork dispatch at any point).
       any point in this work item, per instruction. `git status` clean after commit. Not
       pushed, not tagged, not published -- folded into the still-unpublished `0.3.0`
       (confirmed via `git tag --list`: only `v0.1.0rc1`/`v0.1.0`/`v0.2.0` exist).
+
+- [x] U2 -- Re-measure the deciding cells at >=2,000 trials with real confidence intervals
+      (Wilson score) on every detection rate, for BOTH two-sample and paired mode, and
+      re-decide the shipped `--confidence` default now that paired is U1's DEFAULT path.
+      DONE 2026-08-16, same branch, `adk-tracegauge` side only. No subagent/fork dispatched
+      at any point, per instruction.
+
+      **Premise check first**: read `docs/audit/PHASE6_REPORT.md` in full and this file's
+      entire Phase 7 U1 entry. Confirmed U1's own framing: paired mode is now the DEFAULT
+      `--mode auto` preference whenever a pairing key resolves, and has a HIGHER FPR than
+      two-sample at every shared n except n=50 (U1's 1.5 grid) -- meaning "the shipped
+      default's FPR" now mostly describes paired mode's behavior for real runs, not
+      two-sample's, which is exactly what `DEFAULT_CONFIDENCE=0.98` (Phase 5 S4) was NOT
+      tuned against (S4 used two-sample data only, before paired-by-default existed).
+
+      **2.1/2.2 -- new permanent script, both modes, full 18-cell grid each.**
+      `scripts/measure_regression_confidence_grid.py` (new, permanent, on-demand):
+      confidence ∈ {0.95, 0.98, 0.99} × n ∈ {30, 50} × true effect ∈ {0%, 10%, 25%} = 18
+      cells, 2,000 trials/cell, BOTH modes computed side by side (36 cells, 72,000 total
+      simulated bootstrap evaluations). Statistical-only/floors-disabled (min_n forced to 2,
+      min_effect_usd/pct forced to 0.0) -- same convention as every prior grid in this
+      codebase (Phase 3 B4, Phase 5 S4, Phase 7 U1), for direct comparability. Two-sample
+      reuses `measure_regression_alpha_grid.py`'s own `_generate_pair` (flat generator, S4's
+      exact methodology) by import, not reimplementation. Paired reuses
+      `measure_regression_power.py`'s `generate_case_correlated_pair` (U1's own validated
+      generator) by import. `n_boot=1,000` (real default: 10,000), validated first against
+      the real default at the two most sensitive cells per mode (tightest confidence x
+      smallest n, and the min_n cell): two-sample 0.99/n=30/10%-effect and 0.95/n=50/10%-
+      effect; paired the same two cells -- all 4 validations at 150 trials each, agreement
+      >=97% (consistent with every prior n_boot=1,000 validation in this codebase). Trial-
+      sharing across confidence (S4's own deliberate design, reused): for a fixed
+      (n, effect, trial), the same underlying data and bootstrap seed is reused across all 3
+      confidence levels, since `bootstrap_diff_of_means`/`bootstrap_mean_of_paired_deltas`
+      only use `confidence` to select which percentile of the seed-determined resampled
+      distribution to return -- a matched, not independently-noisy, 3-way comparison per
+      cell. CI method: Wilson score interval (`wilson_score_interval`), reported at the
+      conventional 95% level -- NOT the naive normal-approximation interval, which breaks
+      down exactly in the regime several cells sit in (FPR cells near phat=0.01-0.03; power
+      cells near phat=1.0 at the 25%-effect column). Ran in background (~15 min estimated,
+      actual **902.8s = 15.0 min wall-clock**, two-sample 614.7s + paired 288.0s) --
+      confirmed alive mid-run via `wmic process` (real CPU time increasing across a 5s
+      sample, distinguishing it from ~30 unrelated `python.exe` processes from a different
+      concurrent session's `gcloud storage cp` backup job also running on this machine at the
+      same time), not assumed running from the launch call alone. Raw grid written to
+      `reports/confidence_grid_u2.json`.
+
+      **FULL 18-cell TWO-SAMPLE grid** (detection rate, Wilson 95% CI, n_trials=2,000/cell):
+
+      ```
+      confidence=0.95      n=30                          n=50
+        0% (FPR)            2.75% [2.12,3.56]%            3.00% [2.34,3.84]%
+        10%                72.05% [70.04,73.97]%         88.40% [86.92,89.73]%
+        25%                100.00% [99.81,100]%          100.00% [99.81,100]%
+      confidence=0.98      n=30                          n=50
+        0% (FPR)            0.85% [0.53,1.36]%            1.20% [0.81,1.78]%
+        10%                57.80% [55.62,59.95]%         81.25% [79.48,82.90]%
+        25%                99.95% [99.72,99.99]%         100.00% [99.81,100]%
+      confidence=0.99      n=30                          n=50
+        0% (FPR)            0.50% [0.27,0.92]%            0.65% [0.38,1.11]%
+        10%                49.10% [46.91,51.29]%         74.20% [72.24,76.07]%
+        25%                99.95% [99.72,99.99]%         100.00% [99.81,100]%
+      ```
+
+      **FULL 18-cell PAIRED grid** (detection rate, Wilson 95% CI, n_trials=2,000/cell):
+
+      ```
+      confidence=0.95      n=30                          n=50
+        0% (FPR)            2.55% [1.94,3.34]%            3.70% [2.96,4.62]%
+        10%                99.85% [99.56,99.95]%         100.00% [99.81,100]%
+        25%                100.00% [99.81,100]%          100.00% [99.81,100]%
+      confidence=0.98      n=30                          n=50
+        0% (FPR)            1.40% [0.97,2.02]%            1.80% [1.30,2.48]%
+        10%                99.45% [99.02,99.69]%         100.00% [99.81,100]%
+        25%                100.00% [99.81,100]%          100.00% [99.81,100]%
+      confidence=0.99      n=30                          n=50
+        0% (FPR)            0.90% [0.57,1.42]%            1.10% [0.73,1.66]%
+        10%                98.80% [98.22,99.19]%         100.00% [99.81,100]%
+        25%                100.00% [99.81,100]%          100.00% [99.81,100]%
+      ```
+
+      **Cross-check against S4/T4's original 500-trial numbers**: every 2,000-trial cell
+      above sits within, or immediately adjacent to, the sampling noise of the corresponding
+      S4 (`reports/alpha_grid_s4.json`) or T4 500-trial measurement -- e.g. two-sample
+      n=50/10%-effect/confidence=0.98 was S4's single-run 83.4%, now 81.25% [79.48,82.90]% at
+      4x the trials, landing almost exactly on T4's own independent 3-run average (~81.3%).
+      The re-measurement REFINED prior findings, it did not overturn any of them.
+
+      **2.3 -- re-decision.** `DEFAULT_CONFIDENCE` STAYS at 0.98 -- the value does not change,
+      but the justification is now genuinely paired-mode-aware, not carried over unexamined
+      from S4's two-sample-only analysis. The decisive new fact, visible only once BOTH modes
+      are measured side by side: paired mode's power for a 10% effect is already near-ceiling
+      at confidence=0.98 (99.45% at n=30, 100.00% at n=50) and barely moves at confidence=0.99
+      (98.80% at n=30, 100.00% at n=50) -- tightening confidence all the way to 0.99 costs
+      paired mode under 1 point of power at n=30 and literally nothing at n=50, because
+      pairing's variance cancellation already puts a real 10% effect many standard errors
+      from zero at this n. Two-sample's profile is the opposite: the SAME tightening
+      (0.98->0.99) costs a real 8.70-point drop at n=30 (57.80%->49.10%) and pushes n=50's
+      power BELOW the project's own 80%-power "reliable detection" bar (81.25%->74.20%) --
+      reproducing, with a tighter CI, the exact criterion-2 failure that got confidence=0.99
+      rejected by S4 originally. Since two-sample remains a real, live path (every run with no
+      resolvable pairing key, insufficient overlap, or an explicit `--mode two-sample`),
+      raising the SHARED `DEFAULT_CONFIDENCE` to 0.99 would optimize for the path that needs
+      it least (paired, already saturated at 0.98) at the direct, measured expense of the path
+      that needs it most (two-sample, already only marginally-to-not reliable) -- so the
+      shared constant stays where it is. A genuinely better long-term design (a paired-mode-
+      specific, tighter confidence default, decoupled from two-sample's) is a real option this
+      grid surfaces but is a NEW capability (a second, mode-specific default), not a re-tuning
+      of the existing single constant this work item was scoped to decide on -- noted as a
+      future candidate, not implemented (scope discipline, rule 58b). Full reasoning recorded
+      in `_regression.py`'s `DEFAULT_CONFIDENCE` docstring, "Phase 7 U2, 2.3" section.
+
+      **2.4 -- README audit.** Every pre-existing power/FPR/detection-rate figure in
+      `README.md`'s "Known limitations" section (the only section carrying any) audited and
+      brought up to "trial count + Wilson 95% CI" standard, not left as bare point estimates:
+      the `n=25` two-sample/paired comparison (Phase 3 B4/Phase 4 R2 grid, S4's 500-trial
+      grid), the min_n re-validation figures (Phase 4 R4 4.3, 200 trials/cell), the BCa vs.
+      percentile FPR comparison (300 trials/cell), the confidence retune's FPR/power numbers
+      (S4's 500/1,000-trial figures), and Phase 6 T4's n=30-50 min_n re-validation table (500
+      trials/cell) -- all now carry `(detections/n_trials)` and a Wilson 95% CI alongside the
+      point estimate. A new bullet added after the existing Phase 6 T4 bullet presents the
+      FULL 2.1/2.2 12-cell (10%-effect + FPR columns; 25% column noted as saturated,
+      omitted from the table for readability, full 18+18 cells in `reports/confidence_grid_u2.json`)
+      side-by-side two-sample/paired table plus the 2.3 re-decision. Verified via grep sweep
+      (`grep -n -E "[0-9]+(\.[0-9]+)?%" README.md`, manually excluding already-CI'd figures)
+      that no bare percentage-only power/FPR claim remains anywhere in the file.
+
+      **Tests**: new `tests/test_regression_confidence_grid.py` -- 8 new tests: 4 standalone
+      `wilson_score_interval` correctness tests (matches a known textbook value at
+      phat=0.5/n=100 within +/-0.001; stays within [0,1] near phat=0/phat=1, allowing
+      documented floating-point sqrt-of-a-square rounding noise (~1e-19) rather than asserting
+      bit-exact 0.0/1.0; n=0 returns the maximally-uninformative (0.0, 1.0); interval widens
+      as trial count shrinks at fixed phat) + 4 harness smoke tests (determinism + shape for
+      both `compute_two_sample_confidence_grid`/`compute_paired_confidence_grid`, a coarse
+      large-effect-vs-no-effect sanity check for both modes, and a paired-out-detects-two-
+      sample sanity check at n=30/10%-effect/confidence=0.98) -- same discipline
+      `tests/test_regression_power.py` already established for the U1 grid harness (full grid
+      NOT re-run on every `pytest` invocation, only a tiny deterministic slice). 374 -> 382
+      passing. Coverage: `scripts/` is not part of the coverage gate (`[tool.coverage.run]`
+      omits only `tests/*`, but `scripts/` was never part of `src/`'s 80%+ tier per rule 24;
+      confirmed unchanged from U1's own convention -- `measure_paired_power_grid.py`/
+      `measure_regression_power.py`/`measure_regression_alpha_grid.py` were never covered
+      either). `src/adk_tracegauge` coverage: 99%, unchanged in kind from Phase 6/U1 (same 3
+      pre-existing uncovered lines). `ruff check`/`ruff format --check`/`mypy src/` all clean.
+      No numpy/scipy dependency added. Zero paid API calls, zero `ANTHROPIC_API_KEY`, pure
+      local statistics throughout. `git status` clean after commit. Not pushed, not tagged,
+      not published -- folded into the still-unpublished `0.3.0`.
+
+      **Gotcha for future sessions**: the confidence-grid script's own stdout is
+      block-buffered when redirected to a file (not a TTY), so `tail`-ing the redirect target
+      mid-run shows nothing until the process exits or the OS buffer fills -- do not read this
+      as "hung." Confirm liveness via process CPU time (`wmic process where "ProcessId=<pid>"
+      get UserModeTime,KernelModeTime`, sampled twice a few seconds apart) instead of stdout
+      content when polling a long-running background measurement on Windows.
