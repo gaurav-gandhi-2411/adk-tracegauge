@@ -2337,3 +2337,79 @@ version-dependent license claim) doesn't hold as a reason to fork a package GG o
       number, and a rigorous, permanent, cross-package proof that R5's in-housed arithmetic is
       functionally identical to the real external package it replaced, with zero divergence
       found.
+
+## Phase 6
+
+Same branch (`feat/cost-regression-gate`) for adk-tracegauge-side work; T1 in
+`token-efficiency-scorer` on its own branch. Executes 3 explicit decisions (D1/D2/D3) locked in
+at kickoff, not re-litigated this phase.
+
+- [x] T1 -- Urgent, done first: fixed `tracegauge`'s live PyPI pricing defects (Phase 5 S1).
+      DONE 2026-08-16, in `C:\Users\gaura\ml-projects\token-efficiency-scorer`, branch
+      `fix/0.10.2-pricing-defects` off `docs/releasing`, commit `e67fe91`. NOT pushed, NOT
+      published. Root cause: `_resolve_model` fell through to `prices["default_model"]`
+      ("claude-sonnet-4-6", $3/$15) for any unmatched model string, with only a buried
+      `is_approximate` flag -- `total_usd` stayed a confident-looking wrong number.
+      Fixed to mirror adk-tracegauge's own B1 fail-closed pattern: `_resolve_model` now
+      returns `None` (never a guessed key) for a genuinely unresolvable model;
+      `compute_turn_cost`/`compute_session_cost` return an explicit unpriced result
+      (`priced=False`, `total_usd=0.0`, actionable reason naming the model + remedy) instead
+      of a wrong dollar figure. Added `claude-opus-5`/`claude-sonnet-5` (the models actually
+      missing) plus `claude-fable-5`/`claude-mythos-5` (also found missing), all with real
+      fetched `as_of`/`source_url`. Ported a minimum-viable staleness guard (90-day threshold
+      + CI freshness job, adapted from adk-tracegauge's own workflow) -- explicitly NOT the
+      full promo/tiering/regression-gate engine move, that's Phase 7 scope. Server-tool
+      billing (web search): detected via a real, confirmed-live `usage.server_tool_use`
+      field but not priced (pricing it needs more scoping); now surfaces an explicit
+      `[NOT PRICED: ...]` warning instead of silent omission. Dollar magnitude for a
+      realistic 10k-in/2k-out call: Sonnet-5 was overcharged $0.06 vs correct $0.04 (a 50%
+      overcharge now eliminated); Opus-5 was undercharged $0.06 vs correct $0.10 (was only
+      60% of true cost, now correct). Downstream-dependent check: `gh search code` for
+      `from tes.cost import`/`from tes._digest import`/`import tes.cost` across all of
+      GitHub returned zero matches outside this repo and adk-tracegauge (which no longer
+      depends on it) -- no known public consumer of the old default-fallback behavior found,
+      documented as an upper-bound-not-a-guarantee (169 downloads/week could include private
+      consumers pypistats can't distinguish). `pyproject.toml` bumped to `0.10.2`,
+      `CHANGELOG.md` entry added, framed honestly as a bug-fix release correcting real
+      mispricing. Verification: 650 passed (repo's own CI flags) at commit time; independent
+      verifier's own broader `uv run pytest` (different flags, no ignore/deselect) found
+      667 passed + 8 unrelated pre-existing failures (corpus/clustering tests needing local
+      session data, confirmed unrelated to this fix, not a regression it introduced) --
+      documented as a flag-invocation discrepancy, not a contradiction of the fix itself.
+      Independent verifier separately re-confirmed the core "no silent guess, ever" claim
+      with its OWN 12-model adversarial sweep (different strings than the committed test
+      uses) plus an adversarial hunt across `compute_session_cost`/`cli.py`/`watcher.py` for
+      any remaining fallback path -- found none. **CONFIRMED, zero contradictions on the
+      substantive claim.**
+
+- [x] T2 -- Verifier-dispute re-adjudication (standing rule from here: a verifier
+      contradiction gets a blind third party, the orchestrator does not rule on its own
+      work). DONE 2026-08-16. A fresh agent, given ONLY `tests/test_cost_port_fidelity.py`
+      and both implementations -- no exposure to either the original Phase 5 S5.3 claim or
+      the verifier's contradiction of it -- independently answered the two questions
+      separately, as instructed:
+      (a) does the injected-dict harness prove the ported arithmetic is equivalent? **YES**
+      -- independently traced the same mechanism the orchestrator found (a synthetic
+      per-case `prices` dict, not either package's own bundled table, fed identically to
+      both implementations), confirming the harness genuinely tests arithmetic parity,
+      unconfounded by whichever package's bundled data happens to be stale/incomplete. One
+      NEW, real, smaller gap flagged: the frozen table checks model-KEY coverage
+      (`test_fidelity_cases_cover_every_model_in_the_bundled_price_table`) but does not
+      independently re-verify the frozen table's RATES still match the current
+      `gemini_prices.json` if a rate changes after the table was frozen -- a data-staleness
+      risk in the test itself, not a methodology flaw. Worth a follow-up guard, not
+      implemented this item (out of T2's scope).
+      (b) do the two packages' bundled price tables actually agree today? **NO** --
+      independently confirmed the same divergence Phase 5 S1/S3 already found: only 4
+      models genuinely shared (all matching), 18 Gemini/GPT models exist only in
+      adk-tracegauge's table, 16 Claude models (several retired) exist only in tracegauge's,
+      and the cache-write multipliers differ by design (adk-tracegauge zeroes them since
+      ADK's plugin path never surfaces cache-creation counts; tracegauge's reflect Claude's
+      real cache-write cost). This is the SAME divergence already reported, re-confirmed
+      independently rather than newly discovered -- not a contradiction of anything, a
+      restatement from a blind source.
+      **Outcome: the original Phase 5 S5.3 claim (arithmetic port is valid, 110/110 match)
+      is independently re-confirmed by a genuinely blind third party. The verifier's earlier
+      "CONTRADICTED" was a methodology misread, now settled three ways (orchestrator's own
+      source read, this blind adjudication) -- recorded regardless of outcome, per standing
+      rule 2.3/2.4.**
