@@ -113,6 +113,23 @@ def _generate_case_correlated_pair(
     return baseline, current
 
 
+_HISTORICAL_CONFIDENCE = 0.95
+"""Phase 5 S4 changed DEFAULT_CONFIDENCE 0.95 -> 0.98 (see _regression.py).
+The measurements in this section reproduce a SPECIFIC, already-documented
+Phase 3 B4 / Phase 4 R2 historical finding ("does pairing help, quantified"
+-- numbers cited in PLAN.md and the module docstrings of _regression.py/
+snapshot.py) -- they are not testing "the current shipped default's
+behavior" (that's test_regression.py's job). Pinned explicitly to the
+confidence level those numbers were actually measured at, so this
+reference measurement stays decoupled from -- and unbroken by -- future
+changes to DEFAULT_CONFIDENCE. (Confirmed this is a real effect, not just
+theoretical: at DEFAULT_CONFIDENCE=0.98, the case-correlated 10%-effect
+cell below measures 199/200=0.995, not 200/200=1.000 -- one trial's CI
+lower bound sits between the 0.95 and 0.98 thresholds. Real, honest, and
+exactly the kind of small power cost documented in _regression.py's
+DEFAULT_CONFIDENCE docstring -- not a bug.)"""
+
+
 def _measure_paired_vs_two_sample(effect_pct: float) -> tuple[float, float]:
     """Returns (two_sample_detection_rate, paired_detection_rate) over
     _N_TRIALS independent trials at n=_N, min_n/min_effect floors disabled
@@ -120,7 +137,8 @@ def _measure_paired_vs_two_sample(effect_pct: float) -> tuple[float, float]:
     scripts/measure_regression_power.py's grid -- see its notes 1/2).
     Both methods see the IDENTICAL underlying (baseline, current) data on
     every trial -- a fair, paired comparison of the two comparison METHODS,
-    not two different random draws.
+    not two different random draws. Confidence pinned to
+    _HISTORICAL_CONFIDENCE -- see that constant's docstring.
     """
     two_sample_detections = 0
     paired_detections = 0
@@ -132,6 +150,7 @@ def _measure_paired_vs_two_sample(effect_pct: float) -> tuple[float, float]:
         two_sample_result = evaluate_regression(
             baseline,
             current,
+            confidence=_HISTORICAL_CONFIDENCE,
             min_n=2,
             min_effect_usd=0.0,
             min_effect_pct=0.0,
@@ -141,6 +160,7 @@ def _measure_paired_vs_two_sample(effect_pct: float) -> tuple[float, float]:
         paired_result = evaluate_regression_paired(
             baseline,
             current,
+            confidence=_HISTORICAL_CONFIDENCE,
             min_n=2,
             min_effect_usd=0.0,
             min_effect_pct=0.0,
@@ -273,6 +293,10 @@ def test_resolve_pairing_through_eval_case_id_key_reproduces_the_headline_4_3_re
     "eval_case_id" on every trial, not "session_id" or "none" -- the key
     fallback chain is exercising the intended branch, not accidentally
     falling through.
+
+    Confidence pinned to `_HISTORICAL_CONFIDENCE` (0.95) -- see that
+    constant's docstring for why this specific historical measurement stays
+    decoupled from Phase 5 S4's DEFAULT_CONFIDENCE change.
     """
     detections = 0
     resolved_keys: set[str] = set()
@@ -291,6 +315,7 @@ def test_resolve_pairing_through_eval_case_id_key_reproduces_the_headline_4_3_re
         result = evaluate_regression_paired(
             paired_baseline,
             paired_current,
+            confidence=_HISTORICAL_CONFIDENCE,
             min_n=2,
             min_effect_usd=0.0,
             min_effect_pct=0.0,
@@ -312,6 +337,9 @@ def test_resolve_pairing_through_session_id_key_still_reproduces_the_same_result
     every trial (eval_case_id is never populated in this scenario), and the
     detection rate must match the eval_case_id-keyed result exactly (same
     underlying data, same statistic, only the key label differs).
+
+    Confidence pinned to `_HISTORICAL_CONFIDENCE` (0.95) -- see that
+    constant's docstring.
     """
     detections = 0
     resolved_keys: set[str] = set()
@@ -330,6 +358,7 @@ def test_resolve_pairing_through_session_id_key_still_reproduces_the_same_result
         result = evaluate_regression_paired(
             paired_baseline,
             paired_current,
+            confidence=_HISTORICAL_CONFIDENCE,
             min_n=2,
             min_effect_usd=0.0,
             min_effect_pct=0.0,

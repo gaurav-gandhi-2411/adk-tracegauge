@@ -90,7 +90,7 @@ def test_parser_check_required_args_and_defaults():
     assert args.command == "check"
     assert args.baseline == Path("b.json")
     assert args.current == Path("c.json")
-    assert args.confidence == pytest.approx(0.95)
+    assert args.confidence == pytest.approx(0.98)  # Phase 5 S4: default tightened 0.95 -> 0.98
     assert args.min_effect_usd == pytest.approx(0.0001)
     assert args.min_effect_pct == pytest.approx(5.0)
     assert args.min_n == 30

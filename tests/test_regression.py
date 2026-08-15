@@ -21,6 +21,7 @@ import pytest
 
 from adk_tracegauge._regression import (
     ACHIEVED_POWER_TARGET,
+    DEFAULT_CONFIDENCE,
     MIN_N_DEFAULT,
     _below_floor_warning,
     _inverse_normal_cdf,
@@ -819,20 +820,42 @@ def test_evaluate_regression_paired_report_always_includes_achieved_power_line()
         assert "achieved power" in report_text
 
 
-# --- Phase 4 R4, 4.4: false-positive rate at min_n, SHIPPED default config -
+# --- Phase 5 S4, 4.4: shipped default confidence level ---------------------
+
+
+def test_default_confidence_is_098_per_s4_alpha_grid_decision():
+    # Hardcoded-default test, per this work item's own instruction to update
+    # (not just add to) any test asserting a shipped default value. Changed
+    # from 0.95 -- see DEFAULT_CONFIDENCE's own docstring in _regression.py
+    # for the full 90-cell alpha x n x effect grid this value was chosen
+    # from.
+    assert pytest.approx(0.98) == DEFAULT_CONFIDENCE
+
+
+def test_default_confidence_corresponds_to_one_sided_alpha_of_one_percent():
+    # The whole point of S4's alpha-tuning: DEFAULT_CONFIDENCE=0.98 must
+    # actually mean one-sided alpha=0.01, not some other value -- verifies
+    # the alpha<->confidence mapping this work item relied on throughout.
+    assert _one_sided_alpha(DEFAULT_CONFIDENCE) == pytest.approx(0.01)
+
+
+# --- Phase 5 S4 (supersedes Phase 4 R4, 4.4): false-positive rate at min_n,
+# SHIPPED default config -----------------------------------------------------
 
 
 def test_false_positive_rate_at_min_n_with_real_default_config():
-    """The 4.4 measurement, as a fast permanent regression test.
+    """The S4 4.4 measurement, as a fast permanent regression test.
 
     UNLIKE ``test_false_positive_rate_under_pure_noise`` above (which
     deliberately bypasses the practical-significance floor to isolate pure
     statistical detection, matching B4's own grid methodology), this uses
     the REAL SHIPPED DEFAULT configuration exactly as a user running
     ``tracegauge check`` with no overrides would get it: real
-    ``min_n=30`` (``MIN_N_DEFAULT``), real ``confidence=0.95``, real
-    ``min_effect_usd=0.0001``/``min_effect_pct=5.0`` floors (NOT disabled),
-    real per-invocation-cost generator shape.
+    ``min_n=30`` (``MIN_N_DEFAULT``), real ``confidence=0.98``
+    (``DEFAULT_CONFIDENCE`` -- Phase 5 S4 CHANGED this from 0.95, see that
+    constant's own docstring for the full alpha x n x effect grid and
+    rationale), real ``min_effect_usd=0.0001``/``min_effect_pct=5.0`` floors
+    (NOT disabled), real per-invocation-cost generator shape.
 
     This fast version uses a reduced ``n_boot=2000`` (vs. the real
     default 10,000) purely for test-suite speed -- see the AUTHORITATIVE
@@ -841,26 +864,36 @@ def test_false_positive_rate_at_min_n_with_real_default_config():
 
     AUTHORITATIVE MEASUREMENT (this exact generator/config, real
     ``n_boot=10,000``, 500 independent trials, seed base 500_000):
-    **23/500 = 4.60%** false positives. Independent adversarial re-check
-    (different seed base 777_777, 500 trials): **21/500 = 4.20%**. Combined
-    ~44/1000 = 4.4% -- both runs agree closely, not a seed artifact.
+    **13/500 = 2.60%** false positives. Independent adversarial re-check
+    (different seed base 777_777, 500 trials): **10/500 = 2.00%**. Combined
+    23/1000 = 2.3% -- both runs agree closely, not a seed artifact. This is
+    a >45% reduction from the OLD default's real, shipped-config FPR at the
+    same n/generator (confidence=0.95: 23/500=4.60% + 21/500=4.20%,
+    combined 44/1000=4.4% -- reproduced exactly, real n_boot=10,000, as part
+    of this same S4 measurement pass, confirming Phase 4 R4.4's figure was
+    not a fluke). See ``DEFAULT_CONFIDENCE``'s own docstring in
+    ``_regression.py`` for why confidence=0.98 (not 0.99, which measures
+    even lower FPR but costs too much power at n=50 for a 10% effect) was
+    chosen.
 
-    This is HIGHER than the ~2.5% nominal one-sided expectation and higher
-    than B4's own isolated two-sample n=25 measurement (3.5%, floors
-    bypassed) -- a real, honest finding, not swept under the practical
-    floor: at `n=30` with this project's own BASE_SD=$0.0015/mean=$0.010
-    generator (15% relative cost variance), the 5%-relative practical floor
-    is only ~1.3 sampling standard errors from zero, so it does NOT
-    meaningfully suppress noise-driven statistical significances at this
-    n/variance combination -- the practical floor and the small-n bootstrap
-    anti-conservatism (see 4.5, `_regression.py`'s "Anti-conservatism at
-    small n" section) compound rather than one masking the other. This
-    number is the one used in the README, not the isolated-statistical 3.5%
-    figure from B4's grid -- see 4.4's own instruction to measure the real,
-    as-shipped configuration, not the isolated one.
+    **Practical floor's own contribution, measured separately (S4 4.5)**:
+    at this exact n/confidence/generator, the STATISTICAL-ONLY FPR (floors
+    disabled, isolating the bootstrap test alone) is IDENTICAL to the FULL
+    SHIPPED CONFIG FPR above (13/500 and 10/500, both branches, both seed
+    bases) -- the default practical floor contributes ZERO additional
+    false-positive suppression at this n/variance combination, for the same
+    reason R4.4 already found at the old default: the 5%-relative floor
+    sits too close to zero (a few sampling standard errors) at `n=30`'s
+    variance level to filter out any of the statistically-significant noise
+    that slips through. The floor is still a real, independent, correctly-
+    AND'd gate (see ``evaluate_regression``'s own logic) -- it simply isn't
+    the thing doing the work of suppressing false alarms at THIS particular
+    n/variance; see `_below_floor_warning` and the module's "Achieved
+    statistical power" section for the mechanism (a floor below the
+    achievable-detection floor cannot meaningfully filter anything).
 
     FAST VERSION (this test, n_boot=2000, 250 trials, seed base 910_000,
-    always run): 7/250 = 2.80% -- consistent with (well within sampling
+    always run): 5/250 = 2.00% -- consistent with (well within sampling
     noise of) the authoritative 500-trial/n_boot=10,000 figure above; the
     bound asserted below is generous specifically so this stays a real
     regression check on the checker without being re-tuned to the exact
@@ -885,9 +918,56 @@ def test_false_positive_rate_at_min_n_with_real_default_config():
 
     fp_rate = false_positives / n_trials
 
-    assert fp_rate <= 0.15, (
+    assert fp_rate <= 0.12, (
         f"measured false-positive rate {false_positives}/{n_trials} = {fp_rate:.4f} at "
         f"n={n_per_group} (min_n) with the real shipped default configuration exceeds the "
         "generous upper bound -- investigate before trusting this gate at its default settings "
         "(see this test's docstring for the authoritative 500-trial/n_boot=10,000 measurement)"
+    )
+
+
+def test_practical_floor_contributes_no_extra_fpr_suppression_at_shipped_defaults():
+    """S4 4.5: confirms, as a permanent regression test (not just a
+    one-off measurement in the session report), that the STATISTICAL-ONLY
+    false-positive rate (floors disabled) and the FULL SHIPPED-CONFIG
+    false-positive rate (real min_effect_usd/min_effect_pct floors) are
+    IDENTICAL at min_n/DEFAULT_CONFIDENCE -- the practical-significance
+    floor is a real, independently-AND'd gate (see
+    ``evaluate_regression``'s own ``is_regression = statistically_significant
+    and practically_significant`` -- unchanged by this work item, confirmed
+    by direct re-read), but at THIS n/variance combination it happens to
+    contribute ZERO additional suppression of noise-driven false positives,
+    because the 5%-relative floor sits too close to zero at n=30's sampling
+    variance to filter anything the statistical test itself didn't already
+    let through. See ``test_false_positive_rate_at_min_n_with_real_default_config``'s
+    docstring for the full 500-trial/n_boot=10,000 measurement this fast
+    version reproduces at smaller scale (n_boot=2000, 150 trials).
+    """
+    n_trials = 150
+    n_per_group = MIN_N_DEFAULT
+    mean = 0.010
+    sd = 0.0015
+
+    fp_statistical_only = 0
+    fp_full_config = 0
+    for trial in range(n_trials):
+        gen = random.Random(920_000 + trial)
+        baseline = [max(0.0001, gen.gauss(mean, sd)) for _ in range(n_per_group)]
+        current = [max(0.0001, gen.gauss(mean, sd)) for _ in range(n_per_group)]
+
+        stat_only = evaluate_regression(
+            baseline, current, min_effect_usd=0.0, min_effect_pct=0.0, seed=trial, n_boot=2000
+        )
+        full_config = evaluate_regression(baseline, current, seed=trial, n_boot=2000)
+        if stat_only.status == "regression":
+            fp_statistical_only += 1
+        if full_config.status == "regression":
+            fp_full_config += 1
+
+    assert fp_statistical_only == fp_full_config, (
+        f"statistical-only FPR ({fp_statistical_only}/{n_trials}) differs from full-shipped-"
+        f"config FPR ({fp_full_config}/{n_trials}) at n={n_per_group}/DEFAULT_CONFIDENCE -- "
+        "the practical floor's own contribution has changed from the S4 4.5 measurement "
+        "(previously: zero additional suppression); investigate before trusting the README's "
+        "stated 'floor contributes no extra suppression here' claim"
     )

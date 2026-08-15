@@ -145,7 +145,49 @@ FPR in B4's grid, 5.0% vs the ~2.5% nominal expectation, is real evidence
 FOR keeping SOME floor in the 20s-30s range -- just not evidence that the
 floor must chase 80%-power-for-a-10%-regression specifically)."""
 
-DEFAULT_CONFIDENCE = 0.95
+DEFAULT_CONFIDENCE = 0.98
+"""Phase 5 S4: CHANGED from 0.95, after measuring (not guessing) that
+confidence=0.95's real, shipped-configuration false-positive rate at
+`min_n=30` is ~3.93-4.4% (Phase 4 R4.4, re-confirmed this item with real
+`n_boot=10000`: 23/500=4.60% and 21/500=4.20%, combined 44/1000=4.4%) --
+for a CI gate whose entire value proposition is being trustworthy, a ~1-in-
+23-to-25 false alarm rate on every clean run is not acceptable (see the S4
+session report's 4.1 assessment: a gate that cries wolf this often trains
+users to ignore or disable it, a product-credibility failure, not only a
+statistics one).
+
+Chosen via a full one-sided-alpha x n x true-effect grid
+(``scripts/measure_regression_alpha_grid.py``, 90 cells, alpha in
+{0.025, 0.01, 0.005} <-> confidence in {0.95, 0.98, 0.99} via
+``confidence = 1 - 2*alpha`` -- see ``_one_sided_alpha``), n in
+{10, 25, 30, 50, 100, 250}, true effect in {0%, 5%, 10%, 25%, 50%}, 500
+trials/cell. Two competing goals, both measured explicitly, not eyeballed:
+
+1. **FPR at `min_n=30`, real shipped config** (real floors, real
+   `n_boot=10000`, 500 trials x 2 independent seed bases): confidence=0.95
+   (old default) 4.4% combined; confidence=0.98 (NEW default) **2.3%
+   combined** (13/500=2.60%, 10/500=2.00%); confidence=0.99 1.6% combined
+   (9/500=1.80%, 7/500=1.40%). Target: at or under ~2% (a defensible
+   correction below the originally-INTENDED nominal 2.5%, for safety
+   margin -- see the S4 report). 0.98 lands within sampling noise of that
+   target (combined-1000-trial standard error ~0.9 points at 2 SE) and is
+   a >45% real reduction from the old default; 0.99 clears it with more
+   margin but at a real, stated power cost (next point).
+2. **Power for a 10% true regression at n=50 must not collapse** --
+   floor set at 80%, reusing this SAME module's own established
+   ``ACHIEVED_POWER_TARGET`` "reliable detection" convention (Phase 4 R4)
+   rather than inventing a new number. Measured (alpha grid, n_boot=1000):
+   confidence=0.95: 91.2%; confidence=0.98: **83.4%** (clears 80%);
+   confidence=0.99: 76.2% (does NOT clear 80% -- a real collapse by this
+   project's own definition of "reliable").
+
+confidence=0.99 was REJECTED specifically because it fails criterion 2,
+even though it does best on criterion 1 -- tightening alpha always trades
+FPR for power, and 0.99 spends too much power for a marginal further FPR
+gain over 0.98. confidence=0.98 (one-sided alpha=0.01) is the point that
+satisfies both stated constraints. See the S4 session report / PLAN.md's
+Phase 5 S4 entry for the full 90-cell grid and the 4.3 power-cost
+extraction at n=30/n=50 for 10/25/50% effects."""
 DEFAULT_MIN_EFFECT_USD = 0.0001
 """A tenth of a cent per invocation. Below this, an "increase" is not worth
 failing a build over even if statistically real -- see module docstring's
