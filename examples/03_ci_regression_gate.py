@@ -31,9 +31,10 @@ HOW TO RUN
     or add examples/ to PYTHONPATH.)
 
 EXPECTED OUTPUT (real numbers -- reproduce exactly given the seeds above;
-    re-captured Phase 4 R4 for the new achieved-power line/warning -- the
-    mean/effect/CI numbers themselves are unchanged, confirming R4 is purely
-    additive)
+    re-captured Phase 5 S4 for the new DEFAULT_CONFIDENCE=0.98 default (was
+    0.95) -- the mean/effect numbers are unchanged (same generator/seeds),
+    but the CI bounds and achieved-power figure widen slightly at the new,
+    tighter confidence level, as expected)
     tracegauge snapshot: wrote 40 record(s) to <tmp>/baseline.json
     tracegauge snapshot: wrote 40 record(s) to <tmp>/current.json
     tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
@@ -42,13 +43,13 @@ EXPECTED OUTPUT (real numbers -- reproduce exactly given the seeds above;
     tracegauge check [method=two_sample]: n_baseline=40 n_current=40 (min_n=30)
       mean_baseline=$0.008583  mean_current=$0.009998
       achieved power: minimum reliably-detectable effect at 80% power, given this run's observed
-      variance/n, is ~$0.000474 (+5.53% of mean baseline) [normal approximation to the bootstrap CI
+      variance/n, is ~$0.000536 (+6.25% of mean baseline) [normal approximation to the bootstrap CI
       -- see _regression.py module docstring for validated accuracy]
-      observed effect: +0.001415 USD (+16.49%), 95% CI [+0.001085, +0.001744] (n_boot=10000, seed=42)
+      observed effect: +0.001415 USD (+16.49%), 98% CI [+0.001019, +0.001801] (n_boot=10000, seed=42)
       statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
       WARNING: the configured practical-significance floor (effectively $0.000100, from
       min_effect_usd=$0.000100 OR min_effect_pct=5.00%) is BELOW this run's minimum
-      reliably-detectable effect at 80% power (~$0.000474, given the observed variance and n) --
+      reliably-detectable effect at 80% power (~$0.000536, given the observed variance and n) --
       the statistical test cannot reliably catch a real regression as small as your configured
       floor at this sample size. A clean/passing result here should NOT be read as strong evidence
       of no regression at your configured floor -- consider a larger eval set, a lower-variance

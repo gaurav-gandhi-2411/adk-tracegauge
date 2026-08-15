@@ -61,7 +61,7 @@ jobs:
           uv run tracegauge check
           --baseline eval_baselines/cost_baseline.json
           --current current.json
-          --confidence 0.95
+          --confidence 0.98
           --min-effect-usd 0.0001
           --min-effect-pct 5.0
           --min-n 30
@@ -82,7 +82,7 @@ should not conflate "regressed" with "couldn't tell":
 | Exit code | Meaning |
 |---|---|
 | `0` | No significant regression -- gate passes. |
-| `1` | Regression detected: the cost increase is BOTH statistically significant (95% bootstrap CI excludes zero) AND practically significant (clears `--min-effect-usd` or `--min-effect-pct`). |
+| `1` | Regression detected: the cost increase is BOTH statistically significant (98% bootstrap CI excludes zero -- Phase 5 S4 tightened this from 95%, see README's "Known limitations" for the FPR/power tradeoff) AND practically significant (clears `--min-effect-usd` or `--min-effect-pct`). |
 | `3` | Insufficient data: either the baseline or current snapshot has fewer than `--min-n` (default 30) priced invocations. Refuses to emit a statistically meaningless verdict rather than silently passing or failing. |
 
 (argparse itself uses exit code `2` for malformed CLI invocations, e.g. a

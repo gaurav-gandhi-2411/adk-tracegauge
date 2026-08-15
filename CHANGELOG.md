@@ -56,6 +56,27 @@ middle digit rather than treating every 0.x release as equally unstable).
   PyPI publish (previously: tags only, no Release notes).
 
 ### Changed
+- **Behavior-affecting: `tracegauge check`'s default `--confidence` tightened `0.95` → `0.98`
+  (one-sided alpha `0.025` → `0.01`), Phase 5 S4.** Measured, not guessed: the real
+  shipped-configuration false-positive rate at `min_n=30` under the OLD default was
+  ~4.4% (combined across two independent 500-trial runs, real `n_boot=10,000`,
+  real practical-significance floors) — well above the ~2.5% nominal one-sided
+  expectation and too high for a CI gate whose whole value proposition is being
+  trustworthy (a ~1-in-23 false-alarm rate on every clean run trains users to
+  ignore or disable it). A full 90-cell grid (one-sided alpha × `n` × true effect,
+  ≥500 trials/cell, `scripts/measure_regression_alpha_grid.py`) was measured to
+  choose the new default: `confidence=0.98` cuts the real shipped FPR to ~2.3%
+  combined (within sampling noise of the ~2% target) while keeping detection
+  power for a realistic 10% cost regression at `n=50` at 83.4% — still above this
+  project's own 80%-power "reliable detection" bar (`ACHIEVED_POWER_TARGET`).
+  `confidence=0.99` was considered and rejected — it drives FPR even lower (1.6%)
+  but drops that same `n=50`/10%-effect power to 76.2%, below the 80% bar. Any
+  caller not overriding `--confidence` explicitly will see a real change in
+  behavior: slightly wider bootstrap CIs, slightly fewer false-positive
+  `status="regression"` verdicts, and slightly lower detection power at small
+  effect sizes. Callers who want the old behavior back can pass `--confidence
+  0.95` explicitly. See `_regression.py`'s `DEFAULT_CONFIDENCE` docstring and
+  `PLAN.md`'s Phase 5 S4 entry for the complete 90-cell grid and rationale.
 - **Breaking:** `CostEfficiencyEvaluator` now requires a max-USD-per-invocation
   threshold at construction time (`criterion=CostThresholdCriterion(...)`,
   preferred, or the deprecated `EvalMetric.threshold=`) — raises `ValueError`
