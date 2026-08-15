@@ -3302,3 +3302,158 @@ without reporting first, no subagent/fork dispatch at any point).
       in 11 source files. Zero paid API calls, zero `ANTHROPIC_API_KEY`, zero new numpy/scipy
       dependency. `git status` clean after commit in `adk-tracegauge`. adk-docs commit is
       LOCAL ONLY, not pushed (per instruction). Neither repo pushed, tagged, or published.
+
+- [x] U5 -- Final re-verification of the whole `feat/cost-regression-gate` branch before
+      release: 4-Python-version suite against live `google-adk`, a fresh-wheel pass on
+      everything, sdist/wheel inspection, and the final Train 2 ROUTE-TO-GG list. DONE
+      2026-08-16, final work item, closes Phase 7 and the multi-phase build. No subagent/fork
+      dispatched at any point, per instruction -- every command in this entry was run
+      directly.
+
+      **Premise check first**: read `docs/audit/PHASE6_REPORT.md` and this file's entire
+      Phase 7 U1/U2/U3 entries, plus the current README.md/CHANGELOG.md/pyproject.toml/
+      examples/*.py, before starting. One real premise mismatch found and worth recording
+      (rule 99/101c): the work-item instructions referenced "this phase's own new items
+      (U1-U4)" -- grepped the whole of `PLAN.md` and `git log main..HEAD` for any `U4` entry
+      and found none. Phase 7 contains exactly U1, U2, U3 (all `[x]`) before this U5 --
+      no U4 was ever started or lost; the instruction's own framing was simply inaccurate,
+      not a sign of missing work. Cross-checked against every phase report's own ROUTE-TO-GG
+      list (Phase 2-6) as instructed; Phase 6's own list already states it was cross-checked
+      against Phase 2-5, and Phase 5's against Phase 2-4 -- Phase 6's consolidated Train
+      1/Train 2 list is confirmed the authoritative rollup, and U1-U3 added zero new
+      deployment-relevant steps (docs/code on the still-unpublished 0.3.0, no new workflow,
+      no new package).
+
+      **5.1 -- full suite, 4 Python versions, live `google-adk`.** Checked PyPI's JSON API
+      (`https://pypi.org/pypi/google-adk/json`) fresh this session: latest is still **2.7.0**
+      (no newer release since Phase 6 -- `2.3.0` through `2.7.0` are the only releases that
+      exist), so the repo's own `<2.8.0` pin already covers live. 4 scratch venvs built at
+      SHORT paths (`C:\Users\gaura\tmp\u5-31{0,1,2,3}\.venv`, `uv venv --python 3.10.20`/
+      `3.11.15`/`3.12.12`/`3.13.5`, the exact same 4 patch versions Phase 6 used), each
+      installed via `uv pip install -e <repo> pytest pytest-asyncio pytest-cov pytest-mock
+      "google-adk[eval]==2.7.0"` (explicit live pin, not left to resolve). Confirmed
+      `google-adk==2.7.0` actually resolved in all 4 (`pip show`/`__version__`). Full suite +
+      coverage run in each:
+
+      | Python | Result | Coverage | Wall-clock |
+      |---|---|---|---|
+      | 3.10.20 | **382 passed** | 99% (1026 stmts, 3 miss) | 168.0s |
+      | 3.11.15 | **382 passed** | 99% (1026 stmts, 3 miss) | 187.5s |
+      | 3.12.12 | **382 passed** | 99% (1026 stmts, 3 miss) | 149.4s |
+      | 3.13.5  | **382 passed** | 99% (1026 stmts, 3 miss) | 148.9s |
+
+      Identical missing-line set on all 4 (`_cli.py:468`, `evaluator.py:404`,
+      `snapshot.py:281` -- the same 3 pre-existing uncovered lines every prior phase
+      reports). **Zero code changes required.**
+
+      **5.2 -- fresh-wheel pass on everything.** `uv build` in the repo -> `dist/
+      adk_tracegauge-0.3.0-py3-none-any.whl` + `.tar.gz`. Fresh venv at
+      `C:\Users\gaura\tmp\u5-fresh\.venv` (Python 3.12.12), installed via `uv pip install
+      <wheel-path> "google-adk[eval]==2.7.0"` -- confirmed `adk_tracegauge`/`google.adk` both
+      resolve to `site-packages`, and only `adk-tracegauge.exe` exists under `Scripts/` (no
+      stray `tracegauge.exe`). All work run from `C:\Users\gaura\tmp\u5-fresh\work\`, no
+      relationship to either repo.
+
+      All 4 `examples/*.py` re-run fresh, byte-identical to their committed/documented output:
+      `01_minimal_cost_gate.py` (adk eval metric PASS+FAIL: threshold=$5.00 -> `Overall Eval
+      Status: PASSED`/`Score: 2.8, Threshold: 5.0`, exit 0; threshold=$1.00 -> `FAILED`/
+      `Score: 2.8, Threshold: 1.0`, exit ALSO 0 -- the documented ADK exit-code gap);
+      `02_subagent_rollup.py` (rolled-up score **$0.565000**, `EvalStatus.PASSED`, all 3 call
+      breakdowns matching README byte-for-byte); `03_ci_regression_gate.py` (two-sample,
+      `n=40`/`n=40`, `mean_baseline=$0.008583 mean_current=$0.009998`, `+16.49%`, exit 1 --
+      identical to the README Quickstart block); `04_paired_mode_via_adk_eval_cli.py`
+      (`mode=paired (key=eval_case_id, 32 overlapping...)`, `mean_baseline=$0.005306
+      mean_current=$0.007106`, `+33.93%`, exit 1, all 32 `session_id`s differing/`eval_id`s
+      stable across runs).
+
+      **Hero path, NO `--mode` flag, literal `adk-tracegauge.exe`**: built a fresh 32-case
+      EvalSet + two case-dependent-cost agent packages (mirroring example 04's pattern),
+      ran the real `adk eval` CLI as two genuinely separate OS subprocesses (one per
+      baseline/current variant), joined each run's own real `.evalset_result.json` via
+      `load_eval_case_ids_by_session_id` + `write_snapshot` (the same functions
+      `adk-tracegauge snapshot --eval-history` calls internally). Then ran the literal
+      installed `adk-tracegauge.exe check --baseline ... --current ...` with **zero `--mode`
+      flag**:
+      ```
+      adk-tracegauge check: mode=paired (key=eval_case_id, 32 overlapping eval_case_ids matched between baseline and current)
+      adk-tracegauge check [method=paired]: n_baseline=32 n_current=32 (min_n=30)
+        mean_baseline=$0.005306  mean_current=$0.007106
+        observed effect: +0.001800 USD (+33.93%), 98% CI [+0.001800, +0.001800] (n_boot=10000, seed=42)
+        REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
+      ```
+      real exit code **1** -- confirming U1's default-policy change end to end against this
+      session's own fresh wheel. Same two snapshots re-run with **explicit `--mode
+      two-sample`** (`mode=two-sample`, `n=32`/`n=32`, same means, wider CI
+      `[+0.000479, +0.003087]` since two-sample ignores pairing, WARNING fires since the
+      floor is below the achievable effect, real exit code **1**) and **explicit `--mode
+      paired`** (identical output to the auto-selected run above, real exit code **1**) --
+      both explicit fallbacks confirmed still working.
+
+      **Every runnable code block in README.md/docs/ci-snippet.md/docs/troubleshooting.md
+      re-verified against this same fresh wheel**: `docs/troubleshooting.md` entries 2
+      (unknown model), 3 (missing threshold), and 4 (Ollama Cloud opt-in gap) re-run as
+      literal Python snippets -- all three's captured warning/error text reproduced
+      **byte-for-byte**. Entry 5 (insufficient-data refusal) re-built from the documented
+      n=10/n=10 fixture shape and run via the literal installed CLI -- mode-selection message,
+      `mean_baseline=$0.008408 mean_current=$0.008385` (exact match to the doc's captured
+      numbers), and real exit code **3** all reproduced exactly; entry 1 (version-mismatch)
+      not re-triggered live (out of scope -- unrelated to any U1/U2/U3 edit, and this
+      session's install is in-range `2.7.0` throughout, not the deliberately-out-of-range
+      case that reproduction requires). `README.md`'s "Also" quickstart block and "Sub-agent
+      delegation" blocks are the same wiring pattern as examples 01/02 (already re-run above,
+      byte-identical) -- no separate re-run needed. `docs/ci-snippet.md`'s CLI flags
+      (`--baseline`, `--current`, `--confidence`, `--min-effect-usd`, `--min-effect-pct`,
+      `--min-n` on `check`; `--entrypoint`, `--output`, `--eval-history` on `snapshot`)
+      cross-checked against `adk-tracegauge check --help`/`snapshot --help` on the fresh
+      wheel -- every flag still present, no stale/renamed flag found. **No fixes required
+      anywhere in 5.2** -- every example, every doc code block, and both CLI paths (default
+      and explicit-mode) reproduced cleanly on the first attempt.
+
+      **5.3 -- rebuild, inspect sdist + wheel.** `uv build` (rebuilt fresh for this section
+      too). `python -m zipfile -l dist/adk_tracegauge-0.3.0-py3-none-any.whl`: confirmed
+      `adk_tracegauge/data/gemini_prices.json` present (17,960 bytes) alongside all 11 source
+      modules; `adk_tracegauge-0.3.0.dist-info/entry_points.txt` extracted and read directly
+      -- exactly one console script, `adk-tracegauge = adk_tracegauge._cli:main`, no
+      `tracegauge` entry. `tar tzf dist/adk_tracegauge-0.3.0.tar.gz`: confirmed
+      `adk_tracegauge-0.3.0/src/adk_tracegauge/data/gemini_prices.json` present, plus the full
+      `tests/` tree and `LICENSE`/`README.md`/`pyproject.toml`. `uvx twine check
+      dist/adk_tracegauge-0.3.0-py3-none-any.whl dist/adk_tracegauge-0.3.0.tar.gz` --
+      **both PASSED**.
+
+      **5.4 -- upstream PR re-check (not a full R6-style re-audit, per instruction).** In
+      `oss-contrib/adk-python`: both branches confirmed still present locally with the exact
+      SHAs Phase 4 R6 recorded (`fix/cost-metric-threshold-directionality` @ `c2131b70`,
+      `fix/adk-eval-exit-code` @ `32c8991d`). `gh pr list --repo google/adk-python --author
+      gaurav-gandhi-2411 --state all` shows 4 existing PRs (#6710, #6682, #6681, #6678, one
+      CLOSED) -- **neither of these two branches appears**, confirming both remain genuinely
+      unopened. Fetched a fresh `upstream/main` (`1d2d1eda`, 2026-08-14) -- both branches sit
+      9 commits behind it, but `git diff --name-only <branch>...upstream/main` for each shows
+      **zero overlap** with either branch's own changed files (`agent_evaluator.py`,
+      `cli_tools_click.py`) -- the 9 new upstream commits touch unrelated files
+      (`agent_tool.py`, workflow/streaming/a2a test files), so both PRs remain mergeable
+      as-is, genuinely not stale despite the commit-count drift. `oss-contrib/adk-docs`:
+      branch `docs/adk-tracegauge-integration` confirmed clean, 4 commits ahead of its own
+      tracked remote (unpushed), top commit `9ab70b16` = U3's paired-mode-default rewrite;
+      `gh pr view 2128 --repo google/adk-docs` confirms **OPEN**, same head branch, title
+      unchanged.
+
+      **Full Train 2 ROUTE-TO-GG list** compiled and reported in this session's final
+      response (not duplicated here in full -- see the session transcript / this task's
+      final report for the complete numbered list with exact commands and success signals);
+      cross-checked against Phase 2-6's own ROUTE-TO-GG lists (Phase 6's is the authoritative
+      rollup, itself already cross-checked against Phase 2-5) plus `RELEASING.md`'s actual
+      documented flow -- no item lost, no new item introduced by U1-U3's docs/code-only work.
+
+      **Final verification pass**: `uv sync --frozen` (120 packages, no changes) then `uv run
+      pytest tests/ -v --cov=adk_tracegauge --cov-report=term-missing` in the repo's own
+      primary `.venv` -- **382 passed**, coverage **99%** (1026 stmts, 3 miss), 111.0s
+      wall-clock. `uv run ruff check`: all checks passed. `uv run ruff format --check`: 51
+      files already formatted. `uv run mypy src/`: no issues found in 11 source files. **No
+      real problem was found anywhere in 5.1/5.2/5.3** -- no source, test, or doc fix was
+      needed this work item; the only change is this PLAN.md entry itself. Zero paid API
+      calls, zero `ANTHROPIC_API_KEY`, local-only `google-adk[eval]==2.7.0` throughout (no
+      Ollama call needed -- no live LLM inference occurs anywhere in this package's own test
+      suite or examples, all fake/deterministic `BaseLlm` doubles). `git status` clean after
+      commit. Not pushed, not tagged, not published -- `feat/cost-regression-gate` is
+      release-ready pending the human review/push/merge/tag/publish sequence in the Train 2
+      ROUTE-TO-GG list above.
