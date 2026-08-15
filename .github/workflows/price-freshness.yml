@@ -1,0 +1,53 @@
+name: Price table freshness
+
+# Fails on either of two independent conditions (Phase 3 B2 2.4 added the
+# second): any price table entry's fetched_on date exceeds
+# adk_tracegauge._pricing.STALE_THRESHOLD_DAYS (90 days), OR any entry's
+# promo_until date is within adk_tracegauge._pricing.PROMO_EXPIRY_WARNING_DAYS
+# (14 days) of today or already past. Pure date arithmetic against the
+# bundled JSON file -- no network calls, no paid API calls, zero cost. A red
+# run here means an entry needs re-verifying against its own source_url (see
+# the script's output for which one), not that anything in this repo is
+# broken.
+#
+# Weekly cadence, not daily: the threshold is measured in months (90 days),
+# so a week's detection lag is negligible against that window, and running
+# daily would just add 7x the CI noise for zero earlier warning in
+# practice. Same weekday/cadence family as pypi-canary.yml, offset by an
+# hour so the two scheduled jobs don't contend for the same runner slot.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # every Monday 07:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  price-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # scripts/check_price_freshness.py imports adk_tracegauge._pricing,
+        # and importing any adk_tracegauge submodule runs the package's own
+        # __init__.py first (registers the eval metric against google-adk),
+        # so the full [eval] dependency tree is required here too, same as
+        # ci.yml -- there is no lighter-weight import path around that.
+        run: uv sync --frozen
+
+      - name: Check price table freshness
+        run: uv run python scripts/check_price_freshness.py

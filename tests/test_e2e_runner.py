@@ -10,9 +10,11 @@ classes agree with each other when fed the same string.
 
 This test does not take that on faith. It runs a real BaseAgent through a
 real Runner with TraceGaugeUsagePlugin attached via a real App, collects the
-real Event objects the Runner produces, converts them via ADK's own
-EvaluationGenerator.convert_events_to_eval_invocations (the exact function
-LocalEvalService calls internally -- not a reimplementation), and only then
+real Event objects the Runner produces, converts them via
+adk_tracegauge._compat.convert_events_to_eval_invocations -- this package's
+own version-guarded wrapper (Phase 2 W5) around
+EvaluationGenerator.convert_events_to_eval_invocations, the exact function
+LocalEvalService calls internally, not a reimplementation -- and only then
 hands the resulting real Invocation objects to CostEfficiencyEvaluator. If
 ADK's invocation_id generation ever diverges between the plugin-visible
 CallbackContext and the eval-facing Invocation, this test breaks, which is
@@ -27,7 +29,7 @@ import pytest
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.evaluation.eval_metrics import EvalMetric
-from google.adk.evaluation.evaluation_generator import EvaluationGenerator
+from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.events.event import Event
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
@@ -35,6 +37,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.genai import types as genai_types
 
+from adk_tracegauge._compat import convert_events_to_eval_invocations
 from adk_tracegauge._plugin import TraceGaugeUsagePlugin
 from adk_tracegauge._store import UsageStore
 from adk_tracegauge.evaluator import METRIC_NAME, CostEfficiencyEvaluator
@@ -105,8 +108,9 @@ async def test_real_runner_plugin_capture_correlates_with_real_invocation_id():
     captured_invocation_id = captured_ids[0]
 
     # The real conversion path LocalEvalService uses internally -- not a
-    # reimplementation of it.
-    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+    # reimplementation of it -- via this package's own version-guarded
+    # wrapper (Phase 2 W5, adk_tracegauge._compat).
+    invocations = convert_events_to_eval_invocations(events)
     assert len(invocations) == 1
     real_invocation = invocations[0]
 
@@ -116,8 +120,9 @@ async def test_real_runner_plugin_capture_correlates_with_real_invocation_id():
     assert captured_invocation_id == real_invocation.invocation_id
 
     evaluator = CostEfficiencyEvaluator(
-        eval_metric=EvalMetric(metric_name=METRIC_NAME), store=store
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1_000.0), store=store
     )
     result = evaluator.evaluate_invocations([real_invocation])
 
     assert result.per_invocation_results[0].score == 2.80
+    assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED

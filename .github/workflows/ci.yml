@@ -14,6 +14,62 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches pyproject.toml's requires-python floor (>=3.10) and classifiers
+        # (3.10-3.13) exactly -- previously only 3.11 was exercised despite the
+        # package claiming broader support (Phase 1 finding D3). Lint/format/mypy
+        # only need to run once (see the single-job steps below); ruff and mypy
+        # don't vary per interpreter, so running them on every matrix leg would be
+        # redundant CI minutes without adding coverage.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --python ${{ matrix.python-version }}
+
+      - name: Lint (ruff check)
+        if: matrix.python-version == '3.11'
+        run: uv run ruff check .
+
+      - name: Format check (ruff format)
+        if: matrix.python-version == '3.11'
+        run: uv run ruff format --check .
+
+      - name: Type check (mypy)
+        if: matrix.python-version == '3.11'
+        run: uv run mypy src/
+
+      - name: Unit tests
+        run: uv run pytest tests/ -v
+
+  # Phase 4 R7: catches the exact class of bug B7 found -- something that
+  # works from a dev checkout (editable install, cwd/PYTHONPATH already
+  # containing the repo one way or another, transitive deps already present
+  # from some other already-installed package) but breaks for a real user
+  # doing `pip install adk-tracegauge` into a clean environment. The
+  # `lint-and-test` job above never catches this class: `uv sync --frozen`
+  # installs this package *editable*, from inside the repo checkout, so a
+  # bug that only manifests for a real wheel install (Phase 3 B7's
+  # `_resolve_entrypoint`/sys.path gap) or a real clean dependency
+  # resolution (Phase 4 R7's `docs/troubleshooting.md` entry-1 finding) is
+  # invisible to it by construction. This job is deliberately independent of
+  # `lint-and-test` (no `needs:`) so it always runs and fails the build on
+  # its own merits.
+  wheel-smoke-test:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -27,17 +83,71 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync --frozen
+      - name: Build the wheel
+        run: uv build
 
-      - name: Lint (ruff check)
-        run: uv run ruff check .
+      - name: Create a fresh venv, unrelated to the repo checkout's own .venv
+        run: uv venv "${{ runner.temp }}/wheel-smoke-venv" --python 3.11
 
-      - name: Format check (ruff format)
-        run: uv run ruff format --check .
+      - name: Install the built wheel only (not the source checkout, not editable)
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          uv pip install --python "${{ runner.temp }}/wheel-smoke-venv" "$WHEEL"
 
-      - name: Type check (mypy)
-        run: uv run mypy src/
+      - name: Set up a workdir with no relationship to the repo checkout
+        run: |
+          mkdir -p "${{ runner.temp }}/wheel-smoke-workdir"
+          cp examples/03_ci_regression_gate.py "${{ runner.temp }}/wheel-smoke-workdir/"
 
-      - name: Unit tests
-        run: uv run pytest tests/ -v
+      - name: Hero path -- adk-tracegauge snapshot + adk-tracegauge check (literal installed console script)
+        working-directory: ${{ runner.temp }}/wheel-smoke-workdir
+        run: |
+          cat > my_eval_suite.py <<'PYEOF'
+          from __future__ import annotations
+          import random
+          from adk_tracegauge._store import CapturedCall, DEFAULT_USAGE_STORE
+
+          def _populate(seed: int, mean_output_tokens: float) -> None:
+              rng = random.Random(seed)
+              for i in range(40):
+                  output_tokens = max(1000, int(rng.gauss(mean_output_tokens, mean_output_tokens * 0.1)))
+                  DEFAULT_USAGE_STORE.record(
+                      f"inv-{seed}-{i}",
+                      CapturedCall(
+                          model_version="gemini-2.5-flash-lite",
+                          prompt_token_count=5_000,
+                          candidates_token_count=output_tokens,
+                          cached_content_token_count=0,
+                          total_token_count=5_000 + output_tokens,
+                      ),
+                  )
+
+          def run_baseline() -> None:
+              DEFAULT_USAGE_STORE.clear()
+              _populate(seed=1234, mean_output_tokens=20_000)
+
+          def run_current() -> None:
+              DEFAULT_USAGE_STORE.clear()
+              _populate(seed=42, mean_output_tokens=20_000 * 1.20)
+          PYEOF
+          TG="${{ runner.temp }}/wheel-smoke-venv/bin/adk-tracegauge"
+          "$TG" snapshot --entrypoint my_eval_suite:run_baseline --output baseline.json
+          "$TG" snapshot --entrypoint my_eval_suite:run_current --output current.json
+          # A real, deliberately-regressed pair (see examples/03's own docstring) --
+          # this run is EXPECTED to exit 1 (regression detected), so a bare
+          # non-zero-fails-the-step default would wrongly fail this smoke test.
+          # Assert the specific expected exit code instead of ignoring failure.
+          set +e
+          "$TG" check --baseline baseline.json --current current.json
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "expected exit code 1 (regression detected) from adk-tracegauge check, got $code"
+            exit 1
+          fi
+          echo "hero path OK: adk-tracegauge check correctly exited 1 on the injected regression"
+
+      - name: One example end to end (examples/03_ci_regression_gate.py, as a real user would run it)
+        working-directory: ${{ runner.temp }}/wheel-smoke-workdir
+        run: |
+          "${{ runner.temp }}/wheel-smoke-venv/bin/python" 03_ci_regression_gate.py

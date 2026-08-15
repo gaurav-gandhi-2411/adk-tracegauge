@@ -1,40 +1,139 @@
 # adk-tracegauge
 
-A cost evaluator for **custom** [Google ADK](https://github.com/google/adk-python) eval harnesses: real per-invocation dollar cost, computed from actual token usage captured during inference, built on [tracegauge](https://github.com/gaurav-gandhi-2411/token-efficiency-scorer)'s cost engine. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models.
+A statistically-validated **CI cost-regression gate** for [Google ADK](https://github.com/google/adk-python) agents: snapshot a real per-invocation **USD cost** distribution from an eval run, and fail the build only when a cost increase is both statistically and practically significant. Also registers as a real per-invocation **PASS/FAIL threshold metric** inside `adk eval` itself. Built on [tracegauge](https://github.com/gaurav-gandhi-2411/token-efficiency-scorer)'s cost engine. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models.
 
+[![PyPI](https://img.shields.io/pypi/v/adk-tracegauge.svg)](https://pypi.org/project/adk-tracegauge/)
+[![CI](https://github.com/gaurav-gandhi-2411/adk-tracegauge/actions/workflows/ci.yml/badge.svg)](https://github.com/gaurav-gandhi-2411/adk-tracegauge/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/pypi/pyversions/adk-tracegauge.svg)](https://pypi.org/project/adk-tracegauge/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://pypi.org/project/adk-tracegauge/)
 
 ---
 
-## Read this first: `adk eval` and `AgentEvaluator.evaluate()` cannot surface this metric's output
+## Quickstart: the CI cost-regression gate
 
-**This is not a drop-in metric for your normal ADK eval runs.** Confirmed against `google-adk==2.6.3`:
+```bash
+pip install adk-tracegauge
+adk-tracegauge snapshot --entrypoint my_eval_suite:run_and_return_store --output baseline.json
+adk-tracegauge snapshot --entrypoint my_eval_suite:run_and_return_store --output current.json
+adk-tracegauge check --baseline baseline.json --current current.json
+```
 
-- `AgentEvaluator.evaluate()` **raises `AssertionError` unconditionally** whenever `adk_tracegauge_cost_usd` is present in your eval config's `criteria` — regardless of the actual computed cost or the threshold you configure. There is no threshold that avoids this.
-- `adk eval` (the CLI) does not raise, but discards the per-invocation score and rationale entirely — both the printed per-invocation table and the persisted `eval_history/*.evalset_result.json` show `score: null`. Only one coarse, un-persisted console line (the run's aggregate score) carries a real number.
+`my_eval_suite:run_and_return_store` is a zero-argument callable you already have (it runs your ADK eval — `AgentEvaluator.evaluate()` or your own `Runner` harness — with `TraceGaugeUsagePlugin` wired in; see "What this actually is" below). `adk-tracegauge check` runs a percentile bootstrap on the difference in mean cost and exits with a **real, distinguishable exit code**: `0` pass, `1` regression, `3` insufficient data. Real output, from a genuine +20%-mean injected regression measured fresh this session (`examples/03_ci_regression_gate.py`, both `snapshot` calls plus `check` itself run as real subprocesses, `google-adk==2.6.3`):
 
-The root cause is in ADK itself, not in this package: `LocalEvalService._evaluate_metric_for_eval_case` (`local_eval_service.py:428-436`) discards a metric's real per-invocation result and substitutes an empty one whenever that metric's `eval_status` is `EvalStatus.NOT_EVALUATED` — and `NOT_EVALUATED` is this metric's permanent status, by design: cost is lower-is-better, and misusing ADK's `score >= threshold -> PASSED` convention to force a pass/fail verdict on a dollar figure would misrepresent the number to anyone reading it. ADK's `Evaluator` contract currently has no shape for "measures something real, but isn't pass/fail" — filed upstream as a design question: **[google/adk-python#6725](https://github.com/google/adk-python/issues/6725)**.
+```
+adk-tracegauge check [method=two_sample]: n_baseline=40 n_current=40 (min_n=30)
+  mean_baseline=$0.008583  mean_current=$0.009998
+  achieved power: minimum reliably-detectable effect at 80% power, given this run's observed variance/n, is ~$0.000536 (+6.25% of mean baseline) [normal approximation to the bootstrap CI -- see _regression.py module docstring for validated accuracy]
+  observed effect: +0.001415 USD (+16.49%), 98% CI [+0.001019, +0.001801] (n_boot=10000, seed=42)
+  statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+  WARNING: the configured practical-significance floor (effectively $0.000100, from min_effect_usd=$0.000100 OR min_effect_pct=5.00%) is BELOW this run's minimum reliably-detectable effect at 80% power (~$0.000536, given the observed variance and n) -- the statistical test cannot reliably catch a real regression as small as your configured floor at this sample size. A clean/passing result here should NOT be read as strong evidence of no regression at your configured floor -- consider a larger eval set, a lower-variance cost metric, or an explicitly higher floor.
+  REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
+```
+```
+$ echo $?
+1
+```
 
-Until that's resolved, this package works through a **hand-rolled Runner harness you build and drive yourself** — not through `adk eval` or `AgentEvaluator`. That's a smaller claim than earlier versions of this README made, and it's the honest one. See below for what that actually looks like, and for a documented (but not supported) partial workaround.
+**Every `adk-tracegauge check` run prints its own "achieved power" figure (Phase 4 R4)** — the minimum effect size the bootstrap test could reliably (80% power) detect given THIS run's actual observed variance and `n`, plus (as shown above) an explicit `WARNING` whenever your configured `--min-effect-usd`/`--min-effect-pct` floor is smaller than that achievable floor — i.e. the gate is telling you, with real numbers from your own run, that it cannot reliably catch a regression as small as what you configured it to care about. See "Known limitations" below.
+
+**Measured this session, not estimated:** the 3 `adk-tracegauge`-specific command lines above took **35.3s wall-clock combined** (11.75s + 11.85s + 11.75s, each dominated by cold `google-adk` import overhead, not by the actual comparison — the bootstrap itself runs in well under a second). A full copy-pasteable GitHub Actions workflow lives at [`docs/ci-snippet.md`](docs/ci-snippet.md).
+
+**Why this is the hero path, not the `adk eval` metric below:** `adk eval`'s own process exit code does not reflect PASSED/FAILED (verified live — see below), so it cannot gate a CI job on its own; and `AgentEvaluator.evaluate()`, ADK's pytest-style harness, has a real, source-confirmed polarity bug that can invert pass/fail for a lower-is-better metric like cost (see "Known limitations"). `adk-tracegauge check` is this package's own code, with its own real exit codes, proven to work standalone — that's the actual, statistically-measured differentiator (see "Known limitations" for the honest caveats on detection power at small `n`, and how `--mode paired` fixes them).
+
+## Shipped default, stated plainly
+
+`adk-tracegauge check` defaults to `--mode auto`, and — as of Phase 7 U1 — that default now **prefers a paired comparison**: whenever a stable per-eval-case key resolves (`eval_case_id` first, recovered via `--eval-history`; `session_id` as a fallback) with at least `--min-n` (30) overlapping cases between baseline and current, paired mode runs. **Only when no such key resolves, or fewer than `min_n` cases overlap, does it automatically fall back to an unpaired two-sample comparison** using the full baseline/current cost distributions — never a mix of the matched subset and the rest. The resolved mode and key are printed on every single run, unconditionally, never silently assumed.
+
+At the shipped configuration — `confidence=0.98`, `min_n=30` — here is what that default actually detects, measured by Phase 7 U2's 2,000-trial-per-cell grid (`scripts/measure_regression_confidence_grid.py`, Wilson 95% CIs on every cell; full 18+18-cell table in "Known limitations" below and `reports/confidence_grid_u2.json`):
+
+**Paired mode — the default, whenever a pairing key resolves:**
+- False-positive rate: **1.40% [0.97%, 2.02%] (28/2,000 trials)**
+- Power to detect a true 10% cost regression: **99.45% [99.02%, 99.69%] (1,989/2,000 trials)**
+
+**Two-sample fallback — what you get when no pairing key resolves, stated separately and not blended into the paired numbers above:**
+- False-positive rate: **0.85% [0.53%, 1.36%] (17/2,000 trials)**
+- Power to detect a true 10% cost regression: **57.80% [55.62%, 59.95%] (1,156/2,000 trials)**
+
+## What this gate can and cannot detect
+
+No competitor found in this project's Phase 1 competitive research reports statistical power at all — only pass/fail. This honest breakdown of what the test can and can't actually see, at the sizes real ADK eval sets run at, is the differentiator:
+
+- **Large regressions (25%+): reliably detected at any realistic `n`, either mode.** Both modes saturate to ≥99.95% detection at every measured `n`/confidence combination (Phase 7 U2's grid; full data in `reports/confidence_grid_u2.json`) — this is the case the gate was always going to catch.
+- **Moderate regressions (10%): near-ceiling when a pairing key resolves; only moderately-to-poorly caught under the two-sample fallback.** Paired mode: **99.45% [99.02%, 99.69%] (1,989/2,000 trials)** at `n=30`, **100.00% [99.81%, 100%] (2,000/2,000 trials)** at `n=50` — both at the shipped `confidence=0.98`. Two-sample fallback, same configuration: **57.80% [55.62%, 59.95%] (1,156/2,000 trials)** at `n=30` up to **81.25% [79.48%, 82.90%] (1,625/2,000 trials)** at `n=50` — real, meaningfully non-ceiling detection that a team relying only on the fallback path should know about, not a rounding difference from the paired numbers above it.
+- **Small regressions (5%): not reliably detected at small `n`, under either mode.** At the shipped `confidence=0.98`, two-sample at `n=30` (`min_n` itself) detects a true 5% regression only **16.20% [13.23%, 19.69%] (81/500 trials)** of the time (Phase 5 S4's grid), rising to **24.80% [21.22%, 28.77%] (124/500 trials)** at `n=50` — nowhere near the project's own 80%-power "reliable" bar. Pairing helps but does not fix this at small `n`: Phase 7 U1's paired-mode grid measured **49.80% [46.71%, 52.89%] (498/1,000 trials)** at `n=25`, still well under 80%. A 5% regression at a realistic ADK eval-set size is a real blind spot of this gate, in both modes — not something the paired-mode default quietly papers over.
+
+This honest framing — stating where the gate is weak, in numbers, rather than only where it's strong — **is the actual value proposition**: a cost gate that silently pass/fails with no power information gives you false confidence exactly where this one tells you, on every run (the "achieved power" line above), that it can't reliably see what you configured it to catch.
+
+## Also: a real PASS/FAIL cost metric inside `adk eval`
+
+Register the metric with a threshold, wire the plugin into your agent, and `adk eval` itself prints a real dollar score and PASSED/FAILED verdict per invocation — useful for inline cost visibility while iterating on an eval set, complementary to (not a replacement for) the CI gate above.
+
+```python
+from google.adk.agents.llm_agent import LlmAgent
+
+import adk_tracegauge  # registers the metric as an import side effect
+from adk_tracegauge import TraceGaugeUsagePlugin
+
+_usage_plugin = TraceGaugeUsagePlugin()
+
+root_agent = LlmAgent(
+    name="my_agent",
+    model="gemini-2.5-flash",
+    instruction="...",
+    after_model_callback=_usage_plugin.after_model_callback,  # <- the only wiring adk eval needs
+)
+```
+
+```json
+// test_config.json — the threshold this run must stay under, per invocation
+{"criteria": {"adk_tracegauge_cost_usd": 0.05}}
+```
+
+```bash
+adk eval my_agent_module my_eval_set.json --config_file_path test_config.json --print_detailed_results
+```
+
+Below is the actual, unedited output of the two runs in `examples/01_minimal_cost_gate.py`, re-run fresh this session (same fixture, once with a threshold above the real cost and once below it):
+
+```
+Overall Eval Status: PASSED
+Metric: adk_tracegauge_cost_usd, Status: PASSED, Score: 2.8, Threshold: 5.0
+```
+
+```
+Overall Eval Status: FAILED
+Metric: adk_tracegauge_cost_usd, Status: FAILED, Score: 2.8, Threshold: 1.0
+```
+
+That's it — no hand-rolled `Runner`, no private ADK internals, no `EvaluationGenerator` call. **4 lines of adk-tracegauge-specific Python code** (`import adk_tracegauge`, `from adk_tracegauge import TraceGaugeUsagePlugin`, `_usage_plugin = TraceGaugeUsagePlugin()`, and the `after_model_callback=` wiring) **plus 1 line of threshold config**; the full two-run proof above took **31.4s wall-clock** re-measured fresh this session (`google-adk==2.6.3`, cold `uv`/ADK import overhead included; Phase 2 W5's original measurement was 31.6s — consistent). No API key, no live network call, no paid usage — the example's model is a deterministic fake double so the number reproduces exactly on every run; swap in a real `model="gemini-2.5-flash"` string, or a `LiteLlm`-wrapped local Ollama model, to price a real call the same way.
+
+**One real thing worth knowing before you rely on this path for anything CI-shaped:** `adk eval`'s own *process exit code* does not reflect PASSED/FAILED — verified live, it's `0` in both runs above, regardless of the printed verdict. The real result lives in `adk eval`'s stdout table and the persisted `eval_history/*.evalset_result.json`, not in `$?`. Use this path for inline visibility during eval iteration; use `adk-tracegauge check` (above) for CI gating.
+
+## Examples
+
+Three runnable, independently-verified scripts under [`examples/`](examples/) — all three re-run fresh this session, byte-identical to their documented output (deterministic seeds throughout):
+
+1. [`03_ci_regression_gate.py`](examples/03_ci_regression_gate.py) — the CI gate above, end to end (`adk-tracegauge snapshot` + `adk-tracegauge check` as real subprocesses). 53.4s (includes 3 separate cold `google-adk` import subprocesses via the demo wrapper itself, not just the 3 CLI calls timed standalone above).
+2. [`01_minimal_cost_gate.py`](examples/01_minimal_cost_gate.py) — the `adk eval` metric quickstart above, as a standalone script. 31.4s.
+3. [`02_subagent_rollup.py`](examples/02_subagent_rollup.py) — a real two-agent `AgentTool` delegation, showing the parent+child dollar rollup (`$0.565` combined, verified against the price table by hand). 14.0s.
+
+Each has a header comment stating exactly how to run it and what output to expect.
 
 ## What this actually is
 
-A `TraceGaugeUsagePlugin` that captures real per-call token usage during inference (via `BasePlugin.after_model_callback`, the only place ADK exposes `usage_metadata`+`model_version` together), plus a `CostEfficiencyEvaluator` that turns captured usage into a priced `PerInvocationResult` you read directly out of Python — a library for building your own cost-tracking eval harness, not a metric you register into ADK's dataset-driven eval runner and expect to work end to end unattended.
+A `TraceGaugeUsagePlugin` that captures real per-call token usage during inference (via `BasePlugin.after_model_callback`, the only place ADK exposes `usage_metadata`+`model_version` together), plus a `CostEfficiencyEvaluator` that turns captured usage into a priced, real `PASSED`/`FAILED` `PerInvocationResult` against a required max-USD-per-invocation threshold, and `adk-tracegauge snapshot`/`adk-tracegauge check` (the `_cli.py` console entry point) which turn a populated `UsageStore` into a versioned JSON snapshot and a bootstrap-CI regression verdict between two snapshots. Usage capture requires either the `after_model_callback` wiring above (works with `adk eval`/`AgentEvaluator` directly) or a hand-rolled `App`+plugin harness (below — needed only for full sub-agent cost rollup or calling `evaluate_invocations()` yourself, outside `adk eval`); either way, `adk-tracegauge snapshot`'s `--entrypoint` calls whatever function you write to drive that capture and reads the resulting `UsageStore`.
 
-## Install
+### `DEFAULT_USAGE_STORE`
 
-```bash
-pip install "adk-tracegauge"
-```
+`TraceGaugeUsagePlugin()` and `CostEfficiencyEvaluator(...)` both default to sharing one process-wide `UsageStore` singleton, exported as `adk_tracegauge.DEFAULT_USAGE_STORE`, because ADK's `MetricEvaluatorRegistry` only ever instantiates a registered evaluator as `EvaluatorClass(eval_metric=eval_metric)` — there is no channel for `adk eval`/`AgentEvaluator` to hand it a custom store at construction time (see `_store.py`'s module docstring). This is why the quickstart above needs no explicit store wiring at all: the plugin writes to the default store, the registry-constructed evaluator reads from the same default store, automatically. It's also what `adk-tracegauge snapshot --entrypoint`'s "returns nothing, just populates the default store as a side effect" pattern relies on (see `docs/ci-snippet.md`).
 
-`google-adk[eval]` and `tracegauge` are pulled in as dependencies. The `[eval]` extra on `google-adk` is not optional here even though this package doesn't use any of what it gates (pandas, jinja2, rouge-score, gepa, Vertex AI eval) — `google-adk`'s own `metric_evaluator_registry.py` unconditionally imports every one of its built-in evaluators at module import time, including the Vertex AI facade, which needs those packages just to import cleanly. Without the extra, `import adk_tracegauge` fails with `ModuleNotFoundError: No module named 'pandas'` — an ADK packaging quirk, not something this package controls.
+Construct your own `UsageStore()` and pass `store=` explicitly to both the plugin and the evaluator (or `snapshot.build_snapshot(store=...)`) when you need isolation instead — e.g. running two agents' evals concurrently in the same process without their usage data mixing, or in a test that must not leak state into other tests (every test in this repo's own suite does this). See `examples/02_subagent_rollup.py` and `examples/03_ci_regression_gate.py` for real, working examples of the explicit-store pattern.
 
-## The only path that reliably works: a hand-rolled Runner harness
+### Sub-agent delegation (`AgentTool`)
 
-This is what `tests/test_e2e_runner.py` in this repo actually does, written out as a worked example. Six steps, all of them necessary:
+`AgentTool` (agent-as-a-tool delegation) builds a brand-new `Runner` internally, so a delegated sub-agent's real model calls land under a different `invocation_id` than the parent's. `TraceGaugeUsagePlugin` implements `before_run_callback`/`after_run_callback`, which fire once each around every `Runner.run_async()` call and bracket that invocation's whole lifetime — because `AgentTool.run_async` reuses the *same plugin instances* from the parent Runner by default (`include_plugins=True`), the plugin directly observes the real parent/child nesting (a `contextvars.ContextVar`-backed stack, safe under concurrent sibling invocations). `CostEfficiencyEvaluator` sums the parent's own calls plus every recorded descendant's calls (recursively, so nested delegation aggregates too) into one total. See `examples/02_subagent_rollup.py` for a real, run-and-verified two-agent proof: root ($0.525 across two turns) + delegated sub-agent ($0.04) = **$0.565 combined**, not just the root's own $0.525.
 
-**1. Build your own `App` + `Runner`, with the plugin wired in.**
+**This requires the hand-rolled `App`+plugin harness, not the `after_model_callback` quickstart above** — `before_run_callback`/`after_run_callback` are plugin-lifecycle hooks, invoked only through a Runner's `PluginManager`; a bare `after_model_callback` bypasses that lifecycle entirely, capturing individual model calls but never correlating delegated sub-agent calls back to the parent.
 
 ```python
 from google.adk.agents.llm_agent import LlmAgent
@@ -42,161 +141,121 @@ from google.adk.apps.app import App
 from google.adk.runners import InMemoryRunner
 from adk_tracegauge import TraceGaugeUsagePlugin
 
-root_agent = LlmAgent(name="my_agent", model="gemini-2.5-flash", instruction="...")
+root_agent = LlmAgent(name="my_agent", model="gemini-2.5-flash", instruction="...", tools=[...])
 app = App(name="my_app", root_agent=root_agent, plugins=[TraceGaugeUsagePlugin()])
 runner = InMemoryRunner(app=app)
 ```
 
-This part is unaffected by the issue above — a plugin you wire into your *own* App fires correctly on every real model call. The problem is specifically that `AgentEvaluator`/`adk eval` build their *own* Runner internally and never look at this `app` object at all.
-
-**2. Create a session.**
+Drive it yourself (session → `runner.run_async()` → collect `Event`s), then convert those events into `Invocation` objects via `adk_tracegauge._compat.convert_events_to_eval_invocations` — a version-guarded wrapper (see "Compatibility risk" below) around the same internal `LocalEvalService` uses — and score them directly:
 
 ```python
-session = await runner.session_service.create_session(app_name=app.name, user_id="eval_user")
-```
-
-**3. Drive the conversation yourself, turn by turn, for each eval case.** There is no user-simulator, no `num_runs` repetition, no parallelism across cases here — you write the loop:
-
-```python
-from google.genai import types as genai_types
-
-events = []
-async for event in runner.run_async(
-    user_id="eval_user",
-    session_id=session.id,
-    new_message=genai_types.Content(parts=[genai_types.Part(text="what is 2+2?")], role="user"),
-):
-    events.append(event)
-```
-
-**4. Convert the collected `Event`s into `Invocation` objects using ADK's own internal helper.** `EvaluationGenerator.convert_events_to_eval_invocations` is the exact function `LocalEvalService` calls internally to do this — not a reimplementation this package maintains — but it is **not documented public API**. It lives in `google.adk.evaluation.evaluation_generator`, carries no stability guarantee, and could change or move without notice in any ADK release. This is the one piece of this harness with real breakage risk; there is no supported alternative:
-
-```python
-from google.adk.evaluation.evaluation_generator import EvaluationGenerator
-
-invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
-```
-
-**5. Build the metric and evaluator, and score the invocations directly.**
-
-```python
+from adk_tracegauge._compat import convert_events_to_eval_invocations
+from adk_tracegauge.evaluator import METRIC_NAME, CostEfficiencyEvaluator, CostThresholdCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
-from adk_tracegauge import CostEfficiencyEvaluator
-from adk_tracegauge.evaluator import METRIC_NAME
 
-evaluator = CostEfficiencyEvaluator(eval_metric=EvalMetric(metric_name=METRIC_NAME))
-result = evaluator.evaluate_invocations(invocations)
-```
-
-**6. Read the score and rationale straight out of the returned object** — this in-memory path never touches `LocalEvalService`, so nothing here is discarded:
-
-```python
-for pir in result.per_invocation_results:
-    print(pir.score, pir.rubric_scores[0].rationale)
-print("total cost:", result.overall_score)
-```
-
-**What you lose by not going through `AgentEvaluator`/`adk eval`:** every other built-in metric (`tool_trajectory_avg_score`, `response_match_score`, rubric-based judges, etc.), persistence to `eval_history/`, `num_runs` repetition, and parallelism across eval cases. If you want those *and* cost for the same conversations, you currently have to run inference twice — once through this harness, once through `AgentEvaluator`/`adk eval` — against a model that isn't guaranteed to behave identically both times.
-
-## Documented workaround (not the supported path): `after_model_callback`
-
-If you need this metric to show up in an `adk eval` run *at all* — accepting real limitations, not as a fix — attach the plugin's callback directly to your agent instead of wrapping it in an App:
-
-```python
-from google.adk.agents.llm_agent import LlmAgent
-from adk_tracegauge import TraceGaugeUsagePlugin
-
-_usage_plugin = TraceGaugeUsagePlugin()
-root_agent = LlmAgent(
-    name="my_agent",
-    model="gemini-2.5-flash",
-    instruction="...",
-    after_model_callback=_usage_plugin.after_model_callback,
+invocations = convert_events_to_eval_invocations(events)
+evaluator = CostEfficiencyEvaluator(
+    eval_metric=EvalMetric(
+        metric_name=METRIC_NAME, criterion=CostThresholdCriterion(threshold=0.05)
+    )
 )
+result = evaluator.evaluate_invocations(invocations)
+for pir in result.per_invocation_results:
+    print(pir.score, pir.eval_status, pir.rubric_scores[0].rationale)
 ```
 
-This works because `agent.canonical_after_model_callbacks` (an ordinary `LlmAgent` field) fires independent of which Runner wraps the agent, unlike `BasePlugin.after_model_callback` — so it survives `AgentEvaluator`/`adk eval`'s hardcoded bare-Runner construction. Verified live against `google-adk==2.6.3`: the plugin does capture real usage this way, and `CostEfficiencyEvaluator` does compute the correct dollar figure internally.
+What you trade away versus `adk eval`/`AgentEvaluator`: every other built-in metric, persistence to `eval_history/`, `num_runs` repetition, and parallelism across eval cases. See `examples/02_subagent_rollup.py` for the complete, runnable version.
 
-**But it does not fix the underlying problem:**
-- `AgentEvaluator.evaluate()` **still raises unconditionally** — the NOT_EVALUATED-nulling bug happens after scoring, regardless of how usage was captured.
-- `adk eval` still discards the per-invocation score/rationale (`score: null` in the table and in `eval_history/*.json`) — you only get the one aggregate console line, and it isn't written anywhere.
-
-Net effect: this gets you a single correct dollar figure printed to the console during an `adk eval` run, and nothing else — no per-call breakdown, no persistence, and it's still incompatible with `AgentEvaluator.evaluate()`. Treat it as a narrow, caveated option, not something to build a workflow around. The hand-rolled harness above is the reliable path.
-
-One more limit specific to this workaround: `before_run_callback`/`after_run_callback` — what makes sub-agent delegation aggregate correctly (see "Sub-agent delegation" below) — are plugin-lifecycle hooks, invoked only through a Runner's `PluginManager`. Attaching just the bound `after_model_callback` method to `LlmAgent` bypasses that lifecycle entirely, so this workaround captures individual model calls but never correlates delegated sub-agent calls back to the parent. Only the full `App(plugins=[TraceGaugeUsagePlugin()])` wiring gets both.
-
-## Diagnostics: `warnings.warn`, not rationale text
-
-Because `LocalEvalService` discards `rubric_scores`/rationale for this metric unconditionally (see above), nothing written there is guaranteed to reach a caller going through `AgentEvaluator`/`adk eval`. So every diagnostic this package produces — "no usage captured", "unresolved model", the successful per-call cost breakdown, and the stale-price-table warning — is also emitted via `warnings.warn` at evaluate time, which does survive. If you're driving `CostEfficiencyEvaluator.evaluate_invocations()` directly (the hand-rolled harness above), you get both the rationale text *and* the warning; if you're going through ADK's own eval runner, the warning is the only channel that reaches you.
+**What sub-agent rollup doesn't cover:** if a delegation pattern doesn't share the plugin instance with the parent (`AgentTool(..., include_plugins=False)`, or any sub-Runner construction this package doesn't know about), there's no lifecycle signal to observe the nesting from, and that sub-portion's cost is invisible to this package — the same as any other "plugin never wired in" gap, not a new failure mode.
 
 ## What it reports, and what it deliberately doesn't
 
 - **`score`**: raw cost in USD for the invocation, summed across every real model call within it (tool loops and sub-agent delegation can mean more than one model call per invocation). Not normalized, not calibrated, not a 0–1 quality score.
-- **`rationale`**: a per-call breakdown — model, fresh/cached/output token counts, and their individual dollar costs. See "Diagnostics" above for where this actually ends up.
-- **No calibrated efficiency bands.** tracegauge's own token-economy axis compares your numbers against a baseline built from 75 Claude Code sessions. That baseline is not used here, on purpose — applying a Claude-Code-derived baseline to ADK agent behavior would be an unvalidated transfer, and a plausible-looking-but-wrong number is worse than no number. This package reports raw counts and dollars only; set your own thresholds for what "too expensive" means for your agent.
-- **No trajectory-quality judging.** tracegauge's Ollama/Anthropic-based trajectory axis is out of scope for v1 — it's CC-specific tooling, unrelated to the cost story, and would add a dependency this package doesn't need.
+- **`rationale`**: a per-call breakdown — model, fresh/cached/output token counts, and their individual dollar costs, plus `price_as_of=<date>` so the number's provenance travels with it.
+- **No calibrated efficiency bands.** tracegauge's own token-economy axis compares your numbers against a baseline built from 75 Claude Code sessions. That baseline is not used here, on purpose — applying a Claude-Code-derived baseline to ADK agent behavior would be an unvalidated transfer. This package reports raw counts and dollars only; set your own thresholds for what "too expensive" means for your agent, and let `adk-tracegauge check`'s bootstrap test decide what counts as a real regression rather than eyeballing a delta.
+- **No trajectory-quality judging.** Out of scope — CC-specific tooling, unrelated to the cost story.
 
-## Sub-agent delegation (`AgentTool`)
+## Pricing: Gemini, Claude, GPT, and local models
 
-`AgentTool` (agent-as-a-tool delegation) builds a brand-new `Runner` internally, so a delegated sub-agent's real model calls land under a different `invocation_id` than the parent's — one ADK's own eval-event conversion never surfaces on the parent invocation. Earlier versions of this package silently dropped that cost from the reported total (a genuinely wrong number, not a missing one) rather than either aggregating it correctly or refusing to report.
+`tracegauge`'s bundled price table covers Claude models only (its own domain — Claude Code sessions). This package ships and owns its own multi-provider price table (`src/adk_tracegauge/data/gemini_prices.json` — historically Gemini-only, hence the name; kept as-is rather than renamed, see `_pricing.py`'s module docstring), covering:
 
-As of this version, it's aggregated correctly, not detected-and-refused: `TraceGaugeUsagePlugin` implements `before_run_callback`/`after_run_callback`, which fire once each around every `Runner.run_async()` call and bracket that invocation's whole lifetime. Because `AgentTool.run_async` reuses the *same plugin instances* from the parent Runner by default (`include_plugins=True`), the plugin directly observes the nesting — when a new invocation starts while another is still active on the same instance, the new one is recorded as a child of the active one (a `contextvars.ContextVar`-backed stack, safe under both nested awaits and concurrent sibling invocations — see `_plugin.py`'s module docstring for why a plain instance attribute wouldn't be). `CostEfficiencyEvaluator` then sums the parent's own calls plus every recorded descendant's calls (recursively, so nested delegation — a sub-agent that itself delegates further — aggregates too) into one total. Verified live: a root agent delegating one call to a sub-agent via `AgentTool` now reports the correct combined cost, not just the root's own share.
+- **Gemini** (ADK's native backend): `gemini-2.5-pro` (+ long-context tier), `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash` (deprecated, kept for historical sessions), `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.1-flash-lite`, `gemini-3.1-pro-preview` (+ long-context tier).
+- **Claude and GPT**, reached through ADK's `LiteLlm` integration (`model="anthropic/claude-opus-5"`, `model="openai/gpt-5.1"`, etc.): `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`, `claude-opus-4-8`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.1`, `gpt-5`. Deliberately **not** the GPT-4/o-series family — their cache-read discount (0.25x–0.5x) diverges from every other entry's 0.1x, and this table has exactly one global cache-multiplier for the whole table with no per-model override; adding them would silently under-price cached calls by 2.5x–5x.
+- **Local/self-hosted models** (Ollama, vLLM — `ollama_chat/...`, `ollama/...`, `vllm/...`) resolve to a real, explicit zero-cost table entry — `cost_usd=0.000000`, trivially PASSED against any positive threshold, with a rationale line stating "local model, zero marginal cost, asserted via ADK_TRACEGAUGE_ASSUME_LOCAL" — **but only after an explicit opt-in.** Ollama Cloud is a real paid product routed through the *identical* `ollama_chat/`/`ollama/` LiteLlm prefix as local Ollama, and only the `api_base`/host (not visible anywhere adk-tracegauge captures usage — confirmed by reading google-adk's `models/lite_llm.py` and `models/llm_response.py` directly) tells the two apart. Set `ADK_TRACEGAUGE_ASSUME_LOCAL=1` (asserts every recognized local prefix) or `ADK_TRACEGAUGE_ASSUME_LOCAL=vllm/` (comma-separated, to assert only specific prefixes) before running your eval. Without it, a local-prefixed call reports `NOT_EVALUATED` with an actionable message naming the exact remedy — never a silent, possibly-wrong $0.00.
+- **A custom-price extension mechanism**: set `ADK_TRACEGAUGE_PRICE_TABLE` to the path of a JSON file with the same schema (mirrors tracegauge's own `TES_PRICE_TABLE` pattern) to add or override entries — e.g. a model behind a paid gateway, or a Bedrock/Vertex AI/Azure-routed Claude/GPT model whose pricing differs from the first-party rate (deliberately not auto-resolved, since it can diverge).
+- **Promotional/introductory pricing expires automatically, not silently.** An entry can carry `promo_until` (ISO date) and a published `standard_rate` — once `promo_until` passes, the resolver switches to `standard_rate` on its own, no manual table edit required, and the rationale states plainly whether the promo is still active (with its expiry date) or has already ended. `gemini-3.6-flash`/`gemini-3.7-flash` currently carry this (promotional through 2026-12-31, standard rate $1.50/$7.50 after). If a promotional entry's post-promo rate isn't published anywhere yet, adk-tracegauge warns loudly starting 14 days before expiry rather than silently freezing at a rate that may no longer apply — see `.github/workflows/price-freshness.yml`, which fails CI on the same 14-day window.
 
-**What this doesn't cover:** if a delegation pattern doesn't share the plugin instance with the parent (`AgentTool(..., include_plugins=False)`, or any other sub-Runner construction this package doesn't know about), there's no lifecycle signal to observe the nesting from, and that sub-portion's cost is invisible to this package — the same as any other "plugin never wired in" gap, not a new failure mode. This package does not attempt to guess at a correlation it can't observe (e.g. by flagging "extra" invocation_ids sitting in a shared store) — that heuristic would misfire constantly in ordinary usage, since a shared `UsageStore` legitimately accumulates entries from many unrelated invocations across an eval run.
+**An invocation whose model isn't in the table is never priced with a fallback rate.** `score` reports `None` with a rationale/warning naming exactly which model string didn't resolve and every model this package knows how to price — a cost number for the wrong model is worse than no number.
 
-## Streaming
-
-Gemini's `generateContentStream` reports `usage_metadata` on every streamed chunk, not just the final one, with token counts growing cumulatively — **this is documentation-corroborated, not independently confirmed against a live API call in this package's own testing** (no Gemini API key was available when this was implemented). Sources: Google's own field docs describe `candidatesTokenCount` as "the total number of tokens... across all the generated response candidates" (consistent with, though not conclusive of, a running total); two independent third-party technical references both describe the same specific behavior in detail, one with a concrete raw SSE example across three chunks. If you can settle this definitively against a live call, please open an issue or PR — a few cents of API spend would close this out properly.
-
-Earlier versions of this package recorded every streamed chunk as if it were a separate real model call, overcounting cost by roughly the number of chunks in the response (confirmed in testing: a 3-chunk simulated stream reported 2.03x the true cost). As of this version, `CapturedCall` carries ADK's own `partial` flag (set by `base_llm_flow`'s streaming aggregator — `True` for an intermediate chunk, `False` for a call's final response, streamed or not), and `_adapter.py` groups consecutive `partial=True` chunks with their terminating `partial=False` response into a single priced call, using only the final chunk's own reported totals.
-
-That grouping doesn't blindly trust the "cumulative total" assumption above — it verifies it, every time: **token counts within a group must be monotonically non-decreasing, or the whole invocation is refused rather than priced under a broken assumption.** If a later chunk's `total_token_count` is ever *less* than an earlier one's, `score` reports `None` with a rationale (and a `warnings.warn`) naming exactly what regressed and between which values — never a number computed by silently taking "the last chunk" when the ordering assumption it depends on has already been observed to not hold. A stream that never reaches a final (non-partial) chunk — an interrupted response — is refused the same way, since its true total is genuinely unknown. This makes the documentation-vs-live-API gap above largely moot: if Gemini's real behavior ever differs from what's documented here, this check is what catches it, rather than this package silently trusting an unverified assumption forever.
-
-## Why this metric always reports `NOT_EVALUATED`
-
-ADK's built-in pass/fail convention is `PASSED if score >= threshold else FAILED` — hardcoded, higher-is-better. Cost is lower-is-better. There is no lower-is-better or inverted-metric convention anywhere in `google.adk.evaluation` to plug into (checked directly against the source, not assumed). Silently negating the score to make the built-in gate technically "work" would misrepresent the number to anyone reading it — a `score: -0.0043` needs an explanation to even parse. So this metric doesn't participate in ADK's pass/fail gating: it always reports `eval_status=NOT_EVALUATED`, whatever threshold you configure.
-
-This is also exactly the status value that triggers ADK's own per-invocation result discarding — see "Read this first" above and [google/adk-python#6725](https://github.com/google/adk-python/issues/6725). Read `score` directly (via the hand-rolled harness), or write your own threshold comparison against it — never rely on ADK's built-in pass/fail gate to expose it.
-
-## Gemini pricing
-
-`tracegauge`'s bundled price table covers Claude models only (its own domain — Claude Code sessions). ADK is Gemini-native, so this package ships and owns its own Gemini price table (`src/adk_tracegauge/data/gemini_prices.json`), passed explicitly into tracegauge's cost engine.
-
-- Every entry carries its own `source_url` and `fetched_on` date — currently `https://ai.google.dev/gemini-api/docs/pricing`, fetched 2026-08-13. **Prices change without notice.** Verify against the source before relying on a number for a real budget decision.
-- Standard tier only (no batch/flex/priority). Covers `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.0-flash` (deprecated, kept for historical sessions), `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`.
-- **Known gap:** `gemini-2.5-pro` is priced at its ≤200k-token-context rate only. Gemini bills >200k-context Pro calls at roughly double that rate; this table has no per-call tiered-pricing logic, so long-context Pro invocations will be under-priced. Not silently wrong — documented here and in the price table's own per-entry `note` field.
-- Cache-read discount is `0.1x` the model's fresh input rate for every model (verified against the published rate for each model individually, not assumed from tracegauge's Claude convention — it happens to match). Cache-*write* multipliers are `0.0`: Gemini's default automatic caching has no write-time surcharge and no `cache_creation` token field in its usage metadata at all, unlike Anthropic's explicit cache-write billing.
-
-**An invocation whose model isn't in this table is never priced with a fallback rate.** `score` reports `None`, and the rationale (or, going through ADK's eval runner, the warning — see "Diagnostics" above) names exactly which model string didn't resolve and lists every model this package knows how to price. A cost number for the wrong model is worse than no number, so this package doesn't produce one.
-
-### Staleness — what happens when Gemini's prices change and the table doesn't
-
-A per-entry `source_url`/`fetched_on` date is provenance, not a freshness guarantee — nothing stops the table from silently aging out unless something actually checks it. Two independent things do:
-
-- **At use time**: every `ResolvedModel.is_stale` check compares `fetched_on` against today; past 180 days (`STALE_THRESHOLD_DAYS` in `_pricing.py`), a priced result's `rationale` gets a `PRICE TABLE STALE` line naming the model and threshold, and a real `warnings.warn(...)` fires alongside it — visible to anyone watching logs, not only whoever reads that one invocation's output. Staleness never blocks the number; it warns and still reports it, on the position that a flagged-possibly-wrong number beats no number for something you already computed.
-- **In CI**: `test_bundled_table_is_not_currently_stale` (`tests/test_pricing.py`) re-checks every bundled entry against the same 180-day threshold on every run. Once the table crosses it, this test starts failing on its own — not only when someone happens to notice a suspicious dollar figure.
-
-**Updating the price table**: edit `src/adk_tracegauge/data/gemini_prices.json` — update `input_usd_per_mtok`/`output_usd_per_mtok` against the current values at the `source_url` already on each entry, and bump `fetched_on` to today. Run `pytest tests/test_pricing.py` to confirm the staleness test goes green and nothing else broke, then open a PR. There's no automated price-scraping here by design — a human should look at the actual pricing page before a dollar figure changes.
+Every entry carries its own `source_url` and `fetched_on` date, re-verified 2026-08-14 against each model's live published rate. **Prices change without notice** — verify against the source before relying on a number for a real budget decision. Two independent freshness guards: a per-entry `is_stale` check (past `STALE_THRESHOLD_DAYS=90`, warns loudly but still reports the number) at use time, and `.github/workflows/price-freshness.yml` running weekly in CI regardless of whether anyone's pushed a commit. See `_pricing.py`'s module docstring for the full detail (long-context tiering, cache-read discount verification, thinking-token billing, and the server-side built-in-tool tokens this package deliberately refuses to price rather than guess at).
 
 ## Compatibility risk
 
-Registration uses `google.adk.evaluation.metric_evaluator_registry`, which google-adk marks `@experimental`: "may change or be removed... at any time," with no SemVer guarantee. This package pins `google-adk[eval]>=2.6.0,<2.7.0` accordingly — narrow, re-validated deliberately on each bump, not left open-ended.
+Registration uses `google.adk.evaluation.metric_evaluator_registry`, which google-adk marks `@experimental`. This package pins `google-adk[eval]>=2.6.0,<2.8.0` accordingly, re-validated on each bump — see `CHANGELOG.md`. If the registry API breaks in a future release, registration happens at import time as a side effect, so the failure mode is a loud, immediate error on `import adk_tracegauge`, not a silent no-op.
 
-If the registry API breaks in a future google-adk release, registration happens at import time as a side effect, so the failure mode is a loud, immediate `AttributeError`/`TypeError` on `import adk_tracegauge` — not a silent no-op or a subtly wrong result. That's a favorable failure mode worth naming explicitly: you'll know immediately, not after a bad number reaches a dashboard.
-
-The hand-rolled harness above additionally depends on `EvaluationGenerator.convert_events_to_eval_invocations` — an internal ADK helper with no `@experimental` marker at all (meaning no stated deprecation/breakage discipline whatsoever, not even the loose one `@experimental` implies) and no public-API status. This is a real, distinct risk on top of the registry one; there is currently no alternative to it for this harness shape.
+The hand-rolled sub-agent-rollup harness additionally depends on `EvaluationGenerator.convert_events_to_eval_invocations` — a non-public ADK internal with no `@experimental` marker at all (no stated breakage discipline whatsoever). **This package's own primary paths (`adk-tracegauge check`, and `after_model_callback` + `adk eval`) never call this function** — confirmed by grep, nothing under `src/adk_tracegauge/` touches it outside `_compat.py`; only the optional sub-agent-rollup harness pattern does. Because it's still needed for that one path, it's wrapped behind `adk_tracegauge._compat.convert_events_to_eval_invocations`, which runs a version check against this package's known-tested `google-adk` range and raises a clear, actionable `RuntimeError` — naming the installed version and exactly which integration path is affected — instead of a bare, unexplained `AttributeError`/`ImportError` if the internal has moved. See `_compat.py`'s module docstring and `tests/test_compat.py` for the version-guard tests, including a simulated unsupported-version case.
 
 A scheduled CI job (`.github/workflows/pypi-canary.yml`) installs the *latest* `google-adk[eval]` release (ignoring the pin) and runs the full test suite weekly, so a break surfaces on a schedule rather than via a user bug report.
 
-The plugin half of this package (`BasePlugin.after_model_callback`) sits on firmer ground — it isn't marked `@experimental` anywhere in `google-adk`. If the registry API breaks, the usage-capture half likely still works; only evaluator registration needs a patch.
+## Troubleshooting
+
+Real, live-triggered errors and their fixes — see [`docs/troubleshooting.md`](docs/troubleshooting.md) for the full text and context:
+
+- **Wrong `google-adk` version installed** (outside the `>=2.6.0,<2.8.0` pin) → a loud `ModuleNotFoundError`/`RuntimeError` at import time, not a silent wrong answer.
+- **Unknown/unresolvable model** → `score=None` plus an actionable warning naming every model this package can price.
+- **Missing threshold** → a `ValueError` at construction time; this package never falls back to a permissive always-PASSED default.
+- **A local model (Ollama/vLLM) reports `NOT_EVALUATED` instead of `$0.00`** (Phase 3 B1) → expected, fail-closed behavior since Ollama Cloud (paid) shares the same prefix as local Ollama — set `ADK_TRACEGAUGE_ASSUME_LOCAL` to opt in.
+- **`adk-tracegauge check` refuses to run at all (`exit code 3`)** at a smaller eval-set size than expected → this is `--min-n`'s refusal, not a bug; see "Known limitations" below for the measured detection-power reason `min_n=30` exists and why `--mode paired` may still work below it.
+
+## Known limitations
+
+These are real, current, and worth knowing before you rely on this package — not hidden, just not the first thing you read.
+
+- **Plain two-sample comparison does not reliably detect a realistic-magnitude cost regression at a realistic ADK eval-set size — measured, not assumed (Phase 3 B4).** At `n=25` (a realistic ADK eval-set size — this repo's own `examples/03_ci_regression_gate.py` uses `n=40`, deliberately just above `min_n=30`, because real ADK eval cases can involve real/expensive model calls, so teams keep eval sets to tens of cases, not hundreds), **the two-sample method detects a true 10% cost regression only 51.40% of the time (257/500 trials, Wilson 95% CI [47.03%, 55.75%]) at the shipped `confidence=0.98`** (Phase 5 S4's own 90-cell grid), **and refuses to run at all below `n=30`'s own `min_n` floor.** This is exactly why **`adk-tracegauge check`'s `auto` mode (the default) PREFERS a paired comparison, not two-sample (Phase 7 U1)**: whenever a stable per-eval-case key resolves with enough overlap, `--mode paired` (`evaluate_regression_paired`) is used instead, and it is dramatically more sensitive at the same `n` whenever real per-case cost variance exists — a real, fresh, dedicated power grid (`scripts/measure_paired_power_grid.py`, `n` ∈ {10, 25, 50, 100} × effect ∈ {0, 5, 10, 25, 50}%, 1,000 trials/cell, confidence=0.98, 20,000 simulated `check` calls) measured **97.80% detection at `n=25`/10%-effect (978/1,000 trials, Wilson 95% CI [96.69%, 98.54%])** versus two-sample's 51.40% [47.03%, 55.75%] on the same `n`/confidence — see `PLAN.md`'s Phase 7 U1 entry for the full 20-cell grid laid out against the two-sample grid. The pairing key is resolved automatically: `eval_case_id` (Phase 4 R2's primary key, recovered via `adk-tracegauge snapshot --eval-history <path-to-adk-eval's-own-.evalset_result.json>` — works with the default `adk eval` CLI flow, no `.evalset.json` changes needed) first, then `session_id` (if a hand-rolled harness pins `runner.run_async(session_id=...)` itself) as a fallback, then two-sample if neither resolves enough overlap — the resolved mode and key are always printed, never silently assumed. **The trade-off, stated honestly, not hidden by making paired the default:** the SAME dedicated grid found paired mode's own false-positive rate is *higher*, not lower, than two-sample's at every measured `n` (e.g. 4.10% [3.04%, 5.51%] vs. 2.20% [1.23%, 3.90%] at `n=10`, 41/1,000 vs. 11/500; 2.40% [1.62%, 3.55%] vs. 1.20% [0.55%, 2.59%] at `n=25`, 24/1,000 vs. 6/500) — paired is more POWERFUL at a given `n`, not more RELIABLE, which is why `--mode auto`'s threshold for preferring paired stays at the same `min_n=30` bar two-sample itself requires, not a lower one (see `_paired_mode_viable`'s docstring in `_cli.py`). `--mode two-sample` (ignoring pairing entirely) and explicit `--mode paired` (fails loud, not silently, if too few keys overlap) remain available for any caller who wants either method by name. **A dedicated, higher-rigor (2,000 trials/cell, Wilson CIs on every cell) re-measurement of BOTH modes at `n=30`/`n=50` — the sizes closest to the shipped `min_n` floor — was done Phase 7 U2; see two bullets below for the full head-to-head numbers.**
+- **The above limitation is now surfaced at RUNTIME, every `adk-tracegauge check` run, not only in this doc (Phase 4 R4).** Every run prints an `achieved power` line — the minimum effect size the bootstrap test could reliably (80% power, the same bar B4 used above) detect given THIS run's own observed variance and `n` — and an explicit `WARNING` whenever your configured `--min-effect-usd`/`--min-effect-pct` floor is smaller than that achievable floor (see the Quickstart output above for a real example: at `n=40`, `BASE_SD≈$0.0015`/mean≈$0.0086, the achievable floor is ~$0.000536/6.25%, ABOVE the default `$0.0001` floor, so the WARNING fires). The achieved-power figure is a normal-approximation to the bootstrap CI (bootstrap power has no closed form) — validated against B4/R2's own measured grid at 7 points, accurate to within 2–8 percentage points, worst at `n=25` (see `_regression.py`'s "Achieved statistical power" section for the full accuracy table and derivation). **`min_n=30` was explicitly re-examined (4.3), not left unchanged by default** — real measurement at n∈{30,35,40,45} (10% effect, B4's generator, 200 trials/cell) showed 71.50% [64.88%, 77.30%] (143/200), 79.00% [72.84%, 84.07%] (158/200), 77.50% [71.23%, 82.74%] (155/200), 83.00% [77.18%, 87.57%] (166/200) detection, i.e. `n=30` genuinely doesn't clear 80% for this scenario either — but **kept at 30 anyway**: no single `min_n` generically solves "80% power for the regression size YOU care about" (that depends on your own cost variance and threshold, which this package cannot know in advance — B4's own grid shows even `n=100` only clears 64.50% [57.65%, 70.80%] (129/200 trials) for a 5% effect), so raising it would just trade real signal on legitimate 30–44-invocation eval sets for a false sense of a "fixed" problem. The runtime achieved-power/warning mechanism above is the actually-general fix. **(Superseded by Phase 5 S4, next bullet) False-positive rate at `n=30` under the ORIGINAL 0.95-confidence default measured at 500 trials: 4.60% [3.08%, 6.81%] (23/500); independent re-check, different seed, 500 trials: 4.20% [2.76%, 6.34%] (21/500)** — both well above the ~2.5% nominal expectation, because at this variance level the 5%-relative practical floor is only ~1.3 sampling standard errors from zero at `n=30` and doesn't meaningfully suppress noise-driven false positives on its own. **A BCa (bias-corrected/accelerated) bootstrap was implemented as an experiment and empirically measured (4.5)**: no measurable improvement (percentile vs. BCa FPR: 6.00% [3.83%, 9.28%] (18/300) vs. 5.33% [3.31%, 8.49%] (16/300) at `n=10`, 3.00% [1.59%, 5.60%] (9/300) vs. 3.33% [1.82%, 6.03%] (10/300) at `n=25`) — expected, since BCa's corrections target bias/skew in the bootstrap distribution, near-zero for a near-symmetric mean statistic on this project's cost data; NOT shipped. A studentized bootstrap was assessed but not built or tested — it needs a per-resample SE estimate that is known to be unstable at `n<20-30`, exactly the regime it would need to help in; see `_regression.py`'s "Anti-conservatism at small n" section for the full reasoning. This remains a real, honest, unresolved limitation at small `n`.
+- **The shipped default `--confidence` was RETUNED, Phase 5 S4, specifically because a ~4.4% false-positive rate is not acceptable for a tool whose entire value proposition is being a trustworthy CI gate** — a gate that cries wolf roughly 1 run in 23 trains users to ignore or disable it, a real product-credibility failure, not only a statistics one. A full one-sided-alpha × `n` × true-effect grid was measured (90 cells: alpha ∈ {0.025, 0.01, 0.005} ⟷ `--confidence` ∈ {0.95, 0.98, 0.99} via `confidence = 1 - 2·alpha`; `n` ∈ {10, 25, 30, 50, 100, 250}; effect ∈ {0%, 5%, 10%, 25%, 50%}; ≥500 trials/cell, `scripts/measure_regression_alpha_grid.py`) — see `PLAN.md`'s Phase 5 S4 entry for the full 90-cell tables. **Default changed `0.95` → `0.98`** (one-sided alpha 0.025 → 0.01): real shipped-configuration FPR at `n=30` (real floors, real `n_boot=10,000`, 500 trials × 2 seeds) drops from **4.40% [3.29%, 5.86%] combined (44/1,000)** to **2.30% [1.54%, 3.43%] combined (23/1,000)** — a >45% real reduction, landing within sampling noise of the ~2% target this project set (a defensible margin below the originally-intended 2.5% nominal figure). **The cost**: detection power for a realistic 10% true regression at `n=50` drops from 91.20% [88.39%, 93.38%] (456/500, old default) to 83.40% [79.89%, 86.40%] (417/500, new default) — still clears the project's own 80%-power "reliable detection" bar (`ACHIEVED_POWER_TARGET`), which is exactly why `0.98`, not the even-tighter `0.99` (FPR 1.60% [0.99%, 2.58%] combined (16/1,000), but `n=50`/10%-effect power falls to 76.20% [72.28%, 79.72%] (381/500), BELOW the 80% bar — a real collapse, and why `0.99` was rejected), was chosen. At `n=30` (`min_n` itself), 10%-effect power drops from 72.80% [68.74%, 76.52%] (364/500) to 58.40% [54.03%, 62.64%] (292/500) — already below 80% at the OLD default too, so this is not a newly-introduced weakness, just a number worth knowing. 25%/50%-effect detection stays at 100% under every alpha tested — the power cost is concentrated entirely in the 5–10%-effect range. **The practical-significance floor's own, independent contribution was also measured (4.5)**: at `n=30`/the new default, the false-positive rate with the practical floor DISABLED (pure statistical test) is IDENTICAL to the real, floor-enabled rate (13/500, Wilson 95% CI [1.53%, 4.40%], and 10/500, [1.09%, 3.64%], both branches, both seeds) — the floor is still a real, independently-AND'd gate (confirmed by re-reading `evaluate_regression`'s `is_regression = statistically_significant and practically_significant`, unchanged), it simply isn't the thing suppressing false alarms at this particular `n`/variance combination; see `_regression.py`'s `DEFAULT_CONFIDENCE` docstring for the complete numbers and reasoning.
+- **At the SHIPPED MINIMUM `n=30`, under the SHIPPED default `--confidence 0.98` — the two headline numbers, same configuration, stated together: false-positive rate 2.30% [1.54%, 3.43%] combined (23/1,000, real floors, real `n_boot=10,000` — the bullet above), and detection power for a true 10% cost regression 58.40% [54.03%, 62.64%] (292/500, statistical ceiling, floors disabled, same `n`/confidence — S4's own 90-cell grid), i.e. well below the 80% "reliable" bar.** A clean `check` result at `n=30` should be read as "no cost increase that both cleared a ~2%-FPR statistical bar and the practical floor was found" — NOT as "regressions this size were reliably ruled out"; the achieved-power line printed on every run (previous bullet) says which of the two your own run actually got. **Phase 6 T4 re-examined whether `min_n` should be RAISED instead, now that S4 changed the default confidence** (the original 4.3 min_n-vs-raise decision, cited two bullets up, was measured at the OLD `confidence=0.95` and needed re-validation, not an assumption it still held): re-measured n ∈ {30, 35, 40, 45, 50} at confidence=0.98 for a 10% effect, 500 trials/cell, two independent seed bases at n=30/45/50 — 56.60% [52.22%, 60.88%] (283/500) / 57.20% [52.82%, 61.47%] (286/500) (n=30, confirms the 58.40% grid figure), 64.40% [60.11%, 68.47%] (322/500) (n=35), 68.80% [64.61%, 72.70%] (344/500) (n=40), 72.80% [68.74%, 76.52%] (364/500) / 77.20% [73.32%, 80.66%] (386/500) (n=45), **79.60% [75.85%, 82.90%] (398/500) / 81.00% [77.33%, 84.20%] (405/500) (n=50, two independent measurements)** vs. S4's own single-measurement 83.40% [79.89%, 86.40%] (417/500) for that cell — three independent 500-trial measurements of `n=50` averaging ~81.3%, i.e. `n=50` sits right AT the 80% line, not robustly above it, once measured more than once. **DECISION: `min_n` stays at 30, not raised** — no n up to 50 reliably clears 80% for a 10% effect either, so raising the floor would definitely refuse every real 30–49-invocation eval set while only maybe buying reliable detection, a bad trade given this package's own honesty-over-usability precedent (Phase 5 S1's "no silent guess," the achieved-power reporting itself). The runtime achieved-power/floor-warning mechanism (4.1/4.2 above) remains the general fix — it reports the truth for YOUR run's actual variance and `n`, rather than this package implying a fixed `n` clears a reliability bar it provably does not, at any confidence level tested. See `_regression.py`'s `MIN_N_DEFAULT` docstring ("Phase 6 T4 re-validation") and `PLAN.md`'s Phase 6 T4 entry for the full measurement.
+- **Phase 7 U2 — re-measured the deciding cells (confidence ∈ {0.95, 0.98, 0.99} × `n` ∈ {30, 50} × true effect ∈ {0%, 10%, 25%}) at 2,000 trials/cell (vs. S4/T4's 500) with real Wilson score CIs on every cell, for BOTH modes side by side, once paired mode became the DEFAULT `--mode auto` preference (Phase 7 U1) — 72,000 total simulated bootstrap evaluations, `scripts/measure_regression_confidence_grid.py`, real wall-clock 902.8s.** This refines, not overturns, the numbers above: two-sample `n=50`/10%-effect/`confidence=0.98` lands at **81.25% [79.48%, 82.90%] (1,625/2,000)**, matching Phase 6 T4's independent finding that S4's original single-run 83.40% reading was on the high side of noise. FULL grid (statistical-only, floors disabled, same convention as S4):
+
+  | mode | confidence | n | FPR (0% effect) | power (10% effect) |
+  |---|---|---|---|---|
+  | two-sample | 0.95 | 30 | 2.75% [2.12%, 3.56%] (55/2,000) | 72.05% [70.04%, 73.97%] (1,441/2,000) |
+  | two-sample | 0.95 | 50 | 3.00% [2.34%, 3.84%] (60/2,000) | 88.40% [86.92%, 89.73%] (1,768/2,000) |
+  | two-sample | 0.98 | 30 | 0.85% [0.53%, 1.36%] (17/2,000) | 57.80% [55.62%, 59.95%] (1,156/2,000) |
+  | two-sample | 0.98 | 50 | 1.20% [0.81%, 1.78%] (24/2,000) | 81.25% [79.48%, 82.90%] (1,625/2,000) |
+  | two-sample | 0.99 | 30 | 0.50% [0.27%, 0.92%] (10/2,000) | 49.10% [46.91%, 51.29%] (982/2,000) |
+  | two-sample | 0.99 | 50 | 0.65% [0.38%, 1.11%] (13/2,000) | 74.20% [72.24%, 76.07%] (1,484/2,000) |
+  | paired | 0.95 | 30 | 2.55% [1.94%, 3.34%] (51/2,000) | 99.85% [99.56%, 99.95%] (1,997/2,000) |
+  | paired | 0.95 | 50 | 3.70% [2.96%, 4.62%] (74/2,000) | 100.00% [99.81%, 100%] (2,000/2,000) |
+  | paired | 0.98 | 30 | 1.40% [0.97%, 2.02%] (28/2,000) | 99.45% [99.02%, 99.69%] (1,989/2,000) |
+  | paired | 0.98 | 50 | 1.80% [1.30%, 2.48%] (36/2,000) | 100.00% [99.81%, 100%] (2,000/2,000) |
+  | paired | 0.99 | 30 | 0.90% [0.57%, 1.42%] (18/2,000) | 98.80% [98.22%, 99.19%] (1,976/2,000) |
+  | paired | 0.99 | 50 | 1.10% [0.73%, 1.66%] (22/2,000) | 100.00% [99.81%, 100%] (2,000/2,000) |
+
+  (25%-effect column omitted: ≥99.95% at every cell, both modes, all three confidence levels — saturated, no decision-relevant information. Full 18+18-cell raw data, including the 25% column, in `reports/confidence_grid_u2.json`.) **Re-decision (2.3): `DEFAULT_CONFIDENCE` STAYS at 0.98** — the value does not change, but the reasoning is now paired-mode-aware rather than two-sample-only. Paired mode's power for a 10% effect is already near-ceiling at 0.98 and barely moves at 0.99 (99.45%→98.80% at n=30; 100.00%→100.00% at n=50) — there is no real headroom to buy by tightening further on the now-default path. Two-sample's power, by contrast, drops sharply over the same tightening (57.80%→49.10% at n=30; 81.25%→74.20% at n=50) and crosses BELOW the 80%-power bar at n=50 — reproducing the exact criterion-2 failure that got 0.99 rejected by S4 in the first place, on a path (two-sample) that remains real and live whenever no pairing key resolves. Since this package ships one `DEFAULT_CONFIDENCE` shared by both modes, tightening it to 0.99 would optimize for the path that needs it least at the direct expense of the path that needs it most — so the shared constant stays put. See `_regression.py`'s `DEFAULT_CONFIDENCE` docstring ("Phase 7 U2, 2.3") for the full reasoning, including a noted-but-not-implemented future option (a paired-mode-specific, tighter confidence default).
+- **`AgentEvaluator.evaluate()`'s own pytest-style pass/fail exit is directionally unreliable for this metric, at any threshold.** `agent_evaluator.py::_process_metrics_and_get_failures` (google-adk 2.6.3, lines ~713-719) recomputes PASSED/FAILED itself from raw scores and the *deprecated* `EvalMetric.threshold` scalar via `mean(scores) >= threshold` — hardcoded higher-is-better, ignoring this evaluator's own correct `eval_status` entirely. `adk eval`/`LocalEvalService` are **unaffected** — they read this evaluator's real `eval_status` directly, always correctly. Trust `adk eval`/`LocalEvalService`, `adk-tracegauge check`, or this evaluator's own `eval_status` (call `evaluate_invocations()` directly), for real pass/fail — never `AgentEvaluator.evaluate()`'s own assert/no-assert outcome for this metric. See `evaluator.py`'s module docstring for the full source-confirmed detail, and `tests/test_agent_evaluator_integration.py` for the permanent regression test documenting this.
+  **As of Phase 3 B3, this is also a real runtime `warnings.warn`** (not only documentation) — it fires when this metric is actually evaluated under a real `AgentEvaluator.evaluate()` call, naming this exact behavior and the installed `google-adk` version. Detection uses a `contextvars.ContextVar` set for the duration of the call (installed as an `adk_tracegauge` import side effect), not a call-stack check — a stack walk was tried first and empirically fails, because `LocalEvalService.evaluate()` forks each eval case into its own `asyncio.Task`, which erases the physical call stack back to whichever caller awaited it, identically for `AgentEvaluator.evaluate()` and `adk eval`. **Known gap:** the very first `AgentEvaluator.evaluate()` call in a process won't trigger the warning if `adk_tracegauge` is imported for the first time as a side effect of *that same call* loading your agent module (the "Also" quickstart's own pattern) — the wrap installs a moment too late for a call already in progress. Workaround: `import adk_tracegauge` explicitly at the top of your eval driver script or `conftest.py`, ahead of any `AgentEvaluator.evaluate()` call — every call after the wrap is installed is detected correctly. See `evaluator.py`'s `_install_agent_evaluator_marker` docstring for the full mechanism and `tests/test_agent_evaluator_integration.py` for a subprocess-based regression test proving both the detection and the gap are real.
+- **`adk eval`'s own process exit code doesn't reflect PASSED/FAILED** (see "Also" section above) — this is exactly why `adk-tracegauge check`, not `adk eval`, is this README's hero path; use its exit code for CI gating, not `adk eval`'s.
+- **`is_local_model()`'s Ollama Cloud gap requires an explicit opt-in, or a local model reports `NOT_EVALUATED`, not `$0.00`.** (Phase 3 B1.) Ollama Cloud is a real paid product sharing the identical `ollama_chat/`/`ollama/` LiteLlm prefix as local Ollama, and google-adk's `LlmResponse` schema carries no host/endpoint field to distinguish them — confirmed by reading `models/lite_llm.py` and `models/llm_response.py` directly. Set `ADK_TRACEGAUGE_ASSUME_LOCAL` (see "Pricing" above) to opt in explicitly; without it, this is fail-closed, not a silent $0.00.
+- **Pricing scope is Gemini + Claude + GPT (current-generation) + local models only.** Bedrock/Vertex AI/Azure-routed Claude/GPT, older GPT-4/o-series models, and any other vendor are not built in — register a custom price via `ADK_TRACEGAUGE_PRICE_TABLE` or open an issue.
+- **Standard (interactive/online) tier pricing only** — no Batch API support (ADK's live-agent plugin path never observes a Batch API call at all, confirmed by source grep).
+- **Text/image/video input rate only** — audio input is priced at the text rate for every model, which under-charges audio-heavy invocations (documented per-model in each price entry's `note`).
+- **Streaming behavior is documentation-corroborated, not independently confirmed against a live API call** (no Gemini API key was available when this was implemented) — see `_adapter.py`'s module docstring for the monotonicity check that makes this gap largely moot: a stream whose reported totals ever decrease, or that never reaches a final chunk, is refused pricing rather than trusted under a possibly-wrong assumption.
+- **No calibrated efficiency bands, no trajectory-quality judging, no OTel span export** — see "What it reports" above and Roadmap/Phase 3 notes in `PLAN.md`.
+
+## How PASSED/FAILED is computed (and why not ADK's built-in `>=`)
+
+ADK's built-in pass/fail convention is `PASSED if score >= threshold else FAILED` — hardcoded, higher-is-better. Cost is lower-is-better, and there is no lower-is-better/inverted-metric convention anywhere in `google.adk.evaluation` (checked directly against the source). So `CostEfficiencyEvaluator` computes PASSED/FAILED itself: `PASSED` when `cost <= threshold`, `FAILED` when `cost > threshold` (`threshold` from `CostThresholdCriterion`, preferred, or the deprecated `EvalMetric.threshold`). A `ValueError` is raised at construction time if neither is set — this package never falls back to a permissive always-PASSED default. An invocation whose cost couldn't be verified at all (no usage captured, unresolved model, a streaming anomaly, an unpriced token category) reports `NOT_EVALUATED`, not a fabricated pass/fail. `adk-tracegauge check`'s own PASS/regression/insufficient-data verdict is a separate, statistical question — see "Quickstart" above and `_regression.py`'s module docstring.
 
 ## Relationship to tracegauge
 
-This package depends on `tracegauge`'s `tes.cost` module (`compute_session_cost` and its digest types) as a library. `tracegauge` overall is AGPL-3.0-only, but `tes/cost.py` and `tes/_digest.py` specifically are additionally available under Apache-2.0 — see [tracegauge's license note](https://github.com/gaurav-gandhi-2411/token-efficiency-scorer#license) — which is what lets this package stay Apache-2.0 itself. Every other part of tracegauge (the token-economy/trajectory/waste axes, the CLI, the dashboard) remains AGPL-3.0-only and is not used here.
+Through Phase 3, this package depended on `tracegauge`'s `tes.cost` module (`compute_session_cost` and its digest types) as a library. **As of Phase 4 R5, it no longer does** — an audit found that arithmetic (~55 lines total) plus two internal-only dataclasses were the *only* things this package ever used from `tracegauge` anywhere in `src/` (nothing from its actual differentiators: the token-economy/trajectory/waste axes, the CLI, the dashboard), so the dollar-cost computation was ported in-house (`src/adk_tracegauge/_cost.py`, behavior-preserving — proven via the full test suite plus hand-computed spot checks) and the `tracegauge` PyPI dependency was removed from `pyproject.toml` entirely.
+
+The ported code originates from `tracegauge`'s `tes/cost.py`/`tes/_digest.py` (Copyright Gaurav Gandhi, same author as this package, [token-efficiency-scorer](https://github.com/gaurav-gandhi-2411/token-efficiency-scorer)), which that repository dual-licenses AGPL-3.0-only OR Apache-2.0 at the licensor's option — this package's copy exercises the Apache-2.0 option, consistent with adk-tracegauge's own license, and the copy carries its own attribution note (see `_cost.py`'s module docstring). One finding from this audit worth recording: the dual-license grant is confirmed present (an SPDX header in both files) as of `tracegauge==0.10.1` and the current upstream source, but genuinely *absent* as a per-file header in `tracegauge==0.10.0` — the older of the two versions previously admitted by this package's own pin — though the upstream repository's README license note covers that release too, at the repository level.
 
 ## What this is not
 
-Not a general ADK observability/tracing tool — see `traceAI-google-adk` for that. Not a statistics/confidence-interval layer for ADK evaluation results — that's a separate, harder problem ([agentgauge](https://github.com/gaurav-gandhi-2411/agentgauge)'s domain) blocked by the same `EvalMetricResult` field-stripping this package works around by using `score`+`rationale` only. Not a replacement for any of ADK's quality metrics — this reports cost alongside them, not instead of them. Not (currently) a drop-in `adk eval`/`AgentEvaluator` metric — see "Read this first" above.
+Not a general ADK observability/tracing tool — it has no span export, no trace viewer, no OTel integration (see `traceAI-google-adk` or ADK's own native OTel support for that). Not a statistics/confidence-interval layer for ADK *evaluation quality* results — that's a separate, harder problem ([agentgauge](https://github.com/gaurav-gandhi-2411/agentgauge)'s domain); the bootstrap-CI machinery here is specifically about *cost* regression, not eval-score regression. Not a replacement for any of ADK's quality metrics — this reports cost alongside them, not instead of them. Not a guaranteed-sensitive regression detector at any eval-set size — see "Known limitations" above for the measured, honest power caveats and the `--mode paired` mitigation.
 
 ## License
 

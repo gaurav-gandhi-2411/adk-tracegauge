@@ -1,61 +1,180 @@
 {
-  "schema_version": 1,
-  "note": "Per-million-token USD rates for Gemini API models used by ADK agents. Prices change without notice -- verify against each entry's source_url before relying on a number for a real budget decision. Standard tier only (no batch/flex/priority).",
+  "schema_version": 3,
+  "note": "Per-million-token USD rates for Gemini, Claude, and GPT models reachable from ADK agents (native Gemini backend, plus Claude/GPT via ADK's LiteLlm integration -- see google-adk's models/lite_llm.py). Historically Gemini-only (hence the filename/loader name -- kept for now, see _pricing.py's module docstring); Phase 2 W3 added Claude and current-generation GPT entries plus a zero-cost entry for local/self-hosted models (Phase 3 B1: local-model zero-cost pricing now requires the caller to opt in via ADK_TRACEGAUGE_ASSUME_LOCAL -- see the __local_zero_cost__ entry's own note and _pricing.py's module docstring for why: Ollama Cloud, a real paid product, shares the identical ollama_chat//ollama/ LiteLlm prefix as local Ollama). Prices change without notice -- verify against each entry's source_url before relying on a number for a real budget decision. Standard (interactive/online) tier only -- no Batch API pricing (ADK's live-agent plugin path never issues Batch API calls, confirmed by source grep of google-adk's models/plugins modules; a batch call is a separate async job-submission API that never flows through BasePlugin.after_model_callback). Text/image/video input rate only -- several vendors price audio input separately (typically higher); audio calls are priced at the text rate here, which under-charges audio-heavy invocations. schema_version 2 added optional per-model long-context tiering (see 'long_context_threshold_tokens'/'long_context_model_key') -- verified P0 fix, Phase 2 W1. schema_version 3 adds optional 'promo_until' (ISO date) + 'standard_rate' ({input_usd_per_mtok, output_usd_per_mtok}) for time-limited promotional entries -- see _pricing.py's resolve_model/effective_prices, which automatically switch a promotional entry to its standard_rate once promo_until has passed, no manual table edit required (Phase 3 B2).",
   "cache_multipliers": {
     "read": 0.1,
     "write_5min": 0.0,
     "write_1hr": 0.0,
-    "_note": "Gemini's default (automatic/implicit) context caching bills only a read-time discount at 0.1x the model's fresh input rate -- verified per-model against ai.google.dev's published cached-input rates (every model checked divides out to exactly 0.1x). There is no cache-write surcharge and no cache_creation token field in GenerateContentResponseUsageMetadata (confirmed by inspecting the actual Pydantic model), so write multipliers are 0 by design, not a placeholder."
+    "_note": "This ONE global read-multiplier applies to every model in the table -- tes.cost.compute_turn_cost (tracegauge's shared cost engine) has no per-model cache-multiplier override, so a vendor whose real cache-read discount differs from 0.1x cannot be added here without silently mispricing its cache hits. Gemini's default (automatic/implicit) context caching bills only a read-time discount at 0.1x the model's fresh input rate -- verified per-model against ai.google.dev's published cached-input rates (every model checked, including the >200k long-context tiers, divides out to exactly 0.1x of that tier's own input rate; re-verified 2026-08-14 across 10 models). Claude's prompt-caching cache-read rate is ALSO exactly 0.1x of base input on every current model, per platform.claude.com/docs/en/about-claude/pricing (fetched 2026-08-14, e.g. Opus 5: $0.50 cache-hit / $5.00 base input = 0.1x). OpenAI's CURRENT (GPT-5.x) generation is ALSO 0.1x on every model checked (developers.openai.com/api/docs/pricing, fetched 2026-08-14, e.g. gpt-5.1: $0.125 cached / $1.25 input = 0.1x) -- this is why Phase 2 W3 added the GPT-5.x family. OpenAI's GPT-4/o-series generation does NOT share this ratio (observed 0.25x on gpt-4.1, 0.5x on gpt-4o and o1) and was deliberately NOT added to this table for that reason -- adding it here would silently under-price any cached call on those models by 2.5x-5x. Register those (or any other off-ratio vendor) via the ADK_TRACEGAUGE_PRICE_TABLE env var override instead, which lets you supply your own cache_multipliers alongside your own models. There is no cache-write surcharge and no cache_creation token field surfaced through ADK's plugin path for any provider (Gemini has none natively; ADK's LiteLlm bridge normalizes OpenAI/Anthropic cache-hit fields into the same cache-READ shape as Gemini's cached_content_token_count but does not surface a separate cache-WRITE token count anywhere adk-tracegauge's plugin can capture it -- see _plugin.py/_store.py), so write multipliers are 0 by design for every entry, not a placeholder. cache_read billing correctness also depends on prompt_token_count already including cached tokens (so fresh_tokens = prompt_token_count - cache_read is not double-billing) -- confirmed directly from the installed google-genai SDK's GenerateContentResponseUsageMetadata docstring: 'prompt_token_count ... When cached_content is set, this also includes the number of tokens in the cached content.'"
   },
   "models": {
     "gemini-2.5-pro": {
       "input_usd_per_mtok": 1.25,
       "output_usd_per_mtok": 10.00,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier, <=200k token context only. Gemini bills >200k-context calls at $2.50/$15.00 per Mtok; this table has no per-call tiered-pricing logic, so long-context Pro calls will be under-priced by this evaluator. See README."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier, <=200k token prompts. Prompts >200k tokens are priced via the long_context tier below (schema_version 2) -- Phase 1 flagged this as unmodeled; now fixed.",
+      "long_context_threshold_tokens": 200000,
+      "long_context_model_key": "gemini-2.5-pro-long-context"
+    },
+    "gemini-2.5-pro-long-context": {
+      "input_usd_per_mtok": 2.50,
+      "output_usd_per_mtok": 15.00,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "Synthetic tier-only entry, never matched directly against a raw ADK model_version string. Applied by _pricing.resolve_model_for_call when a real call's prompt_token_count exceeds gemini-2.5-pro's long_context_threshold_tokens (200,000)."
     },
     "gemini-2.5-flash": {
       "input_usd_per_mtok": 0.30,
       "output_usd_per_mtok": 2.50,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier, text/image/video input. No context-length tiering published for this model. Audio input bills at $1.00/Mtok, not modeled here."
     },
     "gemini-2.5-flash-lite": {
       "input_usd_per_mtok": 0.10,
       "output_usd_per_mtok": 0.40,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier, text/image/video input. No context-length tiering published for this model. Audio input bills at $0.30/Mtok, not modeled here."
     },
     "gemini-2.0-flash": {
       "input_usd_per_mtok": 0.10,
       "output_usd_per_mtok": 0.40,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
+      "fetched_on": "2026-08-14",
       "note": "Deprecated by Google (shut down 2026-06-01). Kept for pricing historical eval sessions recorded before the shutdown; will not appear in new runs."
     },
     "gemini-3.5-flash": {
       "input_usd_per_mtok": 1.50,
       "output_usd_per_mtok": 9.00,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier. No context-length tiering or time-limited promotional rate published for this model."
     },
     "gemini-3.5-flash-lite": {
       "input_usd_per_mtok": 0.30,
       "output_usd_per_mtok": 2.50,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "note": "Standard tier. No context-length tiering or time-limited promotional rate published for this model."
     },
     "gemini-3.6-flash": {
-      "input_usd_per_mtok": 1.50,
-      "output_usd_per_mtok": 7.50,
+      "input_usd_per_mtok": 0.75,
+      "output_usd_per_mtok": 3.75,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-08-13",
-      "note": "Standard tier."
+      "fetched_on": "2026-08-14",
+      "promo_until": "2026-12-31",
+      "standard_rate": {
+        "input_usd_per_mtok": 1.50,
+        "output_usd_per_mtok": 7.50
+      },
+      "note": "CORRECTED 2026-08-14 (Phase 2 W1 P0 fix): prior table entry ($1.50/$7.50) was the POST-promotion rate, not the rate actually in effect. Google's published standard rate is $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after. RE-VERIFIED live 2026-08-14 (Phase 3 B2): ai.google.dev states '$0.75 through December 31, 2026' / '$1.50 starting January 1, 2027' -- a confirmed, published post-promo rate, not provisional. promo_until/standard_rate added so _pricing.py's resolver auto-switches to the standard rate once 2026-12-31 has passed -- no manual table edit required."
+    },
+    "gemini-3.7-flash": {
+      "input_usd_per_mtok": 0.75,
+      "output_usd_per_mtok": 3.75,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "promo_until": "2026-12-31",
+      "standard_rate": {
+        "input_usd_per_mtok": 1.50,
+        "output_usd_per_mtok": 7.50
+      },
+      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Standard rate $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after -- same promotional-period caveat as gemini-3.6-flash; RE-VERIFIED live 2026-08-14 (Phase 3 B2), same confirmed post-promo figures. promo_until/standard_rate added so _pricing.py's resolver auto-switches to the standard rate once 2026-12-31 has passed -- no manual table edit required."
+    },
+    "gemini-3.1-flash-lite": {
+      "input_usd_per_mtok": 0.25,
+      "output_usd_per_mtok": 1.50,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Standard tier, text/image/video input. Audio input bills at $0.50/Mtok, not modeled here. No context-length tiering published."
+    },
+    "gemini-3.1-pro-preview": {
+      "input_usd_per_mtok": 2.00,
+      "output_usd_per_mtok": 12.00,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Preview model. Standard tier, <=200k token prompts; long-context tier below.",
+      "long_context_threshold_tokens": 200000,
+      "long_context_model_key": "gemini-3.1-pro-preview-long-context"
+    },
+    "gemini-3.1-pro-preview-long-context": {
+      "input_usd_per_mtok": 4.00,
+      "output_usd_per_mtok": 18.00,
+      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "Synthetic tier-only entry for gemini-3.1-pro-preview calls with prompt_token_count > 200,000. See gemini-2.5-pro-long-context for the same pattern."
+    },
+    "claude-opus-5": {
+      "input_usd_per_mtok": 5.00,
+      "output_usd_per_mtok": 25.00,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3): current-generation Claude Opus, reached via ADK's LiteLlm integration (e.g. model_version 'anthropic/claude-opus-5'). Cache-hit rate $0.50/Mtok = exactly 0.1x base input -- matches this table's shared global cache_multipliers.read, verified directly against the fetched pricing table (not assumed)."
+    },
+    "claude-sonnet-5": {
+      "input_usd_per_mtok": 2.00,
+      "output_usd_per_mtok": 10.00,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3). IMPORTANT: this was announced as introductory pricing through 2026-08-31 with a scheduled increase to $3/$15 on 2026-09-01 -- the fetched pricing page's own dated note states that increase 'will not occur' and $2/$10 'is now the standard price'. RE-VERIFIED live 2026-08-14 (Phase 3 B2 2.1 promotional-entry audit): platform.claude.com's own note (id claude-sonnet-5-introductory-pricing) still confirms this exact wording -- deliberately NOT given promo_until/standard_rate fields, since there is no longer a scheduled future rate change to auto-switch to; this is a settled standard rate, not an active promo, despite the historical 'introductory pricing' language in its own note. The 90-day staleness guard still forces a routine re-check regardless. Cache-hit rate $0.20/Mtok = exactly 0.1x base input."
+    },
+    "claude-haiku-4-5": {
+      "input_usd_per_mtok": 1.00,
+      "output_usd_per_mtok": 5.00,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3). API model ID is dated (claude-haiku-4-5-20251001); the existing -\\d{8}$ date-suffix strip already reduces that to this bare alias key, no new resolution logic needed. Cache-hit rate $0.10/Mtok = exactly 0.1x base input."
+    },
+    "claude-opus-4-8": {
+      "input_usd_per_mtok": 5.00,
+      "output_usd_per_mtok": 25.00,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3): previous-generation Claude Opus, still listed active (not deprecated/retired) and commonly pinned. Cache-hit rate $0.50/Mtok = exactly 0.1x base input."
+    },
+    "gpt-5.6-sol": {
+      "input_usd_per_mtok": 5.00,
+      "output_usd_per_mtok": 30.00,
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3): current-generation OpenAI flagship ('frontier model for complex professional work' per the fetched models page), reached via ADK's LiteLlm integration (e.g. model_version 'openai/gpt-5.6-sol'). platform.openai.com/docs/pricing and openai.com/api/pricing/ both returned non-200 (404/403) at fetch time and were unreachable directly -- pricing verified instead via developers.openai.com/api/docs/pricing, which platform.openai.com/docs/pricing 301-redirects to; fetched twice independently and cross-checked against developers.openai.com/api/docs/models (which lists the same three figures for the Sol/Terra/Luna family), both agreeing. Cache-hit rate $0.50/Mtok = exactly 0.1x base input -- verified, not assumed (this ratio does NOT hold for OpenAI's older GPT-4/o-series models -- see cache_multipliers._note)."
+    },
+    "gpt-5.6-terra": {
+      "input_usd_per_mtok": 2.00,
+      "output_usd_per_mtok": 12.00,
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3): current-generation OpenAI mid-tier ('balances intelligence and cost' per the fetched models page). Same fetch/verification method as gpt-5.6-sol -- see that entry's note. Cache-hit rate $0.20/Mtok = exactly 0.1x base input."
+    },
+    "gpt-5.6-luna": {
+      "input_usd_per_mtok": 0.20,
+      "output_usd_per_mtok": 1.20,
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3): current-generation OpenAI cost-optimized tier ('optimized for cost-sensitive workloads' per the fetched models page). Same fetch/verification method as gpt-5.6-sol -- see that entry's note. Cache-hit rate $0.02/Mtok = exactly 0.1x base input."
+    },
+    "gpt-5.1": {
+      "input_usd_per_mtok": 1.25,
+      "output_usd_per_mtok": 10.00,
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3). A WebSearch of third-party pricing-aggregator sites (not openai.com) surfaced a conflicting figure ($0.625/$5.00) for this exact model -- re-fetched developers.openai.com/api/docs/pricing twice, independently, isolating just this row both times; both direct fetches agreed on $1.25 input / $0.125 cached / $10.00 output and disagreed with the aggregator figure. Went with the twice-confirmed openai.com-domain figure over the uncorroborated third-party one; flagging the discrepancy here rather than silently picking a number. Cache-hit rate $0.125/Mtok = exactly 0.1x base input."
+    },
+    "gpt-5": {
+      "input_usd_per_mtok": 1.25,
+      "output_usd_per_mtok": 10.00,
+      "source_url": "https://developers.openai.com/api/docs/pricing",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3): identical pricing to gpt-5.1 per the fetched table. Cache-hit rate $0.125/Mtok = exactly 0.1x base input."
+    },
+    "__local_zero_cost__": {
+      "input_usd_per_mtok": 0.0,
+      "output_usd_per_mtok": 0.0,
+      "source_url": "n/a -- synthetic entry, not a real vendor price",
+      "fetched_on": "2026-08-14",
+      "note": "NEW 2026-08-14 (Phase 2 W3): synthetic zero-cost entry for locally-run / self-hosted models (Ollama, vLLM) reached through ADK's LiteLlm integration -- zero marginal API cost by design, not a discount or a guess. Never matched by resolve_model()'s normal exact-match/prefix-pattern lookup against a raw model_version string (there is no model_patterns entry pointing here) -- only resolve_model_for_call() routes a call here, and ONLY when the caller has explicitly asserted the call is genuinely local via ADK_TRACEGAUGE_ASSUME_LOCAL (Phase 3 B1: a bare ollama_chat//ollama/ prefix match is no longer sufficient -- Ollama Cloud, a real paid product, shares the identical prefix, and nothing available at the point adk-tracegauge captures usage can tell the two apart; see is_local_model_asserted / _pricing.py's module docstring). Without that assertion, a local-prefixed call fails closed (NOT_EVALUATED), never a silent $0.00."
     }
   },
   "model_patterns": [
@@ -65,7 +184,10 @@
     {"prefix": "gemini-2.0-flash", "model_key": "gemini-2.0-flash"},
     {"prefix": "gemini-3.5-flash-lite", "model_key": "gemini-3.5-flash-lite"},
     {"prefix": "gemini-3.5-flash", "model_key": "gemini-3.5-flash"},
-    {"prefix": "gemini-3.6-flash", "model_key": "gemini-3.6-flash"}
+    {"prefix": "gemini-3.6-flash", "model_key": "gemini-3.6-flash"},
+    {"prefix": "gemini-3.7-flash", "model_key": "gemini-3.7-flash"},
+    {"prefix": "gemini-3.1-flash-lite", "model_key": "gemini-3.1-flash-lite"},
+    {"prefix": "gemini-3.1-pro-preview", "model_key": "gemini-3.1-pro-preview"}
   ],
   "default_model": "gemini-2.5-flash",
   "approximate_threshold_pct": 25

@@ -1,13 +1,19 @@
-"""adk_tracegauge/_adapter.py — Maps captured ADK usage data onto tracegauge's digest shape.
+"""adk_tracegauge/_adapter.py — Maps captured ADK usage data onto this
+package's own cost-digest shape.
 
-tracegauge's tes.cost.compute_session_cost operates on a tes._digest.SessionDigest
-(a list of TurnDigest, one per AI turn). One ADK invocation can involve more
+``_cost.compute_session_cost`` operates on a ``_cost.SessionDigest`` (a list
+of ``TurnDigest``, one per AI turn). One ADK invocation can involve more
 than one real model call (tool loops, sub-agent delegation), so it maps onto
 a SessionDigest with one TurnDigest per real call -- summed cost across the
-whole invocation, same as tracegauge sums cost across a whole Claude Code
-session.
+whole invocation.
 
-Two things happen here before any TurnDigest is built, both fail-closed:
+Through Phase 3, ``_cost``'s digest/cost types and arithmetic were an
+external dependency (the ``tracegauge`` PyPI package's ``tes._digest``/
+``tes.cost``). Phase 4 R5 ported the arithmetic in-house and removed that
+dependency entirely -- see ``_cost.py``'s module docstring for the full
+audit findings and rationale.
+
+Three things happen here before any TurnDigest is built, all fail-closed:
 
 1. Streamed chunks of one real call are collapsed into a single TurnDigest
    using each CapturedCall's own `partial` flag (ADK's own chunk-boundary
@@ -23,8 +29,16 @@ Two things happen here before any TurnDigest is built, both fail-closed:
    (an interrupted stream) is unresolved for the same reason -- its true
    total is genuinely unknown.
 
-2. Model resolution happens once per real call. A call whose model_version
-   doesn't match the Gemini price table makes the whole adaptation fail
+2. A call reporting nonzero tool_use_prompt_token_count (Gemini server-side
+   built-in tool use, e.g. Google Search grounding) has no verified billing
+   rate in this table -- adaptation fails closed rather than silently
+   ignoring billed tokens (see AdaptResult.unpriced_component).
+
+3. Model resolution happens once per real call, tiering-aware (a long-context
+   model resolves to its own, higher, over-threshold rate once
+   prompt_token_count crosses the published threshold -- see
+   _pricing.resolve_model_for_call). A call whose model_version doesn't
+   match the Gemini price table at all makes the whole adaptation fail
    closed (see AdaptResult.unresolved_model) rather than producing a
    partially-priced or silently-approximate result.
 """
@@ -32,10 +46,17 @@ Two things happen here before any TurnDigest is built, both fail-closed:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from tes._digest import SessionDigest, TurnDigest
-
-from ._pricing import known_model_keys, resolve_model
+from ._cost import SessionCost, SessionDigest, TurnDigest, compute_session_cost
+from ._pricing import (
+    ASSUME_LOCAL_ENV_VAR,
+    PRICE_TABLE_ENV_VAR,
+    effective_prices,
+    is_local_model,
+    known_model_keys,
+    resolve_model_for_call,
+)
 from ._store import CapturedCall
 
 
@@ -46,6 +67,12 @@ class AdaptResult:
     digest: SessionDigest | None
     unresolved_model: str | None = None
     streaming_anomaly: str | None = None
+    unpriced_component: str | None = None
+    """Set when a real call includes a token category adk-tracegauge cannot
+    price with confidence (currently: tool_use_prompt_token_count > 0, from
+    Gemini's server-side built-in tools). Same fail-closed philosophy as
+    unresolved_model -- refuse rather than under-report cost by silently
+    ignoring billed tokens. See CapturedCall's docstring in _store.py."""
 
     @property
     def ok(self) -> bool:
@@ -85,7 +112,7 @@ def _group_streaming_calls(
                     "usage_metadata.total_token_count decreased between streamed "
                     f"chunks ({prev_total} -> {call.total_token_count}) for model "
                     f"'{call.model_version}' -- the assumption that every chunk "
-                    "carries a cumulative running total (see README, 'Streaming') "
+                    "carries a cumulative running total (see README, 'Known limitations') "
                     "does not hold for this response, so its cost cannot be trusted"
                 )
             prev_total = call.total_token_count
@@ -112,7 +139,23 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         # totals -- intermediate partial chunks are superseded by it, not
         # summed with it.
         final_call = group[-1]
-        resolved = resolve_model(final_call.model_version)
+
+        if final_call.tool_use_prompt_token_count:
+            return AdaptResult(
+                digest=None,
+                unpriced_component=(
+                    f"call for model '{final_call.model_version}' includes "
+                    f"{final_call.tool_use_prompt_token_count} tool_use_prompt "
+                    "token(s) (Gemini server-side built-in tool use, e.g. "
+                    "Google Search grounding or code execution) -- "
+                    "adk-tracegauge has no verified billing rate for this "
+                    "token category and refuses to under-report cost by "
+                    "silently ignoring it rather than fabricate one. See "
+                    "README."
+                ),
+            )
+
+        resolved = resolve_model_for_call(final_call.model_version, final_call.prompt_token_count)
         if resolved is None:
             return AdaptResult(digest=None, unresolved_model=final_call.model_version)
 
@@ -120,41 +163,107 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
             TurnDigest(
                 turn_index=index,
                 role="ai",
-                tool_names=[],
-                content_snippet="",
                 token_count_input=final_call.prompt_token_count,
-                token_count_output=final_call.candidates_token_count,
+                # thoughts_token_count ("thinking" tokens) is billed as
+                # output per Gemini's pricing pages -- folded in here so it
+                # isn't silently undercounted (Phase 2 W1 P0 finding).
+                token_count_output=(
+                    final_call.candidates_token_count + final_call.thoughts_token_count
+                ),
                 cache_read=final_call.cached_content_token_count,
-                h2_duplicate=False,
                 cache_creation=0,
                 model=resolved.model_key,
             )
         )
 
-    digest = SessionDigest(
-        session_id=invocation_id,
-        domain="adk_invocation",
-        resolved=True,
-        total_tokens=sum(g[-1].prompt_token_count + g[-1].candidates_token_count for g in groups),
-        turn_count=len(turns),
-        h2_duplicate_count=0,
-        cache_hit_rate=0.0,
-        p25_token_ratio=0.0,
-        output_tokens_available=True,
-        task_description="",
-        turns=turns,
-    )
+    digest = SessionDigest(session_id=invocation_id, turns=turns)
     return AdaptResult(digest=digest)
 
 
+def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
+    """The single sanctioned call site for ``_cost.compute_session_cost`` in
+    this package -- every caller that needs a priced SessionDigest
+    (``evaluator.py``'s per-invocation eval result, ``snapshot.py``'s
+    regression-gate snapshots -- Phase 2 W4) must go through this function,
+    never call ``compute_session_cost`` directly.
+
+    `prices` is required with no default -- deliberately, not by
+    convention. Through Phase 3, this wrapped an EXTERNAL dependency
+    (tracegauge's own ``compute_session_cost(digest, prices=None, ...)``,
+    which silently fell back to ITS bundled Claude price table when
+    `prices` was omitted) -- that fallback bug actually happened during this
+    package's own development: omitting `prices=` priced a $2.80
+    gemini-2.5-flash call at $18.00 (Claude Sonnet's rate), no error, just a
+    buried `approximate` flag. Phase 4 R5 ported the arithmetic in-house
+    (``_cost.py``) and removed the ``None``-defaulting fallback at the
+    source rather than merely guarding around it (``_cost.compute_session_cost``
+    now requires `prices` itself, no default at all) -- this wrapper's own
+    required-`prices` guarantee stays regardless, as defense in depth and
+    because ``build_session_digest``'s own pre-check only guards against
+    *unresolvable* models, not the wrong price *table* being passed for an
+    otherwise-valid one. ``tests/test_pricing_call_site.py`` asserts this is
+    the only place ``compute_session_cost`` is called in ``src/``, so a
+    future call site added elsewhere can't reintroduce the same bug by
+    skipping this wrapper.
+
+    ``prices`` is passed through ``effective_prices`` before reaching the
+    arithmetic (Phase 3 B2) -- ``_cost.compute_turn_cost`` reads
+    ``prices["models"][key]["input_usd_per_mtok"]`` directly off whatever
+    dict it's given (a ported, unchanged behavior -- see ``_cost.py``'s
+    module docstring), with zero knowledge of this package's
+    ``promo_until``/``standard_rate`` schema fields, so the automatic
+    promo-expiry rate switch has to be applied here, on every call through
+    this single sanctioned call site, rather than relying on every caller
+    to remember to call ``effective_prices`` themselves.
+    """
+    return compute_session_cost(digest, prices=effective_prices(prices))
+
+
 def unknown_model_message(model_version: str) -> str:
+    if is_local_model(model_version):
+        # Phase 3 B1: a bare local-prefix match is no longer sufficient to
+        # auto-resolve to zero cost -- distinguish this from a genuinely
+        # unrecognized vendor with a specific, actionable remedy naming the
+        # exact opt-in mechanism, not the generic "register a custom price"
+        # text below (which would be actively misleading here: the model
+        # IS recognized, just not priced without an explicit assertion).
+        return (
+            f"cost not computed: model '{model_version}' carries a "
+            "local-model LiteLlm prefix (ollama_chat/, ollama/, or vllm/) "
+            "but was NOT priced at zero cost, because that prefix alone "
+            "cannot distinguish genuinely local/self-hosted inference from "
+            "Ollama Cloud -- a real paid product routed through the "
+            "identical prefix, where only the api_base/host differs, and "
+            "that field is not available at the point adk-tracegauge "
+            "captures usage (confirmed by reading google-adk's "
+            "models/lite_llm.py and models/llm_response.py directly -- see "
+            "_pricing.py's module docstring). A silently wrong $0.00 for a "
+            "paid Ollama Cloud call would be worse than this refusal. If "
+            f"'{model_version}' really is local/self-hosted, opt in "
+            f"explicitly by setting {ASSUME_LOCAL_ENV_VAR}=1 (asserts every "
+            "recognized local prefix) or "
+            f"{ASSUME_LOCAL_ENV_VAR}=<comma-separated prefixes> (e.g. "
+            "'vllm/' to assert only that one, leaving ollama_chat/ still "
+            "failing closed) before running your eval."
+        )
+
     known = ", ".join(known_model_keys())
     return (
-        f"cost not computed: model '{model_version}' is not in the "
-        f"adk-tracegauge Gemini price table (known: {known}). "
-        "Check https://ai.google.dev/gemini-api/docs/pricing for a new or "
-        "renamed model, or open an issue if this model should be added."
+        f"cost not computed: model '{model_version}' did not resolve against "
+        f"adk-tracegauge's price table (Gemini, Claude, and GPT models "
+        f"known: {known}). If this is a local/self-hosted model (Ollama, "
+        "vLLM) it needs an explicit opt-in before it resolves to zero cost "
+        f"-- see the {ASSUME_LOCAL_ENV_VAR} environment variable; if it's "
+        "routed through a cloud platform whose pricing can differ from the "
+        "first-party rate (Bedrock, Vertex AI, Azure), that's why it wasn't "
+        "auto-resolved -- see _pricing.py's module docstring. Otherwise, "
+        f"register a custom price by setting the {PRICE_TABLE_ENV_VAR} "
+        "environment variable to the path of a JSON file with the same "
+        "schema as the bundled table (src/adk_tracegauge/data/"
+        "gemini_prices.json) containing an entry for this model, or open an "
+        "issue at https://github.com/gaurav-gandhi-2411/adk-tracegauge/"
+        "issues if it should ship built-in."
     )
 
 
-__all__ = ["AdaptResult", "build_session_digest", "unknown_model_message"]
+__all__ = ["AdaptResult", "build_session_digest", "price_digest", "unknown_model_message"]

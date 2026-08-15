@@ -13,6 +13,8 @@ def _llm_response(
     prompt: int = 1000,
     output: int = 200,
     cached: int = 0,
+    thoughts: int = 0,
+    tool_use: int = 0,
     with_usage: bool = True,
 ) -> LlmResponse:
     usage = None
@@ -22,6 +24,8 @@ def _llm_response(
             candidates_token_count=output,
             cached_content_token_count=cached,
             total_token_count=prompt + output,
+            thoughts_token_count=thoughts,
+            tool_use_prompt_token_count=tool_use,
         )
     return LlmResponse(model_version=model_version, usage_metadata=usage)
 
@@ -43,6 +47,25 @@ async def test_after_model_callback_records_usage_by_invocation_id(mocker):
     assert calls[0].model_version == "gemini-2.5-flash"
     assert calls[0].prompt_token_count == 1000
     assert calls[0].candidates_token_count == 200
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_captures_thoughts_and_tool_use_prompt_tokens(mocker):
+    # Phase 2 W1 P0 fix: these two usage_metadata fields were previously
+    # dropped entirely rather than captured -- see CapturedCall's docstring.
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "inv-1"
+
+    await plugin.after_model_callback(
+        callback_context=callback_context,
+        llm_response=_llm_response(thoughts=42, tool_use=7),
+    )
+
+    captured = store.get("inv-1")[0]
+    assert captured.thoughts_token_count == 42
+    assert captured.tool_use_prompt_token_count == 7
 
 
 @pytest.mark.asyncio
@@ -171,6 +194,102 @@ async def test_after_run_callback_restores_stack_for_calls_following_a_nested_ch
 
     assert store.get("parent") != []
     assert "parent" not in store._parents  # never recorded as anyone's child
+
+
+@pytest.mark.asyncio
+async def test_before_run_callback_records_the_invocation_context_session_id(mocker):
+    # Phase 3 B4: TraceGaugeUsagePlugin.before_run_callback also records
+    # invocation_context.session.id, the pairing key `adk-tracegauge check
+    # --mode paired` uses -- see UsageStore.record_session's docstring.
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    ctx = mocker.MagicMock()
+    ctx.invocation_id = "inv-1"
+    ctx.session.id = "case-42"
+
+    await plugin.before_run_callback(invocation_context=ctx)
+
+    assert store.session_id("inv-1") == "case-42"
+
+
+@pytest.mark.asyncio
+async def test_before_run_callback_records_distinct_session_ids_per_invocation(mocker):
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    parent_ctx = mocker.MagicMock()
+    parent_ctx.invocation_id = "parent"
+    parent_ctx.session.id = "case-parent"
+    child_ctx = mocker.MagicMock()
+    child_ctx.invocation_id = "child"
+    child_ctx.session.id = "case-child"
+
+    await plugin.before_run_callback(invocation_context=parent_ctx)
+    await plugin.before_run_callback(invocation_context=child_ctx)
+
+    assert store.session_id("parent") == "case-parent"
+    assert store.session_id("child") == "case-child"
+
+
+# --- after_model_callback also captures session_id (Phase 4 R2) ----------
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_records_session_id(mocker):
+    # Phase 4 R2: before_run_callback never fires during `adk eval`/
+    # AgentEvaluator.evaluate() at all (they build a bare Runner, no
+    # App/Plugin wiring) -- after_model_callback is the hook proven to fire
+    # through that path (the quickstart's direct-binding mechanism), so
+    # session_id capture must also happen here, not only in
+    # before_run_callback.
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "inv-1"
+    callback_context.session.id = "case-42"
+
+    await plugin.after_model_callback(
+        callback_context=callback_context, llm_response=_llm_response()
+    )
+
+    assert store.session_id("inv-1") == "case-42"
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_records_session_id_even_when_usage_metadata_is_none(mocker):
+    # session_id capture must not be gated behind the usage_metadata
+    # early-return -- an error response still ran inside a real session.
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "inv-1"
+    callback_context.session.id = "case-42"
+
+    await plugin.after_model_callback(
+        callback_context=callback_context, llm_response=_llm_response(with_usage=False)
+    )
+
+    assert store.session_id("inv-1") == "case-42"
+
+
+@pytest.mark.asyncio
+async def test_after_model_callback_session_id_survives_when_before_run_callback_never_fired(
+    mocker,
+):
+    # The exact `adk eval` scenario: no before_run_callback call at all
+    # (bare Runner, no App/Plugin wiring) -- only after_model_callback, via
+    # direct binding. Must still populate session_id.
+    store = UsageStore()
+    plugin = TraceGaugeUsagePlugin(store=store)
+    callback_context = mocker.MagicMock()
+    callback_context.invocation_id = "inv-1"
+    callback_context.session.id = "___eval___session___abc"
+
+    await plugin.after_model_callback(
+        callback_context=callback_context, llm_response=_llm_response()
+    )
+
+    assert store.session_id("inv-1") == "___eval___session___abc"
+    assert store._parents == {}  # before_run_callback's parent-tracking never ran, as expected
 
 
 @pytest.mark.asyncio

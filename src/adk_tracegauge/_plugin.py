@@ -9,12 +9,34 @@ which ADK's own docstring names as "the ideal place to ... collect metrics
 on token usage." This plugin does exactly that, keyed by invocation_id so
 CostEfficiencyEvaluator can look it back up.
 
-Requires the agent to run through an App wrapper you build and drive
-yourself (see README, "The only path that reliably works") -- a bare
-root_agent never fires plugins at all, and AgentEvaluator/adk eval build
-their own bare Runner from root_agent regardless of what App you define,
-so this plugin only fires inside a hand-rolled Runner, never through ADK's
-own eval CLI/API.
+Using this class's before_run_callback/after_run_callback (needed for
+sub-agent rollup) requires the agent to run through an App wrapper you
+build and drive yourself (see README, "Sub-agent delegation") -- a bare
+root_agent never fires Plugin lifecycle hooks at all, and AgentEvaluator/
+adk eval build their own bare Runner from root_agent regardless of what
+App you define, so those two hooks only fire inside a hand-rolled Runner,
+never through ADK's own eval CLI/API. after_model_callback is different:
+the quickstart wires this same method directly onto the agent
+(`after_model_callback=plugin.after_model_callback`), bypassing Plugin
+lifecycle entirely, which is exactly why that path DOES work through
+`adk eval`/`AgentEvaluator` (see README, "Quickstart").
+
+Phase 4 R2 finding: ``before_run_callback``/``after_run_callback`` (where
+session_id capture originally lived, Phase 3 B4) genuinely NEVER fire during
+`adk eval`/``AgentEvaluator.evaluate()`` -- both build their own bare
+``Runner`` internally with no ``App``/Plugin wiring at all, exactly as this
+docstring already said above for the *rollup* use of those two hooks. This
+means B4's session_id capture was not merely "sometimes stale because
+session_id itself regenerates" -- it was structurally NEVER POPULATED during
+`adk eval` in the first place, regardless of whether session_id happened to
+be stable. Fixed by ALSO capturing session_id from ``after_model_callback``
+(see below) -- the one hook proven to fire through `adk eval` (the
+quickstart's own direct-binding mechanism) -- sourced from
+``callback_context.session.id``, which is a real, always-present property on
+``Context``/``CallbackContext`` regardless of which hook reads it.
+``before_run_callback`` still also records it (harmless, unaffected) for the
+hand-rolled ``Runner``+``App`` harness path, where it fires strictly earlier
+per invocation.
 
 Sub-agent delegation via AgentTool: AgentTool.run_async builds a brand-new
 Runner (its own session, its own InvocationContext) and, by default
@@ -70,6 +92,17 @@ class TraceGaugeUsagePlugin(BasePlugin):
         if stack:
             self._store.record_parent(invocation_context.invocation_id, stack[-1])
         _ACTIVE_INVOCATIONS.set((*stack, invocation_context.invocation_id))
+        # Phase 3 B4: also record which ADK session.id this invocation ran
+        # under -- see UsageStore.record_session's docstring for why this
+        # (not invocation_id) is the pairing key `adk-tracegauge check --mode
+        # paired` needs. A hand-rolled harness that calls
+        # `runner.run_async(session_id=..., ...)` with a caller-chosen,
+        # per-eval-case-stable id (e.g. the eval case's own id) makes this
+        # value stable across a baseline run and a current run of the SAME
+        # eval set; a harness that lets ADK generate a random session_id
+        # gets no pairing benefit, which is expected and documented, not a
+        # bug.
+        self._store.record_session(invocation_context.invocation_id, invocation_context.session.id)
 
     async def after_run_callback(self, *, invocation_context: InvocationContext) -> None:
         stack = _ACTIVE_INVOCATIONS.get()
@@ -88,6 +121,20 @@ class TraceGaugeUsagePlugin(BasePlugin):
     async def after_model_callback(
         self, *, callback_context: CallbackContext, llm_response: LlmResponse
     ) -> LlmResponse | None:
+        # Phase 4 R2: also record session_id here, not only in
+        # before_run_callback -- this is the ONE hook proven to fire during
+        # `adk eval`/AgentEvaluator.evaluate() (the quickstart binds this
+        # method directly onto the agent, bypassing Plugin lifecycle
+        # entirely; before_run_callback never fires in that path at all, see
+        # module docstring). callback_context.session is a real property on
+        # Context/CallbackContext regardless of which hook reads it, so this
+        # is available every time this method runs, not just when a full
+        # App+Plugin harness is used. Recording it once per model call
+        # (rather than once per invocation) is harmless -- record_session is
+        # a plain dict assignment, and session_id cannot change mid-
+        # invocation.
+        self._store.record_session(callback_context.invocation_id, callback_context.session.id)
+
         usage = llm_response.usage_metadata
         if usage is None:
             # A model turn that produced no usage_metadata (e.g. an error
@@ -104,6 +151,12 @@ class TraceGaugeUsagePlugin(BasePlugin):
                 cached_content_token_count=usage.cached_content_token_count or 0,
                 total_token_count=usage.total_token_count or 0,
                 partial=bool(llm_response.partial),
+                # Billed as output tokens and as further input-side tokens
+                # respectively -- see CapturedCall's own docstring for the
+                # Phase 2 W1 P0 finding these two fields fix (both were
+                # silently dropped before, undercounting real cost).
+                thoughts_token_count=usage.thoughts_token_count or 0,
+                tool_use_prompt_token_count=usage.tool_use_prompt_token_count or 0,
             ),
         )
         return None

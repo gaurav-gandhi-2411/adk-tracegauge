@@ -24,15 +24,25 @@ def _invocation(invocation_id: str) -> Invocation:
     )
 
 
+def _fake_callback_context(invocation_id: str, session_id: str = "fake-session") -> object:
+    """A minimal fake CallbackContext -- real ADK CallbackContext always has
+    a `.session` (a required, non-optional property backed by
+    InvocationContext.session: Session), so after_model_callback's Phase 4
+    R2 session_id capture (`callback_context.session.id`) needs one here
+    too, same as it would against a real ADK-built CallbackContext."""
+    fake_session = type("FakeSession", (), {"id": session_id})()
+    return type("Ctx", (), {"invocation_id": invocation_id, "session": fake_session})()
+
+
 @pytest.mark.asyncio
 async def test_plugin_capture_flows_through_to_evaluator_score():
     store = UsageStore()
     plugin = TraceGaugeUsagePlugin(store=store)
     evaluator = CostEfficiencyEvaluator(
-        eval_metric=EvalMetric(metric_name=METRIC_NAME), store=store
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1_000.0), store=store
     )
 
-    callback_context = type("Ctx", (), {"invocation_id": "inv-1"})()
+    callback_context = _fake_callback_context("inv-1")
     llm_response = LlmResponse(
         model_version="gemini-2.5-flash-001",
         usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
@@ -54,9 +64,9 @@ async def test_two_calls_in_one_invocation_sum_correctly_end_to_end():
     store = UsageStore()
     plugin = TraceGaugeUsagePlugin(store=store)
     evaluator = CostEfficiencyEvaluator(
-        eval_metric=EvalMetric(metric_name=METRIC_NAME), store=store
+        eval_metric=EvalMetric(metric_name=METRIC_NAME, threshold=1_000.0), store=store
     )
-    callback_context = type("Ctx", (), {"invocation_id": "inv-1"})()
+    callback_context = _fake_callback_context("inv-1")
 
     for _ in range(2):
         await plugin.after_model_callback(

@@ -1,11 +1,24 @@
 from __future__ import annotations
 
-from adk_tracegauge._adapter import build_session_digest, unknown_model_message
+from copy import deepcopy
+
+from adk_tracegauge._adapter import build_session_digest, price_digest, unknown_model_message
+from adk_tracegauge._pricing import (
+    ASSUME_LOCAL_ENV_VAR,
+    LOCAL_MODEL_KEY,
+    PRICE_TABLE_ENV_VAR,
+    load_gemini_prices,
+)
 from adk_tracegauge._store import CapturedCall
 
 
 def _call(
-    model: str = "gemini-2.5-flash", prompt: int = 1000, output: int = 200, cached: int = 0
+    model: str = "gemini-2.5-flash",
+    prompt: int = 1000,
+    output: int = 200,
+    cached: int = 0,
+    thoughts: int = 0,
+    tool_use: int = 0,
 ) -> CapturedCall:
     return CapturedCall(
         model_version=model,
@@ -13,6 +26,8 @@ def _call(
         candidates_token_count=output,
         cached_content_token_count=cached,
         total_token_count=prompt + output,
+        thoughts_token_count=thoughts,
+        tool_use_prompt_token_count=tool_use,
     )
 
 
@@ -129,6 +144,55 @@ def test_build_session_digest_fails_closed_on_unterminated_partial_stream():
     assert "never reached a final" in result.streaming_anomaly
 
 
+def test_build_session_digest_folds_thoughts_into_output_tokens():
+    # thoughts_token_count ("thinking" tokens) is billed as output per
+    # Gemini's pricing pages -- must be added to candidates_token_count, not
+    # dropped (Phase 2 W1 P0 finding: this was previously silently ignored).
+    result = build_session_digest("inv-1", [_call(output=200, thoughts=50)])
+    assert result.ok
+    assert result.digest.turns[0].token_count_output == 250
+
+
+def test_build_session_digest_fails_closed_on_tool_use_prompt_tokens():
+    # Gemini's server-side built-in tool use (Google Search grounding, code
+    # execution) has no verified billing rate in this table -- refuse rather
+    # than silently ignore (undercount) or guess (fabricate).
+    result = build_session_digest("inv-1", [_call(tool_use=123)])
+    assert not result.ok
+    assert result.digest is None
+    assert result.unpriced_component is not None
+    assert "123" in result.unpriced_component
+    assert "tool_use_prompt" in result.unpriced_component
+
+
+def test_build_session_digest_zero_tool_use_prompt_tokens_prices_normally():
+    # The default (0) must not trip the refusal path -- this is the ordinary
+    # client-orchestrated function-calling shape every other test uses.
+    result = build_session_digest("inv-1", [_call(tool_use=0)])
+    assert result.ok
+    assert result.unpriced_component is None
+
+
+def test_build_session_digest_uses_base_rate_at_or_below_long_context_threshold():
+    result = build_session_digest("inv-1", [_call(model="gemini-2.5-pro", prompt=200_000)])
+    assert result.ok
+    assert result.digest.turns[0].model == "gemini-2.5-pro"
+
+
+def test_build_session_digest_uses_long_context_rate_one_token_above_threshold():
+    result = build_session_digest("inv-1", [_call(model="gemini-2.5-pro", prompt=200_001)])
+    assert result.ok
+    assert result.digest.turns[0].model == "gemini-2.5-pro-long-context"
+
+
+def test_build_session_digest_no_tiering_for_models_without_a_long_context_tier():
+    # gemini-2.5-flash has no long-context entry -- a huge prompt must not
+    # spuriously resolve to some other model's tier.
+    result = build_session_digest("inv-1", [_call(model="gemini-2.5-flash", prompt=5_000_000)])
+    assert result.ok
+    assert result.digest.turns[0].model == "gemini-2.5-flash"
+
+
 def test_build_session_digest_equal_totals_across_chunks_is_not_a_violation():
     # Non-decreasing allows equal -- a chunk with no new output tokens yet
     # isn't itself an anomaly.
@@ -138,3 +202,116 @@ def test_build_session_digest_equal_totals_across_chunks_is_not_a_violation():
     ]
     result = build_session_digest("inv-1", calls)
     assert result.ok
+
+
+# --- Phase 2 W3: multi-provider pricing -------------------------------------
+
+
+def test_build_session_digest_resolves_litellm_prefixed_claude_model():
+    result = build_session_digest("inv-1", [_call(model="anthropic/claude-opus-5")])
+    assert result.ok
+    assert result.digest.turns[0].model == "claude-opus-5"
+
+
+def test_build_session_digest_resolves_litellm_prefixed_gpt_model():
+    result = build_session_digest("inv-1", [_call(model="openai/gpt-5.1")])
+    assert result.ok
+    assert result.digest.turns[0].model == "gpt-5.1"
+
+
+def test_build_session_digest_local_model_resolves_to_zero_cost_key_once_asserted(monkeypatch):
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
+    result = build_session_digest("inv-1", [_call(model="ollama_chat/qwen2.5:7b")])
+    assert result.ok
+    assert result.unresolved_model is None
+    assert result.digest.turns[0].model == LOCAL_MODEL_KEY
+
+
+def test_build_session_digest_local_model_prices_at_zero_regardless_of_tokens(monkeypatch):
+    monkeypatch.setenv(ASSUME_LOCAL_ENV_VAR, "1")
+    result = build_session_digest(
+        "inv-1", [_call(model="vllm/mistral-7b-instruct", prompt=5_000_000, output=1_000_000)]
+    )
+    assert result.ok
+    assert result.digest.turns[0].model == LOCAL_MODEL_KEY
+    # build_session_digest only resolves the model key -- the actual $0.00
+    # total comes from compute_session_cost picking up the table's 0.0
+    # rates for this key (see test_evaluator.py's end-to-end assertion).
+
+
+def test_build_session_digest_local_model_fails_closed_without_opt_in(monkeypatch):
+    # Phase 3 B1 (release-blocking): a bare local-prefix match must NEVER
+    # resolve to zero cost without the caller's explicit assertion --
+    # Ollama Cloud (a real paid product) shares the identical prefix.
+    monkeypatch.delenv(ASSUME_LOCAL_ENV_VAR, raising=False)
+    result = build_session_digest("inv-1", [_call(model="ollama_chat/qwen2.5:7b")])
+    assert not result.ok
+    assert result.unresolved_model == "ollama_chat/qwen2.5:7b"
+
+
+def test_unknown_model_message_for_unasserted_local_model_names_the_opt_in_remedy(monkeypatch):
+    monkeypatch.delenv(ASSUME_LOCAL_ENV_VAR, raising=False)
+    message = unknown_model_message("ollama_chat/qwen2.5:7b")
+    assert ASSUME_LOCAL_ENV_VAR in message
+    assert "ollama_chat/qwen2.5:7b" in message
+    assert "Ollama Cloud" in message
+
+
+def test_price_digest_switches_expired_promo_entry_to_its_standard_rate():
+    # Phase 3 B2: price_digest is the single sanctioned compute_session_cost
+    # call site, and must apply the promo-expiry auto-switch on every call
+    # through it -- exercised here with a real expired-promo entry,
+    # confirming the effective-rate rewrite actually reaches the computed
+    # dollar total, not just a ResolvedModel field nobody reads.
+    #
+    # build_session_digest always resolves against the BUNDLED table (it
+    # takes no prices= override), so the model used here must be a real
+    # bundled entry -- gemini-3.6-flash. A custom prices dict (a deep copy
+    # of the bundled table with that entry's promo_until moved into the
+    # past) is then handed to price_digest itself, which does accept an
+    # explicit override.
+    prices = deepcopy(load_gemini_prices())
+    prices["models"]["gemini-3.6-flash"]["promo_until"] = "2026-01-01"
+    prices["models"]["gemini-3.6-flash"]["standard_rate"] = {
+        "input_usd_per_mtok": 10.0,
+        "output_usd_per_mtok": 20.0,
+    }
+
+    result = build_session_digest(
+        "inv-1", [_call(model="gemini-3.6-flash", prompt=1_000_000, output=0)]
+    )
+    assert result.ok
+    session_cost = price_digest(result.digest, prices=prices)
+    # 1M input tokens at the STANDARD rate ($10.00/Mtok), not the stale
+    # promotional rate ($0.75/Mtok) -- $10.00, not $0.75.
+    assert session_cost.total_usd == 10.0
+
+
+def test_price_digest_does_not_mutate_the_bundled_table_in_place():
+    prices = load_gemini_prices()
+    before = prices["models"]["gemini-3.6-flash"]["input_usd_per_mtok"]
+    result = build_session_digest("inv-1", [_call(model="gemini-3.6-flash")])
+    assert result.ok
+    price_digest(result.digest, prices=prices)
+    assert prices["models"]["gemini-3.6-flash"]["input_usd_per_mtok"] == before
+
+
+def test_build_session_digest_fails_closed_on_bedrock_routed_claude():
+    # Deliberately not auto-resolved -- Bedrock pricing can differ from
+    # first-party rates. See _pricing.py's module docstring.
+    result = build_session_digest("inv-1", [_call(model="bedrock/claude-opus-5")])
+    assert not result.ok
+    assert result.unresolved_model == "bedrock/claude-opus-5"
+
+
+def test_unknown_model_message_does_not_say_gemini_price_table():
+    # Phase 2 W3: this wording was actively stale once the table stopped
+    # being Gemini-only.
+    message = unknown_model_message("mistral-large-latest")
+    assert "Gemini price table" not in message
+
+
+def test_unknown_model_message_names_the_extension_mechanism():
+    message = unknown_model_message("mistral-large-latest")
+    assert PRICE_TABLE_ENV_VAR in message
+    assert "mistral-large-latest" in message
