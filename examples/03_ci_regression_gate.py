@@ -31,15 +31,18 @@ HOW TO RUN
     or add examples/ to PYTHONPATH.)
 
 EXPECTED OUTPUT (real numbers -- reproduce exactly given the seeds above;
-    re-captured Phase 5 S4 for the new DEFAULT_CONFIDENCE=0.98 default (was
-    0.95) -- the mean/effect numbers are unchanged (same generator/seeds),
-    but the CI bounds and achieved-power figure widen slightly at the new,
-    tighter confidence level, as expected)
+    re-captured Phase 7 U1 for the mode-selection message wording (was last
+    re-captured Phase 5 S4 for DEFAULT_CONFIDENCE=0.98) -- this fixture has
+    no session_id/eval_case_id on any record, so `auto` still falls back to
+    two-sample here (0 overlap, the "no pairing key available at all" case,
+    distinct from U1's own "some pairs but too few" case -- see _cli.py's
+    module docstring); the mean/effect/CI/achieved-power numbers are
+    unchanged (same generator/seeds, same underlying statistics))
     adk-tracegauge snapshot: wrote 40 record(s) to <tmp>/baseline.json
     adk-tracegauge snapshot: wrote 40 record(s) to <tmp>/current.json
-    adk-tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
-    overlapping match(es) < --min-n=30, so falling back from paired -- see snapshot.py's docstring
-    for how to enable paired comparison)
+    adk-tracegauge check: mode=two-sample (two-sample, no pairing key available -- neither
+    eval_case_id nor session_id has any overlap between --baseline and --current, falling back
+    to two-sample; see snapshot.py's docstring for how to enable paired comparison)
     adk-tracegauge check [method=two_sample]: n_baseline=40 n_current=40 (min_n=30)
       mean_baseline=$0.008583  mean_current=$0.009998
       achieved power: minimum reliably-detectable effect at 80% power, given this run's observed

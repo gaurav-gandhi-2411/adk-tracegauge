@@ -18,13 +18,19 @@ for the reproduction command. This file instead:
    pairing key exists? This directly answers the work item's own question
    ("does the fix help?") with actual numbers, not a prototype run once and
    discarded.
+3. Phase 7 U1: smoke-tests `scripts/measure_paired_power_grid.py`'s
+   `compute_paired_power_grid` the same way as (1) -- the FULL 20-cell
+   grid (20,000 simulated `check` calls, ~2.5 minutes wall-clock) is NOT
+   run here; see that script's own docstring for the reproduction command
+   and PLAN.md's Phase 7 U1 entry for the full measured grid.
 """
 
 from __future__ import annotations
 
 import random
 
-from measure_regression_power import compute_power_grid
+from measure_paired_power_grid import compute_paired_power_grid
+from measure_regression_power import compute_power_grid, generate_case_correlated_pair
 
 from adk_tracegauge._regression import evaluate_regression, evaluate_regression_paired
 from adk_tracegauge.snapshot import Snapshot, SnapshotRecord, resolve_pairing
@@ -52,65 +58,65 @@ def test_compute_power_grid_detects_a_large_injected_regression_more_often_than_
     assert grid[(100, 50.0)] > grid[(100, 0.0)] + 0.5
 
 
+# --- Phase 7 U1, 1.5: the dedicated paired-mode power grid harness --------
+
+
+def test_compute_paired_power_grid_is_deterministic_and_shaped_correctly():
+    grid_a = compute_paired_power_grid(
+        n_grid=[25], effect_pct_grid=[0.0, 10.0], n_trials=20, n_boot=200
+    )
+    grid_b = compute_paired_power_grid(
+        n_grid=[25], effect_pct_grid=[0.0, 10.0], n_trials=20, n_boot=200
+    )
+
+    assert grid_a == grid_b  # fully deterministic given the same inputs
+    assert set(grid_a.keys()) == {(25, 0.0), (25, 10.0)}
+    for detection_rate in grid_a.values():
+        assert 0.0 <= detection_rate <= 1.0
+
+
+def test_compute_paired_power_grid_detects_a_large_injected_regression_more_often_than_no_effect():
+    # Same coarse sanity check as the two-sample grid's own smoke test above
+    # -- the exact measured numbers live in scripts/measure_paired_power_grid.py's
+    # own docstring and PLAN.md's Phase 7 U1 entry.
+    grid = compute_paired_power_grid(
+        n_grid=[100], effect_pct_grid=[0.0, 50.0], n_trials=50, n_boot=500
+    )
+    assert grid[(100, 50.0)] > grid[(100, 0.0)] + 0.5
+
+
+def test_compute_paired_power_grid_out_detects_two_sample_at_a_realistic_small_n():
+    # Ties this new grid harness back to the SAME headline finding as 4.3
+    # above (test_paired_comparison_detects_a_10pct_case_correlated_regression_far_more_often)
+    # -- using the harness's own grid-shaped API this time, at n=25/10%-effect,
+    # confirming the two harnesses agree (not just the hand-called functions).
+    paired_grid = compute_paired_power_grid(
+        n_grid=[25], effect_pct_grid=[10.0], n_trials=100, n_boot=500
+    )
+    two_sample_grid = compute_power_grid(
+        n_grid=[25], effect_pct_grid=[10.0], n_trials=100, n_boot=500
+    )
+    # NOTE: the two grids use DIFFERENT generators (case-correlated vs flat
+    # -- see each script's own docstring for why), so this is not an
+    # apples-to-apples statistic-for-statistic comparison at the SAME
+    # underlying data; it is a coarse sanity check that the paired harness,
+    # on its own realistic generator, detects at least as reliably as the
+    # two-sample harness does on ITS generator at the same (n, effect%).
+    assert paired_grid[(25, 10.0)] >= two_sample_grid[(25, 10.0)]
+
+
 # --- 4.3: paired vs. two-sample, real measured detection rates -----------
 
 _N = 25
 _N_TRIALS = 200
 _N_BOOT = 1_000
-_BASE_MEAN = 0.010
-_WITHIN_CASE_SD = 0.0008
-_CASE_LEVEL_LOW = 0.004
-_CASE_LEVEL_HIGH = 0.024
 _CASE_CORRELATED_SEED_BASE = 800_000
-
-
-def _generate_case_correlated_pair(
-    rng: random.Random, n: int, effect_pct: float
-) -> tuple[list[float], list[float]]:
-    """A DELIBERATELY DIFFERENT generator from scripts/measure_regression_power.py's
-    flat (Phase-2-matching) one -- see this function's own justification
-    below, required per the B4 work item's own instruction to justify any
-    generator deviation explicitly.
-
-    Each of ``n`` synthetic eval CASES gets its own fixed per-case cost
-    level ``d_i ~ Uniform(0.004, 0.024)`` -- representing real heterogeneity
-    across eval cases (different prompts/tool-call trajectories cost
-    different amounts, often by several x, independent of any regression).
-    A baseline run's cost for case i is ``max(0.0001, Gauss(d_i,
-    within_case_sd))``; a "current" run injects an ADDITIVE, per-case-UNIFORM
-    dollar bump (``effect_usd = BASE_MEAN * effect_pct/100`` -- e.g. +$0.001
-    at effect_pct=10, the same absolute injected effect size as Phase 2's
-    fixtures use relative to BASE_MEAN, but applied as a flat add rather
-    than a multiplicative scale): ``max(0.0001, Gauss(d_i + effect_usd,
-    within_case_sd))``.
-
-    This additive-per-case model is the realistic shape for exactly the
-    kind of regression a pairing key is meant to catch -- e.g. a bigger
-    system prompt or an added tool-schema definition costs roughly the same
-    EXTRA dollars on every case, regardless of that case's own base cost --
-    and it is also the shape that makes pairing's mechanism (subtracting
-    away the shared d_i term) most legible. A multiplicative case-correlated
-    regression would still benefit from pairing (d_i's contribution to
-    variance is still substantially reduced, just not fully cancelled), but
-    by a smaller margin than measured here -- this is flagged explicitly,
-    not left implicit, so the measured numbers below are not read as a
-    universal multiplier.
-
-    Reusing scripts/measure_regression_power.py's own FLAT generator (no
-    case structure at all) here instead would prove nothing: with no
-    between-case variance to remove, pairing and two-sample are
-    approximately equivalent BY CONSTRUCTION (verified directly: at this
-    same n=25/10%-effect cell under the flat generator, two_sample=0.665
-    and paired=0.675 -- statistically indistinguishable, exactly as
-    expected when there is no case-level structure to exploit). That
-    control measurement is what justifies using a different, case-structured
-    generator here rather than reusing the flat one uncritically.
-    """
-    effect_usd = _BASE_MEAN * (effect_pct / 100.0)
-    case_levels = [rng.uniform(_CASE_LEVEL_LOW, _CASE_LEVEL_HIGH) for _ in range(n)]
-    baseline = [max(0.0001, rng.gauss(d, _WITHIN_CASE_SD)) for d in case_levels]
-    current = [max(0.0001, rng.gauss(d + effect_usd, _WITHIN_CASE_SD)) for d in case_levels]
-    return baseline, current
+"""Case-correlated generator itself (`generate_case_correlated_pair`) now
+lives in scripts/measure_regression_power.py (Phase 7 U1) -- shared with
+scripts/measure_paired_power_grid.py rather than duplicated a second time;
+see that module's own docstring for the full generator rationale
+(byte-for-byte unchanged from this file's original copy, so every measured
+number in this file below still reproduces exactly under the same seeds)."""
 
 
 _HISTORICAL_CONFIDENCE = 0.95
@@ -145,7 +151,7 @@ def _measure_paired_vs_two_sample(effect_pct: float) -> tuple[float, float]:
     for trial in range(_N_TRIALS):
         seed = _CASE_CORRELATED_SEED_BASE + hash((effect_pct, trial)) % 1_000_000
         gen = random.Random(seed)
-        baseline, current = _generate_case_correlated_pair(gen, _N, effect_pct)
+        baseline, current = generate_case_correlated_pair(gen, _N, effect_pct)
 
         two_sample_result = evaluate_regression(
             baseline,
@@ -179,7 +185,7 @@ def test_paired_comparison_detects_a_10pct_case_correlated_regression_far_more_o
     """The core 4.3 result. n=25, true injected regression = +10% of
     BASE_MEAN ($0.001/case, additive, applied uniformly across cases with
     real case-to-case cost heterogeneity -- see
-    _generate_case_correlated_pair's docstring for why this shape).
+    generate_case_correlated_pair's docstring for why this shape).
 
     MEASURED (this exact deterministic seeding scheme, n_trials=200,
     n_boot=1000): two_sample=0/200=0.000, paired=200/200=1.000. The
@@ -303,7 +309,7 @@ def test_resolve_pairing_through_eval_case_id_key_reproduces_the_headline_4_3_re
     for trial in range(_N_TRIALS):
         seed = _CASE_CORRELATED_SEED_BASE + hash((10.0, trial)) % 1_000_000
         gen = random.Random(seed)
-        baseline_costs, current_costs = _generate_case_correlated_pair(gen, _N, 10.0)
+        baseline_costs, current_costs = generate_case_correlated_pair(gen, _N, 10.0)
         baseline, current = _snapshots_from_case_correlated_pair(
             baseline_costs, current_costs, key="eval_case_id"
         )
@@ -346,7 +352,7 @@ def test_resolve_pairing_through_session_id_key_still_reproduces_the_same_result
     for trial in range(_N_TRIALS):
         seed = _CASE_CORRELATED_SEED_BASE + hash((10.0, trial)) % 1_000_000
         gen = random.Random(seed)
-        baseline_costs, current_costs = _generate_case_correlated_pair(gen, _N, 10.0)
+        baseline_costs, current_costs = generate_case_correlated_pair(gen, _N, 10.0)
         baseline, current = _snapshots_from_case_correlated_pair(
             baseline_costs, current_costs, key="session_id"
         )

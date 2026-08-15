@@ -181,7 +181,25 @@ package silently implying a fixed n clears some blanket reliability bar it
 provably does not, at either confidence level. See ``PLAN.md``'s Phase 6 T4
 entry and ``tests/test_regression.py``'s
 ``test_power_at_min_n_under_shipped_confidence_remains_below_80pct_target``
-for the reproducible, asserted version of this measurement."""
+for the reproducible, asserted version of this measurement.
+
+Phase 7 U1: paired mode became the DEFAULT `--mode auto` preference (see
+``_cli.py``'s module docstring and ``_paired_mode_viable``), which raised
+the question of whether ITS OWN auto-selection/refusal threshold should be
+lower than two-sample's -- kept identical, backed by a full dedicated
+paired-mode power grid (``scripts/measure_paired_power_grid.py``, n in
+{10, 25, 50, 100} x effect in {0, 5, 10, 25, 50}%, 1,000 trials/cell,
+confidence=0.98, the case-correlated generator, 20,000 simulated `check`
+calls). The 0%-effect (false-positive rate) column at every measured n is
+HIGHER for paired than the two-sample grid's own FPR at the same n and
+confidence (Phase 5 S4's 90-cell grid): n=10 4.1% (paired) vs 2.2%
+(two-sample); n=25 2.4% vs 1.2%; n=50 1.6% vs 1.6% (only point of parity);
+n=100 1.2% vs 0.4% -- confirming, across the FULL n range this time (not
+just Phase 4 R2's single n=25 data point), that paired mode is more
+POWERFUL at a given n (dramatically so -- e.g. 97.8% vs 51.4% detection at
+n=25/10%-effect) but not more RELIABLE (lower FPR) at small n, which is
+exactly why `_paired_mode_viable` keeps the SAME `min_n` bar rather than a
+lower one for paired mode specifically."""
 
 DEFAULT_CONFIDENCE = 0.98
 """Phase 5 S4: CHANGED from 0.95, after measuring (not guessing) that

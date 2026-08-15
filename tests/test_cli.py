@@ -15,6 +15,7 @@ from adk_tracegauge._cli import (
     EXIT_INSUFFICIENT_DATA,
     EXIT_PASS,
     EXIT_REGRESSION,
+    _paired_mode_viable,
     _resolve_entrypoint,
     build_parser,
     main,
@@ -454,6 +455,64 @@ def test_cmd_check_mode_auto_falls_back_to_two_sample_with_no_session_overlap(
     captured = capsys.readouterr()
     assert "mode=two-sample" in captured.out
     assert "falling back" in captured.out
+
+
+@pytest.mark.parametrize(
+    ("matched_count", "min_n", "expected"),
+    [
+        (30, 30, True),  # exactly at the bar -- viable
+        (29, 30, False),  # one short -- not viable
+        (0, 30, False),  # no overlap at all
+        (100, 30, True),  # well above the bar
+        (3, 30, False),  # 1.4's own motivating example: "some pairs, not enough"
+    ],
+)
+def test_paired_mode_viable_boundary(matched_count: int, min_n: int, expected: bool):
+    """Phase 7 U1, 1.1/1.4: `_paired_mode_viable` is the single named place
+    `--mode auto`'s paired-vs-two-sample threshold is decided -- pinned here
+    at the boundary so a future change to that threshold is a deliberate,
+    reviewed edit, not an accidental off-by-one."""
+    assert _paired_mode_viable(matched_count, min_n) is expected
+
+
+def test_cmd_check_mode_auto_falls_back_to_two_sample_with_partial_session_overlap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Phase 7 U1, 1.4: SOME pairs exist (a key genuinely resolved) but the
+    overlap (3) is well below --min-n's default of 30 -- distinct from the
+    "zero overlap at all" case above (test_..._with_no_session_overlap),
+    which prints a different message. `auto` still falls back to
+    two-sample (using the FULL baseline/current distributions, not just the
+    3 matched records), and the printed message must name the resolved key
+    and its actual overlap count -- not claim "no pairing key available"
+    when a key genuinely did resolve, just not with enough overlap.
+    """
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    # 10 records on each side, but only 3 session_ids overlap ("case-1..3")
+    # -- resolve_pairing finds a real key, just not enough of it. The other
+    # 7 records on each side have DIFFERENT ids (never overlapping), so a
+    # two-sample fallback still has a full n=10-per-group population to work
+    # with -- proving the fallback uses the FULL distribution, not just the
+    # 3 matched records (which alone would be below --min-n=5 too).
+    shared = {f"case-{i}": 0.01 for i in range(1, 4)}
+    baseline_costs = {**shared, **{f"extra-b-{i}": 0.01 for i in range(7)}}
+    current_costs = {**shared, **{f"extra-c-{i}": 0.01 for i in range(7)}}
+    _write_snapshot_with_session_ids(baseline_path, baseline_costs)
+    _write_snapshot_with_session_ids(current_path, current_costs)
+
+    exit_code = main(
+        ["check", "--baseline", str(baseline_path), "--current", str(current_path), "--min-n", "5"]
+    )
+
+    assert exit_code == EXIT_PASS  # full n=10-per-group two-sample population, identical costs
+    captured = capsys.readouterr()
+    assert "mode=two-sample" in captured.out
+    assert "falling back to two-sample" in captured.out
+    assert "key session_id resolved but only 3 overlapping match(es)" in captured.out
+    assert "below --min-n=5" in captured.out
+    # Must NOT be confused with the "no pairing key available at all" message.
+    assert "no pairing key available" not in captured.out
 
 
 def test_cmd_check_mode_auto_uses_paired_when_enough_session_ids_overlap(

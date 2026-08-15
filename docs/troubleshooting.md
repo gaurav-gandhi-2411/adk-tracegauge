@@ -275,9 +275,9 @@ measured detection-power reasoning behind the default).
 `adk-tracegauge check` with no overrides):
 
 ```
-adk-tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
-overlapping match(es) < --min-n=30, so falling back from paired -- see snapshot.py's docstring for
-how to enable paired comparison)
+adk-tracegauge check: mode=two-sample (two-sample, no pairing key available -- neither eval_case_id
+nor session_id has any overlap between --baseline and --current, falling back to two-sample; see
+snapshot.py's docstring for how to enable paired comparison)
 adk-tracegauge check [method=two_sample]: n_baseline=10 n_current=10 (min_n=30)
   mean_baseline=$0.008408  mean_current=$0.008385
   achieved power: minimum reliably-detectable effect at 80% power, given this run's observed
@@ -291,7 +291,11 @@ adk-tracegauge check [method=two_sample]: n_baseline=10 n_current=10 (min_n=30)
 (Re-triggered Phase 4 R4 -- the "achieved power" line is new; the mean/exit-code numbers are
 byte-identical to the prior capture, confirming R4 is purely additive here. Note it prints even
 in the insufficient-data case, since even a too-small sample's own observed variance says
-something real about the achievable detection floor.)
+something real about the achievable detection floor. Mode-selection line's wording re-captured
+Phase 7 U1 -- same scenario (zero overlap, no pairing key resolved), text updated to match the
+default-policy change's new, more explicit "no pairing key available" phrasing -- verified
+character-for-character against a live re-run of this exact fixture shape this session, not
+hand-edited.)
 
 Real exit code: `3`.
 

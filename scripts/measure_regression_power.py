@@ -104,6 +104,75 @@ def _generate_pair(
     return baseline, current
 
 
+# --- Case-correlated generator (Phase 3 B4, moved here Phase 7 U1) --------
+#
+# A DELIBERATELY DIFFERENT generator from `_generate_pair` above -- lives
+# here (not duplicated a second time) so both `tests/test_regression_power.py`'s
+# paired-vs-two-sample comparison AND `scripts/measure_paired_power_grid.py`
+# (Phase 7 U1, 1.5's dedicated paired-mode power grid) share the exact same
+# generator, per that work item's own instruction not to invent a new one.
+# Originally defined only in tests/test_regression_power.py (Phase 3 B4) --
+# moved to this module (this package's existing home for power-measurement
+# generators) rather than left duplicated a second time once 1.5 needed it
+# too; tests/test_regression_power.py now imports it from here instead of
+# defining its own copy. The math itself is byte-for-byte unchanged, so
+# every existing measured number (200/200, 0/200, etc.) still reproduces
+# exactly under the same seeds.
+
+CASE_CORRELATED_BASE_MEAN = 0.010
+CASE_CORRELATED_WITHIN_CASE_SD = 0.0008
+CASE_CORRELATED_LEVEL_LOW = 0.004
+CASE_CORRELATED_LEVEL_HIGH = 0.024
+
+
+def generate_case_correlated_pair(
+    rng: random.Random, n: int, effect_pct: float
+) -> tuple[list[float], list[float]]:
+    """Each of ``n`` synthetic eval CASES gets its own fixed per-case cost
+    level ``d_i ~ Uniform(0.004, 0.024)`` -- representing real heterogeneity
+    across eval cases (different prompts/tool-call trajectories cost
+    different amounts, often by several x, independent of any regression).
+    A baseline run's cost for case i is ``max(0.0001, Gauss(d_i,
+    within_case_sd))``; a "current" run injects an ADDITIVE, per-case-UNIFORM
+    dollar bump (``effect_usd = CASE_CORRELATED_BASE_MEAN * effect_pct/100``
+    -- e.g. +$0.001 at effect_pct=10, the same absolute injected effect size
+    as `_generate_pair`'s own generator uses relative to BASE_MEAN, but
+    applied as a flat add rather than a multiplicative scale):
+    ``max(0.0001, Gauss(d_i + effect_usd, within_case_sd))``.
+
+    This additive-per-case model is the realistic shape for exactly the
+    kind of regression a pairing key is meant to catch -- e.g. a bigger
+    system prompt or an added tool-schema definition costs roughly the same
+    EXTRA dollars on every case, regardless of that case's own base cost --
+    and it is also the shape that makes pairing's mechanism (subtracting
+    away the shared d_i term) most legible. A multiplicative case-correlated
+    regression would still benefit from pairing (d_i's contribution to
+    variance is still substantially reduced, just not fully cancelled), but
+    by a smaller margin than measured here -- flagged explicitly, not left
+    implicit, so the measured numbers are not read as a universal
+    multiplier.
+
+    Reusing `_generate_pair`'s own FLAT generator (no case structure at
+    all) instead would prove nothing: with no between-case variance to
+    remove, pairing and two-sample are approximately equivalent BY
+    CONSTRUCTION (Phase 3 B4 verified this directly: at n=25/10%-effect
+    under the flat generator, two_sample=0.665 and paired=0.675 --
+    statistically indistinguishable). That control measurement is what
+    justifies using this different, case-structured generator instead of
+    reusing the flat one uncritically -- see `tests/test_regression_power.py`
+    for the reproducible version of that control.
+    """
+    effect_usd = CASE_CORRELATED_BASE_MEAN * (effect_pct / 100.0)
+    case_levels = [
+        rng.uniform(CASE_CORRELATED_LEVEL_LOW, CASE_CORRELATED_LEVEL_HIGH) for _ in range(n)
+    ]
+    baseline = [max(0.0001, rng.gauss(d, CASE_CORRELATED_WITHIN_CASE_SD)) for d in case_levels]
+    current = [
+        max(0.0001, rng.gauss(d + effect_usd, CASE_CORRELATED_WITHIN_CASE_SD)) for d in case_levels
+    ]
+    return baseline, current
+
+
 def compute_power_grid(
     n_grid: list[int] = N_GRID,
     effect_pct_grid: list[float] = EFFECT_PCT_GRID,

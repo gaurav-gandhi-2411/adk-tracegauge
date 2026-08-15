@@ -24,23 +24,59 @@ return a ``UsageStore`` directly (e.g. if you built one explicitly with
 ``store=`` overrides in tests) -- if it does, that returned store is
 snapshotted instead of the default one.
 
-**`--mode` for `check`** (Phase 3 B4, re-keyed Phase 4 R2): `auto` (default),
-`two-sample`, or `paired`. `two-sample` is the original Phase 2 W4 method
-(two independent samples, `evaluate_regression`) -- always available, works
-with any snapshot. `paired` (`evaluate_regression_paired`) is substantially
-more statistically powerful at the same n, but requires a real pairing key
-matched between both snapshots' records -- resolved by `snapshot.py`'s
-`resolve_pairing` via a fallback chain: (1) `eval_case_id`, populated when
-`adk-tracegauge snapshot --eval-history <path>` was used for both runs (works
-with the DEFAULT `adk eval` CLI flow, no .evalset.json changes needed); (2)
-`session_id`, when a hand-rolled harness pinned `runner.run_async(session_id=
+**`--mode` for `check`** (Phase 3 B4, re-keyed Phase 4 R2, **default policy
+changed Phase 7 U1**): `auto` (default), `two-sample`, or `paired`.
+`two-sample` (`evaluate_regression`) -- always available, works with any
+snapshot -- is the original Phase 2 W4 method (two independent samples).
+`paired` (`evaluate_regression_paired`) is substantially more statistically
+powerful at the same n (Phase 3 B4/Phase 4 R2: 100% vs 0% detection on a
+realistic case-correlated +10% fixture at n=25 -- see `_regression.py`'s
+module docstring), but requires a real pairing key matched between both
+snapshots' records -- resolved by `snapshot.py`'s `resolve_pairing` via a
+fallback chain: (1) `eval_case_id`, populated when `adk-tracegauge snapshot
+--eval-history <path>` was used for both runs (works with the DEFAULT `adk
+eval` CLI flow, no .evalset.json changes needed); (2) `session_id`, when a
+hand-rolled harness pinned `runner.run_async(session_id=
 <stable-per-eval-case-id>, ...)` in both runs (B4's original mechanism); (3)
 neither -- `check` refuses with a clear error naming the actual overlap
 count on whichever key was attempted if `--mode paired` is requested
-explicitly but fewer than `--min-n` keys overlap. `auto` uses `paired` when
-the best-available key's overlap is >= `--min-n`, else transparently falls
-back to `two-sample` -- either way, the ACTUAL mode AND the ACTUAL key used
-are always printed, never silently assumed.
+explicitly but fewer than `--min-n` keys overlap (1.2).
+
+**`auto` (the default) PREFERS paired, not two-sample** (Phase 7 U1, 1.1):
+paired is used whenever a pairing key resolves with overlap >= `--min-n`;
+two-sample is the FALLBACK, not the default expectation, for any snapshot
+pair that can't clear that bar. This is a re-affirmed, not a new, threshold
+-- U1 re-examined whether the bar for PREFERRING paired should be lower
+than `--min-n` now that paired is the preferred path (rather than an
+opt-in bonus) and kept it identical, on real evidence, not by default: (a)
+`min_n`'s statistical job is bootstrap/CLT coverage validity, a property of
+how many values get resampled, not of whether they're paired deltas or two
+independent groups -- nothing about pairing changes that; (b) Phase 4 R2's
+own measurement found paired mode's false-positive rate at n=25 (5.5%,
+11/200) was *not* better than two-sample's (4.0%, 8/200) on the identical
+generator -- see `tests/test_regression_power.py`'s
+`test_paired_comparison_false_positive_rate_is_not_wildly_miscalibrated` --
+so there is no measured basis for trusting a paired verdict at a smaller n
+than two-sample itself requires. See `_paired_mode_viable`'s docstring for
+the full reasoning.
+
+**Partial-overlap policy (Phase 7 U1, 1.4)** -- a pairing key can resolve
+with SOME overlap that is still below `--min-n` (e.g. 3 of 32 eval cases
+paired): this is deliberately NOT treated as "a key resolved, use it"
+per 1.1's literal wording -- a paired sample that small can't support a
+meaningful bootstrap CI (the identical `min_n` reasoning
+`evaluate_regression_paired` itself already enforces). `auto` falls back to
+`two-sample` over the FULL baseline/current distributions (not a mix of the
+matched subset and the rest, which would double-count); `--mode paired`
+requested explicitly still fails closed (1.2) -- an explicit request for
+the more powerful method is never silently substituted. Either way, the
+printed fallback message distinguishes "no pairing key resolved at all"
+from "a key resolved but too few pairs" (see `_cmd_check`), so a caller can
+tell which case they're in.
+
+Either way -- paired selected, or the two-sample fallback, for whatever
+reason -- the ACTUAL mode AND the ACTUAL key used (or why not) are always
+printed, never silently assumed.
 
 **Exit codes for `check`** (distinct on purpose -- see the work item's own
 requirement that "regression detected" and "insufficient data" not be
@@ -156,6 +192,44 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _paired_mode_viable(matched_count: int, min_n: int) -> bool:
+    """Phase 7 U1, 1.1/1.4: the single, named place `--mode auto`'s
+    preference for paired over two-sample is decided -- whether a resolved
+    pairing key's overlap (``matched_count``) is enough to trust a paired
+    verdict at all.
+
+    Deliberately the SAME bar as ``min_n`` (default ``MIN_N_DEFAULT=30``),
+    not a separate, lower one -- re-examined explicitly (not inherited by
+    default) now that paired is the PREFERRED default path rather than an
+    opt-in bonus, and kept identical for two evidence-based reasons:
+
+    1. ``min_n``'s actual statistical job (see ``_regression.py``'s
+       ``MIN_N_DEFAULT`` docstring) is bootstrap/CLT COVERAGE validity -- a
+       property of how many values a percentile bootstrap resamples, not of
+       whether those values are paired deltas (one sequence) or two
+       independent groups. Nothing about pairing changes how many points
+       get resampled or how well that resampling's coverage behaves at a
+       given n.
+    2. Phase 4 R2's own measurement is direct evidence against a lower bar,
+       not just a theoretical one: at n=25 (below min_n=30), paired mode's
+       measured false-positive rate (5.5%, 11/200) was *not* better than
+       two-sample's (4.0%, 8/200) on the identical case-correlated
+       generator -- see
+       ``tests/test_regression_power.py::test_paired_comparison_false_positive_rate_is_not_wildly_miscalibrated``.
+       Paired mode is dramatically more POWERFUL at a given n once it
+       clears this bar (100% vs 0% detection on the same fixture, same
+       test file) -- but there is no measured evidence it is more
+       RELIABLE (lower false-positive rate) below it, so there is no
+       statistical basis for trusting a paired verdict at a smaller n than
+       two-sample itself requires.
+
+    A separate question -- what to DO when a key resolves with SOME overlap
+    below this bar -- is 1.4's "partial-overlap policy", decided in
+    `_cmd_check`/the module docstring, not here.
+    """
+    return matched_count >= min_n
+
+
 def _resolve_check_mode(
     mode: str, baseline: Snapshot, current: Snapshot, min_n: int
 ) -> tuple[str, list[float], list[float], list[str], PairingKey]:
@@ -173,11 +247,11 @@ def _resolve_check_mode(
     too small, rather than this function silently downgrading a request the
     caller was explicit about.
 
-    "auto" (the default): uses "paired" iff the number of keys matched on
-    the best-available pairing key is >= min_n (enough for
-    evaluate_regression_paired to actually emit a verdict rather than
-    insufficient_data); otherwise "two-sample". Always deterministic given
-    the two snapshots' contents.
+    "auto" (the default, Phase 7 U1 -- PAIRED-preferred, not two-sample-first):
+    uses "paired" iff `_paired_mode_viable` says the best-available pairing
+    key's overlap is enough to trust (see that function for the full
+    reasoning); otherwise "two-sample". Always deterministic given the two
+    snapshots' contents.
     """
     paired_baseline, paired_current, matched, resolved_key = resolve_pairing(baseline, current)
     if mode == "paired":
@@ -185,7 +259,7 @@ def _resolve_check_mode(
     if mode == "two-sample":
         return "two-sample", paired_baseline, paired_current, matched, resolved_key
     # mode == "auto"
-    resolved_mode = "paired" if len(matched) >= min_n else "two-sample"
+    resolved_mode = "paired" if _paired_mode_viable(len(matched), min_n) else "two-sample"
     return resolved_mode, paired_baseline, paired_current, matched, resolved_key
 
 
@@ -228,17 +302,28 @@ def _cmd_check(args: argparse.Namespace) -> int:
             seed=args.seed,
         )
     else:
-        print(
-            "adk-tracegauge check: mode=two-sample"
-            + (
-                f" (--mode auto: best-available pairing key ({resolved_key}) only has "
-                f"{len(matched_keys)} overlapping match(es) < --min-n={args.min_n}, so falling "
-                "back from paired -- see snapshot.py's docstring for how to enable paired "
-                "comparison)"
-                if args.mode == "auto"
-                else ""
-            )
-        )
+        fallback_note = ""
+        if args.mode == "auto":
+            if resolved_key == "none":
+                # Phase 7 U1, 1.4: distinguish "no pairing key available at all"
+                # from "a key resolved but too few pairs" (below) -- the two
+                # have different remedies and shouldn't be reported the same way.
+                fallback_note = (
+                    " (two-sample, no pairing key available -- neither eval_case_id "
+                    "nor session_id has any overlap between --baseline and --current, "
+                    "falling back to two-sample; see snapshot.py's docstring for how to "
+                    "enable paired comparison)"
+                )
+            else:
+                fallback_note = (
+                    f" (--mode auto: pairing key {resolved_key} resolved but only "
+                    f"{len(matched_keys)} overlapping match(es) -- below --min-n="
+                    f"{args.min_n}, the same reliability bar evaluate_regression_paired "
+                    "itself requires (a handful of matched cases is not a statistically "
+                    "usable paired sample -- see _paired_mode_viable's docstring), "
+                    "falling back to two-sample)"
+                )
+        print(f"adk-tracegauge check: mode=two-sample{fallback_note}")
         result = evaluate_regression(
             baseline.costs(),
             current.costs(),
@@ -361,9 +446,10 @@ def build_parser() -> argparse.ArgumentParser:
             "requires a matching pairing key on both snapshots -- eval_case_id (preferred, via "
             "`adk-tracegauge snapshot --eval-history`) or session_id (see snapshot.py docstring) -- "
             "fails with an actionable error if requested explicitly and too few keys overlap. "
-            "'auto' (default): uses paired when enough keys overlap (>= --min-n) on the "
-            "best-available key, else falls back to two-sample -- the resolved mode AND key are "
-            "always printed."
+            "'auto' (default, Phase 7 U1): PREFERS paired -- uses it whenever enough keys "
+            "overlap (>= --min-n) on the best-available key -- falling back to two-sample only "
+            "when no key resolves or the overlap is below that bar. The resolved mode AND key "
+            "(or why not) are always printed."
         ),
     )
     p_check.set_defaults(func=_cmd_check)

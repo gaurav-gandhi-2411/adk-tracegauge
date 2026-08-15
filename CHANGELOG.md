@@ -9,18 +9,47 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
-Nothing yet — Phase 6 (`feat/cost-regression-gate` branch) closed out with
-the `0.3.0` release below.
+Nothing yet — Phase 7 (`feat/cost-regression-gate` branch) folds into the
+still-unpublished `0.3.0` below (confirmed via `git tag --list`: only
+`v0.1.0rc1`/`v0.1.0`/`v0.2.0` exist, `pyproject.toml` already reads
+`0.3.0` from Phase 6's version bump) rather than opening a new version.
 
 ## [0.3.0] — 2026-08-15
 
-Phases 2–6 combined (`feat/cost-regression-gate` branch, 54 commits over
-`main`) — not yet published to PyPI, not yet tagged, not yet merged.
-`pyproject.toml`'s version bumped `0.2.0` → `0.3.0` in this same release.
-This entry consolidates the full branch, not just whatever happened to
-still be sitting under `[Unreleased]` at the end — cross-checked against
-`git log main..HEAD` and all five phase reports
-(`docs/audit/PHASE{1,2,3,4,5}_REPORT.md`) so nothing significant is missing.
+Phases 2–7 combined (`feat/cost-regression-gate` branch) — not yet
+published to PyPI, not yet tagged, not yet merged. `pyproject.toml`'s
+version bumped `0.2.0` → `0.3.0` in Phase 6; Phase 7 adds to this same,
+still-unpublished entry rather than opening a new version. This entry
+consolidates the full branch, not just whatever happened to still be
+sitting under `[Unreleased]` at the end — cross-checked against
+`git log main..HEAD` and all phase reports
+(`docs/audit/PHASE{1,2,3,4,5,6}_REPORT.md`) so nothing significant is
+missing.
+
+### Changed (Phase 7 U1)
+- **Behavior-affecting: `adk-tracegauge check`'s default `--mode auto` now
+  PREFERS `paired` over `two-sample`.** Previously, `auto` picked paired only
+  as an opt-in bonus once enough pairing keys happened to overlap; paired is
+  now the preferred path whenever a pairing key (`eval_case_id`, preferred,
+  via `--eval-history`; else `session_id`) resolves with overlap `>=
+  --min-n` — `two-sample` is the fallback, used only when no key resolves or
+  the overlap is below that bar. The auto-selection threshold itself is
+  UNCHANGED (`--min-n`, default 30) — re-examined explicitly, not lowered:
+  a full 20-cell paired-mode power grid (`scripts/measure_paired_power_grid.py`,
+  `n` ∈ {10, 25, 50, 100} × effect ∈ {0, 5, 10, 25, 50}%, 1,000 trials/cell,
+  confidence=0.98) found paired mode's own false-positive rate is *higher*,
+  not lower, than two-sample's at every measured `n` (e.g. 4.1% vs. 2.2% at
+  `n=10`) — paired is dramatically more powerful at a given `n` (97.8% vs.
+  51.4% detection at `n=25`/10%-effect), not more reliable, so there is no
+  statistical basis for trusting it at a smaller `n` than two-sample itself
+  requires. `--mode paired` requested explicitly with insufficient overlap
+  still fails loud (`SystemExit`, unchanged, Phase 4 R2) rather than
+  silently downgrading. The resolved mode and key (or the specific reason
+  two-sample was used instead — "no pairing key available" vs. "a key
+  resolved but too few pairs", now distinguished in the printed message) are
+  always printed on every run. See `PLAN.md`'s Phase 7 U1 entry for the full
+  grid, measured overlap rate on a real evalset, and the fresh-wheel
+  end-to-end proof.
 
 Per this project's own 0.x convention (established at the 0.1.0 → 0.2.0
 "honest repositioning" bump): the middle number is where a breaking API

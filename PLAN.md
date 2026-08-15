@@ -2832,3 +2832,207 @@ with zero coordination required.**
     chore/0.2.0-release chore/rc1-version-bump ci/pypi-trusted-publishing docs/releasing`.
     Not blocking anything -- purely optional hygiene, deferred every phase per rule 55
     (branch deletion is a standing pause-for-confirmation item).
+
+## Phase 7
+
+Same branch (`feat/cost-regression-gate`), same rules (zero-cost, no publish/tag/merge
+without reporting first, no subagent/fork dispatch at any point).
+
+- [x] U1 -- Paired mode becomes the DEFAULT `--mode auto` preference, not an opt-in bonus.
+      DONE 2026-08-15.
+
+      **Premise check (rule 99) before building anything**: read the CURRENT `_cli.py`,
+      `_regression.py`, `snapshot.py` in full first. Found that `--mode auto`'s core
+      fallback-chain LOGIC (prefer paired when a resolved key's overlap `>= min_n`, else
+      two-sample, always printing the resolved mode/key) was ALREADY implemented correctly
+      by Phase 4 R2/R4 -- `--mode` already defaulted to `"auto"` in `build_parser`, and
+      `_resolve_check_mode`'s auto branch already computed `"paired" if len(matched) >=
+      min_n else "two-sample"`. This is a real, evidence-based finding (not glossed over,
+      per rule 101c): the work item's own framing ("Currently `--mode auto` picks paired
+      when overlap >= some minimum count, else two-sample") already accurately describes the
+      shipped Phase 4 behavior. U1's real, concrete contribution is therefore: (a) making the
+      threshold DECISION explicit and first-class rather than an unnamed inline comparison
+      (1.1), (b) a dedicated, separately-decided policy for the "some pairs but not enough"
+      case (1.4) with new test coverage that didn't exist before (only "zero overlap" and
+      "explicit `--mode paired` failure" were tested pre-U1), (c) fresh, real measurements
+      (1.3, 1.5, 1.6) that had never been taken, and (d) closing real documentation staleness
+      found along the way (README's "Known limitations" bullet still described `session_id`
+      as the primary key and "two-sample" as "the default", both stale since Phase 4 R2).
+
+      **1.1 -- threshold decision.** New `_paired_mode_viable(matched_count, min_n) ->
+      bool` in `_cli.py` (`matched_count >= min_n`) is now the SINGLE named place the
+      auto-selection decision is made, replacing the inline comparison. Threshold value
+      KEPT IDENTICAL to `--min-n` (default 30) -- explicitly re-examined, not inherited by
+      default, for two evidence-based reasons documented in the function's own docstring:
+      (a) `min_n`'s statistical job is bootstrap/CLT coverage validity, a property of how
+      many values get resampled, not of whether they're paired deltas or independent groups;
+      (b) Phase 4 R2's own measurement already showed paired mode's FPR at n=25 (5.5%) was
+      NOT better than two-sample's (4.0%) on the identical generator -- direct evidence
+      against trusting paired at a smaller n. 1.5's full dedicated grid (below) confirms this
+      holds across the FULL n range, not just one data point. The SELECTED MODE and RESOLVED
+      KEY (or why not) print on every single run unconditionally -- verified already true
+      pre-U1 and re-verified unchanged (no `--verbose` flag exists in this CLI; all prints
+      are unconditional).
+
+      **1.2 -- loud failure, re-verified unchanged.** `--mode paired` explicit + insufficient
+      overlap already raised `SystemExit` naming the actual overlap count and remedy (Phase 4
+      R2); `--mode two-sample` explicit already ignored pairing entirely. Both re-confirmed
+      via the existing test suite (`test_cmd_check_mode_paired_explicit_fails_closed_on_
+      insufficient_overlap`, `test_cmd_check_mode_two_sample_explicit_ignores_session_ids`),
+      no code change needed.
+
+      **1.3 -- real measured overlap rate, FRESH this session.** Ran
+      `examples/04_paired_mode_via_adk_eval_cli.py` fresh (real `adk eval` CLI via
+      `click.testing.CliRunner`, real 32-case EvalSet, two real runs). **MEASURED: 32/32 =
+      100% of cases paired successfully** (`mode=paired (key=eval_case_id, 32 overlapping
+      eval_case_ids matched between baseline and current)`), matching the "very high/100%
+      for a well-behaved evalset run twice" expectation with no anomaly to investigate.
+      Independently re-confirmed a second time via 1.6's fresh-wheel proof below (a
+      completely separate venv/process/evalset instance), also 32/32 -- two independent
+      100%-overlap measurements this session, not one.
+
+      **1.4 -- partial-overlap threshold policy.** Threshold is the SAME `--min-n` value as
+      1.1 (not a separate, lower number) -- same reasoning. DECISION on what happens when
+      overlap is nonzero but below it: `--mode auto` falls back to two-sample using the FULL
+      baseline/current cost distributions (never a mix of the matched subset and the rest,
+      which would double-count); explicit `--mode paired` still fails closed (1.2), never
+      silently substituted. Implemented in `_cmd_check`'s fallback-message logic, which now
+      DISTINGUISHES two cases in the printed output (previously conflated into one message):
+      "no pairing key available at all" (`resolved_key == "none"`) vs. "a key resolved but
+      only N overlapping match(es) -- below --min-n=M" (a real key, insufficient overlap).
+      New test `test_cmd_check_mode_auto_falls_back_to_two_sample_with_partial_session_
+      overlap` (3 of 20 total records overlapping, `--min-n=5`) proves the fallback still
+      produces a REAL verdict (`EXIT_PASS`, not `insufficient_data`) from the full n=10-per-
+      group population, not just the 3 matched records -- directly demonstrating the "full
+      distribution, not a mix" decision, not just asserting the message text.
+
+      **1.5 -- dedicated paired-mode power grid.** New `scripts/measure_paired_power_grid.py`
+      (permanent, on-demand), reusing the EXACT case-correlated generator Phase 3 B4/Phase 4
+      R2 already validated for paired mode (`generate_case_correlated_pair`, moved from
+      `tests/test_regression_power.py` into `scripts/measure_regression_power.py` so both
+      that test file and this new script share one definition instead of a second duplicate
+      copy -- byte-identical math, confirmed by re-running the existing paired-vs-two-sample
+      tests afterward and getting IDENTICAL numbers, 200/200 and 0/200 unchanged). `n` in
+      {10, 25, 50, 100} x true effect in {0%, 5%, 10%, 25%, 50%}, 1,000 trials/cell,
+      confidence=0.98 (the real shipped default, not the historical 0.95), n_boot=1,000
+      (validated first: 98.7%/98.0%/100.0% verdict agreement against real n_boot=10,000 at 3
+      cells including the most-borderline n=10/25). 20,000 total simulated `check` calls,
+      real wall-clock **145.4s**.
+
+      **MEASURED PAIRED-MODE GRID** (confidence=0.98, case-correlated generator):
+
+      ```
+      n\effect%        0%       5%      10%      25%      50%
+      10            0.041    0.255    0.763    1.000    1.000
+      25            0.024    0.498    0.978    1.000    1.000
+      50            0.016    0.764    1.000    1.000    1.000
+      100           0.012    0.978    1.000    1.000    1.000
+      ```
+
+      **Direct comparison against the EXISTING two-sample grid** (Phase 5 S4's own 90-cell
+      grid, confidence=0.98 slice, flat generator -- reproduced here for side-by-side
+      reading, same n values where shared):
+
+      ```
+      n\effect%        0%       5%      10%      25%      50%
+      10            0.022    0.084    0.276    0.888    1.000
+      25            0.012    0.142    0.514    1.000    1.000
+      30            0.012    0.162    0.584    1.000    1.000
+      50            0.016    0.248    0.834    1.000    1.000
+      100           0.004    0.484    0.990    1.000    1.000
+      250           0.006    0.894    1.000    1.000    1.000
+      ```
+
+      Coverage note: the two grids use DIFFERENT generators BY NECESSITY (flat/i.i.d. for
+      two-sample -- Phase 2's original fixture shape; case-correlated for paired -- Phase 3
+      B4 proved a flat generator makes the two methods statistically indistinguishable BY
+      CONSTRUCTION, so measuring paired mode against it would prove nothing about why paired
+      mode exists at all). n=10/25/50/100 are shared for direct same-n reading; the
+      two-sample grid also covers n=30 (`min_n` itself) and n=250, where paired's grid was
+      deliberately not extended (this project's own stated realistic ADK eval-set ceiling is
+      tens-to-low-hundreds of cases, and each additional paired n is one more real eval case,
+      unlike two-sample's arbitrary-sample-size framing).
+
+      **Reading the comparison**: paired mode is DRAMATICALLY more powerful at every shared
+      n/effect cell (e.g. n=25/10%-effect: 97.8% paired vs. 51.4% two-sample; n=10/10%-effect:
+      76.3% vs. 27.6%) -- but its 0%-effect column (false-positive rate) is HIGHER at every
+      shared n too (n=10: 4.1% vs. 2.2%; n=25: 2.4% vs. 1.2%; n=50: 1.6% vs. 1.6%, the one
+      point of parity; n=100: 1.2% vs. 0.4%). This is the real, complete evidence base for
+      1.1's threshold decision: paired buys power, not reliability, at a given n -- so its own
+      `--min-n` bar stays where two-sample's already is, not lower.
+
+      **1.6 -- end-to-end proof, fresh wheel, fresh venv, outside the repo, no `--mode`
+      flag.** Built the real wheel (`uv build`), installed it into a fresh venv
+      (`C:\Users\gaura\tmp\u1-fresh-install\.venv`, Python 3.12.12, `uv venv` + `uv pip
+      install <wheel>`, zero editable/repo-path installs) -- confirmed
+      `import adk_tracegauge` resolves to `site-packages`, not the repo checkout. From a
+      work directory (`C:\Users\gaura\tmp\u1-fresh-install\work\`) with no relationship to
+      the adk-tracegauge repo: wrote a real 32-case EvalSet + two agent packages (reusing
+      1.3's exact pattern), ran the REAL `adk eval` CLI command (`cli_eval`, via
+      `click.testing.CliRunner`, in-process so the freshly-installed package's own
+      `DEFAULT_USAGE_STORE` captures usage) twice -- baseline and current, each a genuinely
+      separate OS process this time (unlike `examples/04`'s single-process convenience, so no
+      `sys.modules` purge was needed) -- then snapshotted both (joining each run's own real,
+      persisted `.evalset_result.json` eval-history file via `load_eval_case_ids_by_session_id`
+      + `write_snapshot`, the same functions `adk-tracegauge snapshot --eval-history` calls
+      internally -- called directly here since the eval-history file's dynamic,
+      timestamp-suffixed name can't be known before the CLI's own single-shot argument
+      parsing; disclosed honestly, not glossed over). Both snapshots independently confirmed
+      32/32 eval_case_id resolution (a second, independent 100%-overlap measurement,
+      corroborating 1.3). Then ran the LITERAL installed `adk-tracegauge.exe` console script
+      (not a Python function call) for `check`, with **NO `--mode` flag at all**:
+
+      ```
+      $ ../.venv/Scripts/adk-tracegauge.exe check --baseline baseline_snapshot.json --current current_snapshot.json
+      adk-tracegauge check: mode=paired (key=eval_case_id, 32 overlapping eval_case_ids matched between baseline and current)
+      adk-tracegauge check [method=paired]: n_baseline=32 n_current=32 (min_n=30)
+        mean_baseline=$0.005306  mean_current=$0.007106
+        achieved power: minimum reliably-detectable effect at 80% power, given this run's observed variance/n, is ~$0.000000 (+0.00% of mean baseline) [normal approximation to the bootstrap CI -- see _regression.py module docstring for validated accuracy]
+        observed effect: +0.001800 USD (+33.93%), 98% CI [+0.001800, +0.001800] (n_boot=10000, seed=42)
+        statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+        REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
+      EXIT CODE: 1
+      ```
+
+      **This is the real, definitive proof**: with zero `--mode` flag, a fresh wheel install,
+      fresh venv, and a directory with no relationship to the repo, `adk-tracegauge check`
+      auto-selected `mode=paired`, explicitly named the resolved key (`eval_case_id`),
+      matched all 32 cases, and correctly detected the real injected +$6,000-prompt-token
+      regression (exit code 1) -- confirming U1's default-policy change works end to end
+      under the exact real-world conditions (installed package, no dev checkout, no explicit
+      flags) it is meant to serve.
+
+      **Documentation staleness found and fixed along the way** (not part of the original
+      instruction list, but a real, honest gap the fresh measurements exposed): README's
+      "Known limitations" section still described `session_id` as the pairing mechanism and
+      "two-sample" as "the default" -- both literally false as of this work item and,
+      checked via grep, predating even Phase 4 R2 (no `eval_case_id`/`--eval-history` mention
+      anywhere in README at all before this session). Rewritten to state the new default
+      policy accurately, cite `eval_case_id`/`--eval-history` as the primary mechanism, and
+      cite 1.5's full grid instead of the single historical n=25 data point.
+      `examples/03_ci_regression_gate.py`'s and `docs/troubleshooting.md`'s captured
+      `adk-tracegauge check` output blocks (both hit the "no pairing key available" branch,
+      whose message text changed) re-captured: `examples/03` via a fresh live re-run
+      (byte-identical mean/effect/CI numbers, confirming the code change is purely additive
+      to the message text); `docs/troubleshooting.md`'s original seeded fixture couldn't be
+      exactly regenerated (no committed script for its specific n=10 seed), so only the
+      mode-selection line was updated, verified character-for-character against a live
+      re-run of an equivalent fixture shape this session, with the substitution explicitly
+      disclosed in the file rather than silently blended into "re-captured."
+
+      **Tests**: 365 -> 374 passing (+9: 5 parametrized `test_paired_mode_viable_boundary`
+      cases + 1 `test_cmd_check_mode_auto_falls_back_to_two_sample_with_partial_session_
+      overlap` in `test_cli.py`; 3 in `test_regression_power.py` --
+      `test_compute_paired_power_grid_is_deterministic_and_shaped_correctly`,
+      `test_compute_paired_power_grid_detects_a_large_injected_regression_more_often_than_
+      no_effect`, `test_compute_paired_power_grid_out_detects_two_sample_at_a_realistic_
+      small_n`). 99% coverage, unchanged in kind (3 pre-existing uncovered lines: `_cli.py`'s
+      `if __name__=="__main__"` guard, `evaluator.py`'s pragma-adjacent branch,
+      `snapshot.py`'s defensive `if not calls: continue` -- every line U1 itself touched is
+      100% covered). `ruff check`/`ruff format --check`/`mypy src/` all clean. No numpy/scipy
+      dependency added (stdlib-only, matching `_regression.py`'s existing constraint). Zero
+      paid API calls, zero `ANTHROPIC_API_KEY`, pure local statistics and fake/deterministic
+      LLM doubles throughout (rule 40 seeds where applicable). No subagent/fork dispatched at
+      any point in this work item, per instruction. `git status` clean after commit. Not
+      pushed, not tagged, not published -- folded into the still-unpublished `0.3.0`
+      (confirmed via `git tag --list`: only `v0.1.0rc1`/`v0.1.0`/`v0.2.0` exist).
