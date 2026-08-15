@@ -1644,3 +1644,335 @@ version-dependent license claim) doesn't hold as a reason to fork a package GG o
       item -- read-only mandate, reported for a human decision. Both the primary and the
       independent-verifier pass CONFIRMED every one of the 5 checked claims with zero
       contradictions -- see the session reports for the full per-claim evidence chain.
+
+- [x] S2 -- Read both codebases' current full source (adk-tracegauge's 11 `src/` modules, 4,396
+      lines; token-efficiency-scorer's `tes/` package, ~7,540 lines across 20+ modules plus
+      `intelligence/`/`web/` subpackages) and re-examined Phase 4 R5's fork decision given GG owns
+      both packages. DONE 2026-08-16, read-only except one licensing verification (no fix needed,
+      see S2.4) -- no source code changed in either repo. No subagent/fork dispatched, per
+      instruction.
+
+      **S2.1 -- Responsibility table** (every `src/adk_tracegauge/*.py` module; provider-agnostic
+      = would work verbatim, or with only trivial renaming, for a hypothetical
+      "langchain-tracegauge"; ADK-specific = inherently tied to ADK's object model):
+
+      | Module (lines) | Classification | Reasoning |
+      |---|---|---|
+      | `__init__.py` (68) | ADK-specific | Imports and calls `google.adk.evaluation.metric_evaluator_registry.DEFAULT_METRIC_EVALUATOR_REGISTRY` at import time to register the metric. Zero generic logic of its own -- pure ADK registration glue. |
+      | `_pricing.py` (585) | **Provider-agnostic core**, one caveat | Price-table load/cache, `STALE_THRESHOLD_DAYS` staleness, `promo_until`/`standard_rate` expiry auto-switch, long-context tiering, `ADK_TRACEGAUGE_PRICE_TABLE` override -- all pure dict/`datetime.date` logic, zero ADK imports anywhere in the file. Would work verbatim for any framework. Caveat: the specific prefix-stripping allowlist (`anthropic/`, `openai/`, `ollama_chat/`, `ollama/`, `vllm/`) encodes LiteLLM's own routing convention, not an ADK invention -- a LiteLLM-based langchain-tracegauge would reuse it verbatim; a framework not using LiteLLM would need a different prefix scheme. The tiering/staleness/promo *machinery* itself has no such caveat. |
+      | `_cost.py` (311) | **Fully provider-agnostic** | Pure arithmetic over `TurnDigest`/`SessionDigest` dataclasses defined in the same file: dict of floats in, dataclass out, zero ADK imports. Strong evidence: this file is a byte-for-byte-behavior PORT of `tracegauge`'s own `tes/cost.py`/`tes/_digest.py` (Phase 4 R5) -- it started life as a general-purpose module in a package with zero ADK awareness. |
+      | `_store.py` (166) | Mixed | The container semantics (`UsageStore`: per-invocation-id list accumulation, `record_parent`/`get_with_descendants` for tree rollup, thread-safe) are generic and reusable as-is. But `CapturedCall`'s specific fields (`model_version`, `prompt_token_count`, `candidates_token_count`, `cached_content_token_count`, `thoughts_token_count`, `tool_use_prompt_token_count`, `partial`) mirror Gemini's `GenerateContentResponseUsageMetadata` schema field-for-field -- a langchain adapter would need its own differently-shaped record type. |
+      | `_adapter.py` (269) | ADK-specific (majority) | `_group_streaming_calls`'s whole chunk-collapse algorithm depends on `CapturedCall.partial`, which is ADK's `LlmResponse.partial` streaming-boundary signal verbatim -- this is Gemini/ADK streaming-semantics-specific, not generic. `price_digest`/`unknown_model_message` are thinner wrappers over the generic `_pricing`/`_cost` core, but `unknown_model_message`'s remedy text names ADK-specific mechanisms (`ADK_TRACEGAUGE_ASSUME_LOCAL`, LiteLlm prefixes) directly. Net: ADK-specific glue sitting on top of a generic core. |
+      | `_plugin.py` (165) | **ADK-specific** | Directly subclasses `google.adk.plugins.BasePlugin` and implements ADK's own callback signatures (`before_run_callback`, `after_run_callback`, `after_model_callback` with ADK's exact `CallbackContext`/`LlmResponse` parameter types). Cannot exist without ADK; a langchain-tracegauge needs an entirely different capture mechanism (LangChain's own callback handlers). |
+      | `evaluator.py` (790) | **ADK-specific** | Registers as an ADK `BaseCriterion`/`EvalMetric`-derived evaluator via `DEFAULT_METRIC_EVALUATOR_REGISTRY`. Every one of its load-bearing behaviors (the PASSED/FAILED polarity fix for a lower-is-better metric, the `AgentEvaluator.evaluate()` runtime warning via a `contextvars`-gated monkeypatch) is reverse-engineered against ADK's own eval internals (`agent_evaluator.py`, `local_eval_service.py`). Zero portability -- another framework has no equivalent of `MetricEvaluatorRegistry` to hook. |
+      | `snapshot.py` (459) | Mixed | The on-disk JSON format (`Snapshot`/`SnapshotRecord`/`SnapshotSkip` dataclasses, `read_snapshot`/`write_snapshot`) and the pairing-key resolution logic (`pair_costs_by_session_id`, `pair_costs_by_eval_case_id`, `resolve_pairing`) are generic serialization/statistics-adjacent code -- any tool producing a stream of `(id, cost_usd, optional pairing key)` records could reuse this verbatim. But `build_snapshot`'s actual construction path is wired directly to `UsageStore`/`CapturedCall` (ADK-shaped), and the `eval_case_id` pairing key concept is sourced from ADK's own persisted `.evalset_result.json` eval-history file format. A langchain-tracegauge would reuse the `Snapshot` schema and pairing math verbatim but need its own `build_snapshot`. |
+      | `_regression.py` (953) | **Fully provider-agnostic** | Zero imports beyond `math`/`random`/`statistics` -- confirmed by direct read of the import block. Pure bootstrap-CI statistics over a stream of `(baseline_usd, current_usd)` floats, optionally paired by an arbitrary string key. Doesn't know or care that the numbers came from ADK. The single most portable module in the package, and (per Phase 3 B4/B6) the package's own actual differentiator. |
+      | `_cli.py` (385) | Mixed | `_cmd_snapshot` is ADK-specific (drives `--entrypoint module:callable`, imports and runs a real ADK agent). `_cmd_check` is provider-agnostic on its own terms -- reads two JSON snapshot files, calls into `_regression`/`snapshot`'s pairing logic, prints/exits, touches zero ADK objects. But because `_cli.py` imports from sibling submodules of the `adk_tracegauge` package, Python always executes `adk_tracegauge/__init__.py` first (which imports `google.adk.evaluation...`) -- so **even a `tracegauge check`-only invocation pays full `google-adk` import cost today** (documented Phase 3 B6 finding), a real, measured architectural side effect of the pricing/statistics core not already living in its own ADK-independent package. This is itself live evidence for S2.3's recommendation below. |
+      | `_compat.py` (245) | **ADK-specific** | Directly imports `google.adk`; reads ADK's version metadata and the private `EvaluationGenerator` internal, and (via `load_eval_case_ids_by_session_id`) ADK's own `.evalset_result.json` eval-history file format. Pure ADK version-compat/eval-history-join glue. |
+
+      **Bottom line: `_cost.py`, `_regression.py`, and the bulk of `_pricing.py` (1,849 of 4,396
+      lines, 42%) are genuinely provider-agnostic today and contain none of adk-tracegauge's ADK
+      integration surface** -- they were either ported from a general-purpose module (`_cost.py`)
+      or never touched ADK at all (`_pricing.py`, `_regression.py`). The remaining 58%
+      (`__init__.py`, `_plugin.py`, `evaluator.py`, `_compat.py`, plus the ADK-specific halves of
+      `_adapter.py`/`snapshot.py`/`_cli.py`) is genuinely, unavoidably ADK-specific glue that no
+      core+adapters split could ever eliminate -- it exists because ADK's own eval/plugin API
+      requires it.
+
+      **S2.2 -- Three options, evaluated with real numbers:**
+
+      **A. Restore the dependency, fix `tracegauge` upstream, keep adk-tracegauge thin.**
+      - *Maintenance burden*: re-wire 3 files (`_adapter.py`, `evaluator.py`, `snapshot.py`) back
+        onto `tes.cost`/`tes._digest`, delete `_cost.py` (311 lines) and `_pricing.py`'s
+        staleness/promo/tiering machinery (~250 of 585 lines, since none of it exists in
+        `tes.cost` today) -- net removal from adk-tracegauge, but every future pricing fix now
+        requires editing a SECOND, much larger repo (`tes/` is ~7,540 lines across 20+ modules --
+        judge, waste detection, self-baseline, live-monitor/alarm, corpus intake, a Flask
+        dashboard -- none of which adk-tracegauge touches) and cutting a coordinated release there
+        before adk-tracegauge can even test against the fix, even though the actual pricing code
+        (`tes/cost.py` + `tes/_digest.py` = 326 lines, 4.3% of `tes/`) is small.
+      - *Probability of silent divergence*: **not low -- already realized, today.** S1 just proved
+        `tracegauge==0.10.1`'s price table is currently WRONG for the mainline real-world case
+        (claude-opus-5/claude-sonnet-5 missing, falling through to a stale `claude-sonnet-4-6`
+        default: every real Sonnet-5 call overcharged 50%, every real Opus-5 call undercharged to
+        60% of true cost) and 67 days stale with zero CI staleness guard. Restoring the dependency
+        today would make adk-tracegauge INHERIT this exact live defect -- concretely, a
+        claude-sonnet-5 call that adk-tracegauge's own current in-house table prices correctly at
+        $2/$10/Mtok would be silently repriced at tracegauge's stale $3/$15/Mtok the moment the
+        dependency is restored, with no error, no warning. This is not a hypothetical risk
+        estimate; it is what Option A means as of today's `tracegauge` release.
+      - *Release coupling*: brittle. `tracegauge` has no `price-freshness.yml` analog (S1) and no
+        version-bump discipline geared to adk-tracegauge's release cadence -- adk-tracegauge would
+        need a narrow, frequently-re-verified pin (mirroring R5 5.4's own two-version
+        dual-verification exercise) every time either package changes, which is exactly the
+        "reverse-engineered assumption" burden R5's 5.1 findings 1-4 (undocumented internal API,
+        no schema for the `prices` dict, private `_resolve_model`, provably-dead fallback
+        branches) already catalogued -- Option A doesn't fix any of that unless "fix upstream" also
+        means stabilizing and documenting a real public contract, which is real, currently
+        unscoped, second-repo work.
+      - *Portfolio positioning*: reads worse right now, not better -- restoring a dependency on a
+        package this same audit phase just found shipping wrong flagship-model prices makes
+        adk-tracegauge's own correctness hostage to a dependency proven broken this week.
+
+      **B. Keep the fork (status quo since R5) -- two independent price tables/engines forever.**
+      - *Maintenance burden*: highest ongoing cost of the three -- every real pricing fix (a promo
+        change, a new flagship model, a new provider) must be hand-applied twice, in two
+        *structurally different* schemas (adk-tracegauge's `gemini_prices.json` has
+        `promo_until`/`standard_rate`/`long_context_threshold_tokens`/`long_context_model_key`;
+        `tes/data/prices.json` has none of these keys at all -- not just different content,
+        different shape), with zero shared code to amortize the fix. Cheapest one-time cost
+        (already done, R5), most expensive steady-state cost.
+      - *Probability of divergence*: **high and structural, not incidental -- and already
+        realized.** By design there is no shared code path, so staying in sync depends entirely on
+        human memory across two repos. S1's finding (tracegauge wrong, adk-tracegauge right, same
+        author, same week, discovered only by a dedicated audit) is direct, already-materialized
+        proof, not a projection.
+      - *How it would be caught*: only by a deliberate cross-repo audit like this one -- neither
+        package's CI reads the other's price table; there is no automated check today that would
+        catch adk-tracegauge's and tracegauge's Claude rates silently disagreeing.
+      - *Release coupling*: **zero** (the one real advantage) -- either package releases
+        independently, which is exactly why R5 could ship without waiting on `tracegauge` at all.
+      - *Portfolio positioning*: reads as two related-looking packages, same author, same topic,
+        that have already silently drifted -- a reviewer who diffs their price tables (as this
+        audit did) finds live, real disagreement. Worse optics than either alternative: it's
+        evidence of the exact unmonitored-drift failure mode a portfolio is supposed to demonstrate
+        the author guards against.
+
+      **C. Core + adapters** -- shared package owns pricing + statistics + CLI; adk-tracegauge owns
+      only ADK plumbing; designed so a future langchain-tracegauge could plug into the same core.
+      - *Maintenance burden*: highest one-time cost of the three (a real extraction/promotion, not
+        a revert) but **lowest ongoing burden** -- one pricing fix, one place, both packages pick
+        it up on their next release.
+      - *Probability of divergence*: low, structurally -- exactly one price table and one
+        regression-gate implementation exist; "divergence" would require the shared core itself
+        being wrong, a single-point risk that's easier to test and reason about once than two
+        independently-drifting copies (Option B's already-proven failure mode).
+      - *Release coupling*: real and non-trivial -- a fix now requires 2-3 coordinated releases
+        (core, then each consumer) instead of Option A's 2 or Option B's 1. This is a genuine cost,
+        not a rounding error, and must be weighed against the lower divergence risk, not waved
+        away.
+      - *Portfolio positioning*: best of the three if executed cleanly -- "focused packages, one
+        shared, DESIGNED foundation, demonstrated composition discipline" reads well to a technical
+        reviewer and matches this author's own stated multi-provider/Protocol-based-adapter
+        engineering defaults. Real downside: a genuinely new third package is a third thing that
+        can go stale or simply never get a second real consumer -- "designed for extensibility
+        nobody has asked for yet" is a YAGNI smell without a concrete second consumer in sight, and
+        none exists today (no real langchain-tracegauge is being built).
+
+      **S2.3 -- Recommendation, engaging the stated prior directly.** The task's own prior:
+      Option C, converging on Option A's mechanics (a thin adapter, architecturally designed for
+      extensibility). **Partial agreement, with one material correction to the premise and one
+      scope reduction to the mechanics:**
+
+      *Correction to the premise*: the task frames R5 as having forked "specifically citing a
+      version-dependent licensing claim as justification." Re-reading R5's own entry (`PLAN.md`
+      5.1-5.3) directly: R5 documented **six** distinct findings, of which the licensing claim was
+      the SIXTH and the one R5 itself explicitly verified was ALREADY RESOLVED for the version that
+      would actually be pinned (0.10.1 -- see S2.4 below, confirmed independently again this item).
+      R5's actual stated DECISION rationale (5.3: "the arithmetic plus the two internal dataclasses
+      ... were the ONLY thing this package ever used from tracegauge, anywhere. DECISION: move it
+      in-house.") rests on findings 1-5: an internal API `tes._digest` itself documents as
+      non-public, an undocumented `prices` dict shape recovered only by reading source, a private
+      `_resolve_model`, dead-code fields, and unused transitive dependencies (flask/werkzeug/
+      blinker/itsdangerous). Licensing was real but not load-bearing for the actual fork decision.
+      This matters because "relying on an undocumented internal API" is a MUCH weaker argument for
+      forking when GG owns both packages outright -- GG can simply make `tes.cost`/`tes._digest`
+      genuinely public (schema, `__all__`, stability guarantee) instead of forking around the
+      instability. The licensing framing in this phase's own kickoff is therefore a real, if minor,
+      premise error -- not fatal to the prior's conclusion, but worth naming rather than silently
+      accepting per rule 101.
+
+      *Scope reduction*: a genuinely NEW third PyPI package (a `tracegauge-core`-style artifact)
+      is premature right now -- there is exactly one real consumer of a shared core today
+      (adk-tracegauge itself); no second framework adapter exists or is being built. Standing up a
+      third repo/release-process/name for a purely speculative future consumer violates this
+      project's own "simplest solution that satisfies the constraints" / no-premature-abstraction
+      defaults. **The core should live inside `tracegauge` itself** (GG already owns the name, the
+      PyPI slot, and the release process) rather than a new package -- if a second real adapter
+      ever gets built, THAT is the natural trigger to split the core out, not before.
+
+      **Recommendation: a scoped Option C -- absorb adk-tracegauge's OWN pricing/statistics engine
+      UP INTO `tracegauge` as its new public core (not the reverse).** This is the load-bearing
+      point: as of today, adk-tracegauge's in-house `_pricing.py`/`_regression.py` are MORE
+      correct and MORE complete than `tracegauge`'s own `tes.cost` -- adk-tracegauge has a
+      staleness guard, promo-expiry auto-switching, long-context tiering, and a statistically
+      validated bootstrap regression gate with measured power/FPR; `tracegauge` has none of these
+      (S1, S3 below). A literal reading of "restore the fork into tracegauge" would mean
+      adk-tracegauge downgrades to depending on a weaker, staler copy of its own logic -- exactly
+      backwards. The correct direction: `tracegauge` absorbs adk-tracegauge's more mature
+      pricing/statistics code as its own new core (fixing S1's live bugs in the same pass), THEN
+      adk-tracegauge becomes a thin adapter over that upgraded core -- Option A's mechanics,
+      Option C's design intent, but the merge direction corrected by what this item actually found
+      reading both codebases, not assumed from the prior. Full plan in S2.5.
+
+      **S2.4 -- Licensing question, resolved at its root.** Read `token-efficiency-scorer/LICENSE`
+      (verbatim GNU AGPLv3 text) and `LICENSE-APACHE` (verbatim Apache-2.0 text) directly, both
+      present at repo root (confirms Phase 5 S1's "two license files" observation -- this is the
+      intended, correct dual-license structure, not an accident). `grep -rl SPDX-License-Identifier
+      tes/` found the dual-license header (`AGPL-3.0-only OR Apache-2.0`) present in EXACTLY two
+      files: `tes/cost.py` and `tes/_digest.py` -- the exact two files R5 ported from and the ONLY
+      two files adk-tracegauge ever imported from `tracegauge` (R5 5.3). No other `tes/*.py` file
+      carries a per-file SPDX header; they remain implicitly covered by the package-level license.
+      `pyproject.toml`'s `license = "AGPL-3.0-only"` and PyPI's live JSON API
+      (`https://pypi.org/pypi/tracegauge/json`, fetched this item) both confirm the PACKAGE-LEVEL
+      declared license is `AGPL-3.0-only` (`info.license_expression`), unchanged by the two
+      dual-licensed files.
+
+      **Verdict: the licensing concern IS genuinely resolved for `tracegauge==0.10.1` -- R5's own
+      finding was correct, not stale, and R5 explicitly verified it (5.4's per-version table) rather
+      than assuming it.** The two files adk-tracegauge would ever import are validly dual-licensed
+      as of 0.10.1 (confirmed present, matching current upstream HEAD `b582c60` byte-for-byte below
+      the header per R5 5.1); Apache-2.0 is a real, exercisable option for those two files, and
+      `tracegauge`'s own `README.md` (`## License` section, read directly) already states this
+      explicitly and by name: *"Exception: `tes/cost.py` and `tes/_digest.py` are additionally
+      available under Apache-2.0. This lets downstream packages -- e.g. adk-tracegauge -- depend on
+      the cost-computation module without inheriting AGPL's copyleft terms."* This is not a gap to
+      fix; it is already correctly documented, and git history (`git log`) confirms it was a
+      deliberate, dedicated commit: `b582c60 chore(license): dual-license tes/cost.py and
+      tes/_digest.py under Apache-2.0 (#3)`.
+
+      **One residual, soft (non-bug) friction point, noted rather than fixed**: PyPI's
+      package-level `license_expression` metadata (`AGPL-3.0-only`) is what automated
+      license-compliance tooling (FOSSA, `pip-licenses`, GitHub's dependency-graph license display)
+      actually reads -- it does not surface the per-file dual-license carve-out. A scanner run
+      against a restored `adk-tracegauge -> tracegauge` dependency would report "depends on an
+      AGPL-3.0-only package," indistinguishable at that level from a fully-AGPL dependency, even
+      though the actual legal position (only two, already-dual-licensed files ever imported) is
+      fine. This is standard, correct practice for a majority-AGPL repo with a documented per-file
+      exception (SPDX package-level fields express the default/majority license, not an exhaustive
+      per-file enumeration) -- **not a bug, and not fixed this item.** The only real fix would be
+      extracting the dual-licensed files into their own, wholly-Apache-2.0-at-the-metadata-level
+      package -- which is exactly S2.3's scoped-Option-C recommendation, addressed there on
+      stronger grounds (undocumented-API/staleness/correctness) than licensing alone would justify.
+      No source change made in `token-efficiency-scorer` this item; `git status` there confirmed
+      clean before and after (branch `docs/releasing`, unrelated to this item, untouched).
+
+      **S2.5 -- Migration plan (NOT executed this item -- read-only mandate; this is the
+      executable plan for a future work item).**
+
+      *Phase M1, in `token-efficiency-scorer` (must land and release FIRST):*
+      1. Ship S1's narrower `tracegauge 0.10.2` patch (missing claude-opus-5/claude-sonnet-5
+         entries, server-tool-billing gap) **independently and immediately** -- this is a live
+         correctness bug with its own urgency and must not wait on the larger migration below.
+      2. Promote `tes.cost`/`tes._digest` to genuinely public API: add `__all__` re-exports at
+         `tes/__init__.py` top level (currently absent -- R5 finding 1), a `TypedDict`/schema for
+         the `prices` dict shape (R5 finding 2), and remove `compute_session_cost`'s silent
+         `prices=None` -> bundled-Claude-table fallback (R5 finding 3; matches adk-tracegauge's own
+         already-shipped fix) -- this is a genuine breaking change to `tes.cost`'s public contract,
+         called out explicitly in step 6 below.
+      3. Port adk-tracegauge's superior pricing machinery UP into this promoted core: staleness
+         guard, `promo_until`/`standard_rate` expiry auto-switch, long-context tiering (all
+         currently exclusive to adk-tracegauge's `_pricing.py`) -- a real, non-trivial port, not a
+         copy-paste (the receiving schema needs the new fields `tracegauge`'s own
+         `tes/data/prices.json` currently lacks).
+      4. Extract adk-tracegauge's `_regression.py` (953 lines, zero ADK imports, confirmed this
+         item) into a new `tes` module as `tracegauge`'s own regression-gate core -- wire a new
+         `tes`-side CLI surface analogous to `check`/`snapshot` over `tes`'s own session-log data
+         (a real, separate design task in its own right -- `tes`'s existing session/store model
+         differs from adk-tracegauge's per-invocation `UsageStore`; not fully specified here,
+         flagged as non-trivial for whoever executes this).
+      5. Release as `tracegauge 0.11.0` (minor: new public API surface + a breaking default
+         removal) via the existing `RELEASING.md`/`release.yml` OIDC-publish process.
+
+      *Phase M2, in `adk-tracegauge` (only after M1's 0.11.0 is live on PyPI):*
+      6. Re-add `tracegauge>=0.11.0,<0.12.0` to `pyproject.toml`; delete `_cost.py` (311 lines) and
+         the now-redundant staleness/promo/tiering portions of `_pricing.py`; re-wire
+         `_adapter.py`/`evaluator.py`/`snapshot.py` imports onto the promoted `tes` core.
+      7. Delete `_regression.py` (953 lines); re-wire `_cli.py`'s `_cmd_check` onto `tes`'s new
+         regression module.
+      8. **Rename adk-tracegauge's own `[project.scripts]` entry point from `tracegauge` to a
+         collision-free name** (e.g. `adk-tracegauge` or `atg`) -- see the standalone finding
+         below; this is independently urgent and does not need to wait for the rest of this
+         migration if it ships sooner.
+      9. Re-instate R5 5.2-style contract tests against the NEW, genuinely public/schema-checked
+         `tes` API (should be materially thinner than the original 8, since the shape is now
+         actually documented rather than reverse-engineered).
+      10. Re-run R5 5.4's dual-version verification pattern (test against every `tracegauge`
+          version admitted by the new pin) before merging.
+      11. Bump adk-tracegauge to `0.4.0` (new minor: dependency re-added + CLI entry-point rename
+          are both externally-visible, deprecation-worthy changes).
+
+      *What breaks, and for whom:*
+      - **`tracegauge`-only users (never heard of ADK)**: M1 steps 1-2 are low-risk/mostly additive
+        (existing `tes score`/`budget`/`serve`/etc. commands unaffected); step 4's new
+        regression-gate surface is purely additive. The one real breaking change is step 2's
+        `prices=None` default removal -- ANY external caller using `tes.cost.compute_session_cost`
+        as a library (not just the CLI) and relying on the silent bundled-Claude-table fallback
+        breaks, loudly (a `TypeError`/missing-argument, not a silent wrong number) -- needs a
+        prominent `CHANGELOG.md` breaking-change entry, since this exact default caused
+        adk-tracegauge's own historical $2.80-priced-as-$18.00 bug and could bite a `tracegauge`
+        library user identically today.
+      - **adk-tracegauge-only users (never heard of `tracegauge`)**: M2 step 6 REINTRODUCES an
+        external runtime dependency that was deliberately removed in the 0.3.0-track release (R5)
+        -- worth an explicit, honest `CHANGELOG.md` callout naming why the removal happened and
+        why it's being reversed (S1's finding that duplicating the logic had already caused live
+        divergence, not a reversal of R5's own reasoning about the OLD `tracegauge` core, which was
+        correct at the time). Step 8's CLI rename is a real, user-facing breaking change for anyone
+        scripting the `tracegauge` command today -- ship with a deprecation shim (old name still
+        works, prints a stderr warning naming the new name, for one full minor version) rather than
+        a hard break.
+      - **Sequencing constraint, explicit**: M2 cannot ship before M1's `0.11.0` is live on PyPI --
+        mirrors the same discipline already established for the adk-docs PR in Phase 4 R3/ROUTE-TO-
+        GG item 6 ("don't ship something describing an API that doesn't exist yet"). Step 1
+        (the urgent `0.10.2` patch) is NOT gated on any of this and should ship independently,
+        first, regardless of when M1/M2 actually happen.
+
+      **Standalone finding, independent of which S2 option is chosen -- flagged as urgent:**
+      adk-tracegauge's `pyproject.toml` `[project.scripts]` installs a console script literally
+      named `tracegauge` (`tracegauge = "adk_tracegauge._cli:main"`). `token-efficiency-scorer`'s
+      `pyproject.toml` ALSO installs a console script literally named `tracegauge`
+      (`tracegauge = "tes.cli:main"`), alongside its own `tes` alias. **Confirmed directly by
+      reading both `pyproject.toml` files this item.** A user with both packages installed in the
+      same environment gets whichever installed second silently overwriting the other's
+      `tracegauge` executable on `PATH` -- pip does not warn on cross-package console-script name
+      collisions. This is a real, already-live naming collision between two packages GG maintains,
+      entirely independent of the S2 fork/dependency decision, and needs its own fix (S2.5 step 8)
+      regardless of which architecture option is ultimately chosen.
+
+- [x] S3 -- Shared-feature parity matrix. DONE 2026-08-16, read-only. Confirmed by direct source
+      read: `tracegauge` has its own CLI (`tes/cli.py`, 1,446 lines, subcommands `score`/
+      `backfill`/`serve`/`export`/`ask`/`patterns`/`corpus`/`budget`/`monitor` -- session-log-based,
+      Claude-Code-specific) but **NO regression/statistical CI gate of any kind and no eval-
+      framework integration of any kind** -- confirmed by reading every subcommand's implementation
+      and grepping for "regression"/"bootstrap"/"paired"/"confidence" across `tes/`: zero matches
+      outside this session's own new findings. `budget`/`monitor` (rolling-window pace projection,
+      self-baseline trend, live-session alarm) are conceptually adjacent -- "is my cost trending
+      wrong" -- but are NOT the same mechanism as a two-run bootstrap-CI comparison and do not
+      duplicate or conflict with anything adk-tracegauge built; they are a genuinely different,
+      non-overlapping capability worth naming, not a hidden duplicate.
+
+      | Capability | In `tracegauge` today | In `adk-tracegauge` today | Should live under S2.3's recommendation | Disagreement? |
+      |---|---|---|---|---|
+      | Pricing/model resolution | Yes (`tes.cost._resolve_model`, exact+prefix match, silent default-model fallback) | Yes (`_pricing.resolve_model`, exact+prefix match, **fails closed, no default**) | Promoted core (adk-tracegauge's fail-closed design wins) | **YES -- live disagreement.** Different failure philosophy (silent default vs. fail-closed) on the SAME conceptual operation; S1 proved the silent-default side is currently wrong for the mainline case. |
+      | Promo/expiry handling | **No** -- `prices.get("as_of")` read only for display, never compared to today | Yes (`promo_until`/`standard_rate`, auto-switch, Phase 3 B2) | Promoted core, adk-tracegauge's implementation ported up | **YES -- capability gap.** Absent entirely in `tracegauge`; this is the exact class of bug (a promo-rate frozen past expiry) Phase 2 W1's P0 finding was. |
+      | Long-context tiering | **No** -- not applicable to Claude's current pricing (confirmed, S1) | Yes (Gemini-specific, `resolve_model_for_call`) | Stays adk-tracegauge-specific (genuinely not portable -- Claude doesn't tier by context length) | No -- not a gap, a real provider difference. |
+      | Cache-discount handling | Yes (`cache_multipliers`: read/write_5min/write_1hr) | Yes (`cache_multipliers.read`, applied globally per Phase 2 W1) | Promoted core (shared arithmetic, `_cost.py` already ported from this exact logic) | No -- independently re-verified matching (S1) on the Claude rows both tables share. |
+      | Staleness guard | **No** -- zero mechanism, zero CI signal, 67 days stale today with nothing flagging it (S1) | Yes (`STALE_THRESHOLD_DAYS=90`, `price-freshness.yml` CI gate) | Promoted core, `price-freshness.yml`-equivalent added to `tracegauge`'s own CI | **YES -- capability gap, actively biting today.** This is precisely why S1 found `tracegauge` silently wrong with no signal. |
+      | Multi-provider support | Yes, but Claude-only (no Gemini/GPT) | Yes -- Gemini (native), Claude + GPT (via LiteLlm), local/self-hosted | Promoted core covers whichever providers the core needs; ADK-routing specifics (LiteLlm prefix stripping) stay in the adapter | Partial -- not a disagreement so much as non-overlapping scope (tracegauge = Claude-Code sessions only; adk-tracegauge = whatever ADK can route to). |
+      | Snapshot format | **No** -- no persisted point-in-time distribution format exists in `tracegauge` at all | Yes (`schema_version=2` JSON, `records`/`skipped`, Phase 2 W4 + Phase 4 R2) | Promoted core (generic `Snapshot` dataclass + read/write are already provider-agnostic per S2.1) | **YES -- capability gap**, not currently duplicated (nothing to disagree with yet, but a real absence). |
+      | `check`/regression-gate command | **No** -- confirmed, no subcommand, no statistical machinery anywhere in `tes/` | Yes (`tracegauge check`, bootstrap CI, Phase 2 W4) | Promoted core (`_regression.py` is already 100% provider-agnostic per S2.1) | **YES -- capability gap.** This is adk-tracegauge's actual differentiator and doesn't exist in `tracegauge` at all today. |
+      | Paired-comparison mode | **No** | Yes (`--mode paired`, keyed on `eval_case_id`/`session_id`, Phase 3 B4 + Phase 4 R2 fix) | Promoted core (pairing math is generic; the ADK-specific *key sourcing* -- `eval_case_id` from `.evalset_result.json` -- stays in the adapter) | **YES -- capability gap.** |
+      | Achieved-power reporting | **No** | Yes (Phase 4 R4: runtime minimum-detectable-effect + below-floor warning) | Promoted core | **YES -- capability gap.** |
+      | OTel export | Not built (deferred, confirmed no `opentelemetry`/otel references in `tes/` beyond false-positive substring matches, e.g. "remotely") | Not built (deferred; same false-positive-only grep result in `_regression.py`) | N/A -- deferred in both, per instruction | No -- genuinely absent from both, not a disagreement. |
+      | CLI | Yes -- `tes`/`tracegauge` console scripts, `tes.cli:main`, 1,446 lines | Yes -- `tracegauge` console script, `adk_tracegauge._cli:main`, 385 lines | Both keep their own CLI (different domains: session-log analysis vs. ADK eval-run gating); **the shared `tracegauge` script NAME must not be shared** | **YES -- live naming collision**, confirmed this item (see S2.5's standalone finding) -- both packages install a console script literally named `tracegauge` today. |
+      | Documentation | README + CHANGELOG + RELEASING.md; License section explicitly documents the AGPL/Apache-2.0 split and names adk-tracegauge | README + CHANGELOG + CONTRIBUTING + troubleshooting.md + examples-as-docs | Both keep independent docs; a future `tracegauge` core-promotion release needs its own migration-note section (S2.5) | No direct disagreement found, but `tracegauge`'s README doesn't yet mention it has no regression gate / no staleness guard -- an honesty gap worth closing whenever S1's 0.10.2 or this migration ships. |
+      | Examples | **No** dedicated `examples/` directory found | Yes -- `examples/` (4 runnable scripts, all fresh-wheel-tested per Phase 4 R7) | adk-tracegauge keeps its own ADK-specific examples; a promoted core would want its own minimal examples too (not written yet) | No disagreement -- genuine capability gap, not urgent. |
+      | CI | Yes -- `ci.yml`, `release.yml` only (2 workflows) | Yes -- `ci.yml`, `price-freshness.yml`, `pypi-canary.yml`, `release.yml` (4 workflows, including a `wheel-smoke-test` job per Phase 4 R7) | `tracegauge` should gain a `price-freshness.yml` analog once the staleness guard is ported up (S2.5 M1 step 3) | **YES -- gap directly causal to S1's finding.** `tracegauge`'s CI has no mechanism that could have caught its own price table going stale; adk-tracegauge's does. |
+
+      **Summary: 8 of 15 matrix rows show a live, already-existing divergence or capability gap
+      between the two packages** (pricing/model-resolution philosophy, promo handling, staleness
+      guard, snapshot format, check/regression-gate, paired mode, achieved-power reporting, CI
+      coverage) **-- plus one additional, separately-flagged live bug (the `tracegauge`
+      console-script name collision) not captured as a matrix row.** None of these are theoretical:
+      S1 already proved the pricing/staleness gap has real-dollar consequences today, and this item
+      independently confirmed the console-script collision by reading both `pyproject.toml` files
+      directly. This is the concrete evidence base for S2.3's recommendation -- Option B (status
+      quo) leaves all 8 gaps unaddressed and structurally guarantees more of the same; Option C
+      (scoped, core-in-`tracegauge`) is the only one of the three options that closes all 8 in a
+      single coordinated migration rather than requiring `tracegauge` to independently reinvent
+      capabilities adk-tracegauge has already built and validated.
+
+      Verification: read-only work item, no tests to run (no source changed in either repo except
+      the licensing verification in S2.4, which required no fix). `git status` confirmed clean in
+      both repos before and after. Zero paid API calls, zero `ANTHROPIC_API_KEY`. No subagent/fork
+      dispatched at any point in either S2 or S3, per instruction.
