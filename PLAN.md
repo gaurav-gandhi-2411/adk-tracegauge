@@ -1546,3 +1546,45 @@ re-duplicated here.
       `BaseLlm`s and synthetic `UsageStore` records throughout, matching the repo's existing
       zero-cost testing pattern). No subagent/fork dispatched at any point in this work item, per
       instruction.
+
+- [x] R6 -- Independently re-verified both of Phase 3/B3's prepared (not opened) upstream
+      `google/adk-python` PRs are still genuinely ready to offer. DONE 2026-08-15/16, entirely in
+      `C:\Users\gaura\ml-projects\oss-contrib\adk-python` -- no adk-tracegauge changes. Re-fetched
+      `upstream/main` fresh (3 new commits since Phase 3) and ran ADK's full suite on an isolated,
+      unmodified clean worktree: 33 real, platform-specific pre-existing failures (Windows
+      path-separator/mock-timing artifacts), none touching either target file
+      (`agent_evaluator.py`/`cli_tools_click.py`). Independently re-derived (not trusted from Phase
+      3's report, which was re-read and found not to actually contain the "20 pre-existing
+      failures" figure this phase's own kickoff assumed -- a premise correction, not a contradiction
+      of Phase 3's real content) that both branches' fixes still fail pre-fix and pass post-fix via
+      a live source-only revert/restore on each branch, and that neither branch introduces any
+      failure beyond the same 33-failure clean baseline. Fresh existing-issue/PR search (both open
+      and merged) found nothing new landed upstream since Phase 3 that would make either fix
+      redundant. No changes needed on either branch -- both already correct and non-vacuous. Both
+      fix branches confirmed unpushed, unopened, at their original Phase 3 commits
+      (`c2131b70`/`32c8991d`); the fork's own working checkout restored to its original branch/state.
+      **Verdict: both PRs remain genuinely ready to offer**, pending only the human decision to push
+      and open them (see ROUTE-TO-GG).
+
+- [x] R3 -- Rewrote the `google/adk-docs#2128` PR page (`docs/integrations/adk-tracegauge.md`) in
+      `C:\Users\gaura\ml-projects\oss-contrib\adk-docs`, branch `docs/adk-tracegauge-integration`,
+      against the fully Phase-4-corrected package API. DONE 2026-08-15/16, commit `bec0f44` in that
+      repo -- not pushed, PR #2128 itself untouched. Removed the pre-W2 "AgentEvaluator/adk eval
+      cannot surface this metric's output" blanket-broken framing and the hand-rolled-harness
+      content entirely; hero section now leads with `tracegauge check`, a new "Paired mode" section
+      documents `--mode paired` keyed on `eval_case_id` (not the originally-shipped, R2-corrected
+      `session_id` key), the `adk eval` metric moved to a labeled secondary section, and a "Known
+      ADK-side limitations" section states both residual ADK bugs accurately with "a fix has been
+      prepared and is pending submission upstream" phrasing (no PR link, since neither R6-confirmed
+      PR is open yet). Every code block independently verified this phase against a freshly-built
+      adk-tracegauge wheel installed into a venv outside both repos -- one real bug found and fixed
+      in the process: the first-drafted paired-mode example (two separate shell `adk eval`
+      invocations) doesn't work, because `TraceGaugeUsagePlugin`'s captured usage lives only in an
+      in-process `UsageStore` that does not survive a shell subprocess exiting; corrected to an
+      in-process `CliRunner`-based entrypoint script, re-verified against the exact block now in the
+      doc (real exit 1, `mode=paired (key=eval_case_id, 32 overlapping eval_case_ids matched)`,
+      `+33.93%`). **Blocking sequencing constraint, not optional**: this docs PR must not merge
+      before adk-tracegauge 0.3.0 (the CHANGELOG's own proposed next version, carrying every API
+      this rewritten page now documents -- required threshold, `tracegauge check`, `--mode paired`
+      keyed on `eval_case_id`, no external `tracegauge` dependency) is actually live on PyPI; PyPI
+      currently still serves 0.2.0, which has none of this. Recorded as a numbered ROUTE-TO-GG item.
