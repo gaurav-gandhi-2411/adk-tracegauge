@@ -2497,3 +2497,93 @@ at kickoff, not re-litigated this phase.
       checks passed. `ruff format --check`: 47 files already formatted. `mypy src/`:
       success, no issues, 11 source files. `uv.lock` unchanged (rename touched no
       dependency, only the `[project.scripts]` entry point name).
+
+- [x] T4 -- Power at the new shipped confidence, min_n decision re-validated, README made
+      internally consistent. DONE 2026-08-15, same branch, `adk-tracegauge` side only.
+      **Premise check first**: `git log --oneline -- src/adk_tracegauge/_regression.py`
+      since S4's confidence retune (`ed429e7`) shows exactly one further commit
+      (`6033795`, the T3 console-script rename) touching that file, and `git show` on it
+      confirms the only changes are two hardcoded `"tracegauge check"` -> `"adk-tracegauge
+      check"` string literals (the module docstring and `RegressionCheckResult.report()`'s
+      f-string) -- zero statistical-logic changes since S4. Confirmed, not assumed.
+
+      **4.1 -- power at n=30, confidence=0.98, all 4 effect sizes.** Grid-sourced (S4's own
+      90-cell alpha grid, alpha=0.01 <-> confidence=0.98 row, n=30, statistical-only/floors-
+      disabled -- same convention the grid always uses): 5%=16.2%, 10%=58.4%, 25%=100%,
+      50%=100%. **Fresh re-measurement** (same generator/methodology as
+      `scripts/measure_regression_alpha_grid.py`, `bootstrap_diff_of_means` called directly,
+      500 trials/cell, `n_boot=1000`, confidence=0.98) of the 10% and 50% cells: 10%=57.2%
+      (independent seed base, matches the grid's 58.4% within sampling noise), 50%=100.0%
+      (exact match). **Grid confirmed still accurate on current code.**
+
+      **4.2 -- min_n decision.** Re-examined whether to raise `min_n` above 30 now that S4
+      changed the shipped default confidence from 0.95 to 0.98 (Phase 4 R4's original
+      min_n=30-vs-raise decision was measured at the OLD 0.95 default and needed
+      re-validation, not an unexamined carry-forward). Measured n in {30, 35, 40, 45, 50} at
+      confidence=0.98, true 10% effect, 500 trials/cell, `n_boot=1000`, two independent seed
+      bases at n=30/45/50 as a cross-check against noise:
+
+      | n | trial 1 | trial 2 | S4's own grid (same cell) |
+      |---|---|---|---|
+      | 30 | 57.2% | 56.6% | 58.4% |
+      | 35 | 64.4% | -- | -- |
+      | 40 | 68.8% | -- | -- |
+      | 45 | 77.2% | 72.8% | -- |
+      | 50 | 79.6% | 81.0% | 83.4% |
+
+      No integer n from 30-45 comes close to 80%. n=50 -- the value that looked like a clean
+      answer from S4's single-measurement grid (83.4%) -- turns out to be marginal, not
+      robust, once measured twice more independently: 79.6% and 81.0%, both within ~2 points
+      of 83.4% (three independent 500-trial measurements averaging ~81.3%, well inside a
+      single run's own ~1.8-point binomial standard error at this trial count). Raising
+      `min_n` to 50 would therefore NOT reliably buy 80% power for a 10% regression -- it
+      would buy something close to a coin flip on whether this run's own noise happens to
+      land above or below 80% -- while definitely, unconditionally refusing every real
+      30-49-invocation eval set (a real usability cost: `examples/03_ci_regression_gate.py`
+      itself uses n=40, deliberately chosen to be a realistic ADK eval-set size just above
+      the current floor).
+
+      **DECISION: keep `min_n=30`, option (b).** Reasoning: (1) no n in the measured range up
+      to 50 gives a robust, decisive clearance of the 80% power bar for a 10% effect -- the
+      "raise it" option doesn't actually deliver the reliability it promises, it just moves
+      the refusal boundary while leaving the same fundamental problem (power depends on the
+      caller's own variance and effect-size-of-interest, which no fixed `min_n` can know in
+      advance -- S4's own grid shows even n=100 only clears 64.5% for a 5% effect); (2) this
+      package already has a working, general answer to exactly this problem -- the
+      achieved-power/minimum-detectable-effect runtime reporting Phase 4 R4 built
+      (`minimum_detectable_effect_usd`, `_below_floor_warning`, printed on every `check` run
+      regardless of verdict) -- which tells a caller running at n=30 their REAL achieved
+      power and detectable floor from THEIR OWN observed data, rather than this package
+      implying a blanket reliability guarantee a fixed `min_n` cannot actually deliver; (3)
+      this is the same "loud honesty over silent overconfidence" pattern already established
+      by Phase 5 S1 (no silent price-table guess) and Phase 4 R4 itself -- consistent with,
+      not a new precedent for, this project's engineering culture. Implemented: updated
+      `MIN_N_DEFAULT`'s docstring in `_regression.py` with the full re-validation (generator,
+      seeds, numbers, conclusion) rather than leaving the stale confidence=0.95-era
+      71.5/79.0/77.5/83.0 figures standing unexamined against the new default. Added two
+      permanent regression tests to `tests/test_regression.py`:
+      `test_min_n_default_kept_at_30_not_raised` (locks the constant's value so a future
+      change is a deliberate, visible diff) and
+      `test_power_at_min_n_under_shipped_confidence_remains_below_80pct_target` (fast,
+      permanent version of the fresh 4.1/4.2 measurement, asserting detection stays
+      meaningfully below 80% at min_n/DEFAULT_CONFIDENCE -- catches a future bootstrap-
+      methodology change that silently shifts this number). No code-behavior change (min_n
+      unchanged, achieved-power mechanism unchanged) -- `CHANGELOG.md` left untouched per
+      this work item's own instruction (a CHANGELOG entry is required only if `min_n` were
+      actually raised).
+
+      **4.3 -- README made internally consistent.** README's "Known limitations" section
+      already stated FPR (2.3% combined) and power (58.4%) at the same n=30/confidence=0.98
+      configuration in one paragraph (Phase 5 S4's own work) -- verified this was already
+      correct, not pulled from mismatched grid rows. Added a new bullet stating both numbers
+      together explicitly as "the two headline numbers, same configuration" (FPR 2.3%
+      combined / power 58.4%, both n=30, both confidence=0.98) and recording the full T4
+      min_n re-validation (the n in {30,35,40,45,50} table above, the n=50 marginality
+      finding, and the keep-at-30 decision) so a reader isn't left with the now-stale
+      confidence=0.95-era 71.5/79.0/77.5/83.0 figures as the last word on whether `min_n=30`
+      was re-examined against the current default.
+
+      **Verification:** 365/365 tests passing (363 -> 365, the two new T4 tests), 99% overall
+      coverage, `_regression.py` itself 100% (unchanged). `ruff check`: all checks passed.
+      `ruff format --check`: 47 files already formatted. `mypy src/`: success, no issues, 11
+      source files. `uv.lock` unchanged (no dependency change).

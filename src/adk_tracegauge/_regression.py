@@ -143,7 +143,45 @@ static min_n cannot. min_n=30 remains legitimately justified for the
 narrower CLT-validity role it was always defined for (n=10's own elevated
 FPR in B4's grid, 5.0% vs the ~2.5% nominal expectation, is real evidence
 FOR keeping SOME floor in the 20s-30s range -- just not evidence that the
-floor must chase 80%-power-for-a-10%-regression specifically)."""
+floor must chase 80%-power-for-a-10%-regression specifically).
+
+Phase 6 T4 re-validation: the above measurement (71.5%/79.0%/77.5%/83.0% at
+n in {30,35,40,45}) was taken at confidence=0.95, the default AT THE TIME --
+Phase 5 S4 has since changed ``DEFAULT_CONFIDENCE`` to 0.98, which lowers
+power at every n (tighter alpha always costs power, see ``DEFAULT_CONFIDENCE``'s
+own docstring), so the n=30-44-range decision above needed re-examination
+against the NEW default rather than being assumed to still hold. Re-measured
+(same generator/methodology, statistical-only/floors-disabled, 500
+trials/cell, n_boot=1000, confidence=0.98, TWO independent seed bases at
+n=30/45/50 as a cross-check) for a true 10% regression:
+
+    n     trial 1   trial 2   (S4's own 90-cell grid, same n/effect/confidence)
+    30    57.2%     56.6%     58.4% (statistical-only, matches within noise)
+    35    64.4%     --        --
+    40    68.8%     --        --
+    45    77.2%     72.8%     --
+    50    79.6%     81.0%     83.4%
+
+CONCLUSION UNCHANGED, evidence now stronger: no integer n in {30,35,40,45}
+comes close to 80% at confidence=0.98 either (worst-to-best: 56.6% to
+77.2%). n=50 -- the value Phase 5's S4 grid alone might suggest as "clears
+80%" (83.4%) -- is REVEALED as only marginally/inconsistently at the
+boundary once measured independently twice more: 79.6% and 81.0%, both
+within ~2 percentage points of 83.4% (three independent 500-trial
+measurements averaging ~81.3%, well inside a single 500-trial run's own
+~1.8-point binomial standard error). Raising min_n to 50 would therefore
+NOT reliably buy 80% power for a 10% effect -- it would buy a coin-flip's
+worth of "maybe just above, maybe just below 80%" -- while definitely
+refusing every real 30-49-invocation eval set outright. DECISION: min_n
+stays 30. The runtime achieved-power/minimum-detectable-effect reporting
+(4.1/4.2 below, unconditionally printed every run since Phase 4 R4) remains
+the correct, general fix: it tells a caller running at n=30 their REAL
+achieved power and detectable floor for THEIR OWN data, rather than this
+package silently implying a fixed n clears some blanket reliability bar it
+provably does not, at either confidence level. See ``PLAN.md``'s Phase 6 T4
+entry and ``tests/test_regression.py``'s
+``test_power_at_min_n_under_shipped_confidence_remains_below_80pct_target``
+for the reproducible, asserted version of this measurement."""
 
 DEFAULT_CONFIDENCE = 0.98
 """Phase 5 S4: CHANGED from 0.95, after measuring (not guessing) that

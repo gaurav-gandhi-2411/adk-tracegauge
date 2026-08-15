@@ -971,3 +971,80 @@ def test_practical_floor_contributes_no_extra_fpr_suppression_at_shipped_default
         "(previously: zero additional suppression); investigate before trusting the README's "
         "stated 'floor contributes no extra suppression here' claim"
     )
+
+
+# --- Phase 6 T4: min_n=30 decision re-validated at confidence=0.98 ---------
+
+
+def test_min_n_default_kept_at_30_not_raised():
+    """Phase 6 T4: re-examined whether raising MIN_N_DEFAULT to clear 80%
+    power for a 10% effect at the NEW confidence=0.98 default (Phase 5 S4)
+    would be worthwhile -- see MIN_N_DEFAULT's own docstring, "Phase 6 T4
+    re-validation" section, for the fresh n in {30,35,40,45,50} measurement
+    this decision rests on. DECISION: kept at 30 (fresh measurement showed
+    even n=50 is only marginally/inconsistently above 80%, not a robust
+    fix). Locked-value regression test -- if MIN_N_DEFAULT ever changes,
+    every other place documenting "min_n=30" (README, CHANGELOG, this
+    module's own docstrings) must be re-audited together, not just this
+    constant.
+    """
+    assert MIN_N_DEFAULT == 30
+
+
+def test_power_at_min_n_under_shipped_confidence_remains_below_80pct_target():
+    """Phase 6 T4: fast, permanent version of the fresh confidence=0.98
+    power re-measurement documented in MIN_N_DEFAULT's own docstring.
+
+    Statistical-only (min_n/floors disabled, matching
+    scripts/measure_regression_alpha_grid.py's methodology exactly), n=30
+    (MIN_N_DEFAULT), true 10% cost regression, confidence=DEFAULT_CONFIDENCE
+    (0.98). AUTHORITATIVE measurement (this exact config, 500 trials,
+    n_boot=1000, two independent seed bases): 57.2% and 56.6% -- both well
+    below the 80% ACHIEVED_POWER_TARGET, confirming min_n=30 genuinely does
+    NOT reach reliable detection for a 10% effect at the new default
+    either, which is exactly why 4.1/4.2's runtime achieved-power reporting
+    (not a raised min_n) is this package's actual answer to that gap.
+    Locked in as a regression test so a future bootstrap-methodology change
+    that silently shifts this number doesn't go unnoticed.
+
+    FAST VERSION (this test): reduced trials/n_boot for suite speed; the
+    asserted upper bound is generous (70%, well above the ~57% measured) so
+    this stays a real check on the underlying behavior without being
+    re-tuned to the exact number that happened to come out.
+    """
+    n_trials = 150
+    n_boot = 500
+    n_per_group = MIN_N_DEFAULT
+    mean = 0.010
+    sd = 0.0015
+    effect = 0.10
+
+    detections = 0
+    for trial in range(n_trials):
+        gen = random.Random(940_000 + trial)
+        baseline = [max(0.0001, gen.gauss(mean, sd)) for _ in range(n_per_group)]
+        current = [
+            max(0.0001, gen.gauss(mean * (1 + effect), sd * (1 + effect)))
+            for _ in range(n_per_group)
+        ]
+        result = evaluate_regression(
+            baseline,
+            current,
+            confidence=DEFAULT_CONFIDENCE,
+            min_effect_usd=0.0,
+            min_effect_pct=0.0,
+            n_boot=n_boot,
+            seed=trial,
+        )
+        if result.status == "regression":
+            detections += 1
+
+    detection_rate = detections / n_trials
+    assert detection_rate < 0.70, (
+        f"measured detection rate {detections}/{n_trials} = {detection_rate:.4f} at n="
+        f"{n_per_group} (min_n) for a true 10% regression, confidence=DEFAULT_CONFIDENCE, is "
+        "surprisingly high for this generator/config -- if the gate's power at min_n has "
+        "genuinely improved, the min_n=30-vs-raise decision (see MIN_N_DEFAULT's own docstring, "
+        "'Phase 6 T4 re-validation') should be revisited with fresh full-scale measurements, "
+        "not silently assumed still correct"
+    )
