@@ -216,7 +216,7 @@ def load_eval_case_ids_by_session_id(path: str | Path) -> dict[str, str]:
             "google.adk.evaluation.eval_result.EvalSetResult -- this is a "
             f"non-public ADK internal (installed google-adk=={installed}) and it "
             "looks like it has moved or been removed in this release. This only "
-            "affects --eval-history-based eval-case-id pairing for `tracegauge "
+            "affects --eval-history-based eval-case-id pairing for `adk-tracegauge "
             "check --mode paired`; session_id-based pairing (a hand-rolled harness "
             "pinning runner.run_async(session_id=...)) and two-sample mode are both "
             "unaffected. Open an issue at "
