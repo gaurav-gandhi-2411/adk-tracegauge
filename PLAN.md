@@ -2146,3 +2146,194 @@ version-dependent license claim) doesn't hold as a reason to fork a package GG o
       `git status` clean after commit. Not pushed, not tagged, not published. Zero paid API calls,
       zero `ANTHROPIC_API_KEY` -- pure local stdlib statistics throughout, per this work item's
       zero-cost constraint.
+
+- [x] S5 -- Final Phase 5 work item: full 4-Python-version suite against live google-adk 2.7.0,
+      fresh-wheel re-confirmation of every example/doc code block (re-checked against S4's new
+      confidence default), and an independent functional-equivalence proof of R5's ported
+      arithmetic against the REAL external `tracegauge` package. DONE 2026-08-15/16. No
+      subagent/fork dispatched at any point, per instruction.
+
+      **5.1 -- 4-version suite, live google-adk.** Checked PyPI's JSON API first: `google-adk`
+      live release is `2.7.0` (unchanged from W6's finding, still current); `tracegauge` live
+      release is `0.10.1` (matches the version R5's port was verified against, R5 5.4). Built 4
+      scratch venvs at `C:\Users\gaura\tmp\s5-p{310,311,312,313}\.venv` (short paths, per Phase
+      2 W6's own MAX_PATH lesson), each `uv venv --python 3.1{0,1,2,3}` + `uv pip install -e .
+      "google-adk[eval]==2.7.0"` (live, not the locked/pinned resolution) + dev test deps. Ran
+      `pytest tests/ -v --cov=adk_tracegauge --cov-report=term-missing` on all 4, independently,
+      not assumed identical:
+
+      | Python | google-adk | Tests | Coverage | Wall-clock |
+      |---|---|---|---|---|
+      | 3.10.20 | 2.7.0 | 363 passed | 99% (`_cost.py`/`_pricing.py`/`_regression.py` 100%) | 96.97s |
+      | 3.11.15 | 2.7.0 | 363 passed | 99% (same) | 110.19s |
+      | 3.12.12 | 2.7.0 | 363 passed | 99% (same) | 85.70s |
+      | 3.13.5 | 2.7.0 | 363 passed | 99% (same) | 171.50s |
+
+      All 4 genuinely identical: same pass count, same coverage, same 3 pre-existing uncovered
+      lines (`_cli.py:382`, `evaluator.py:404`, `snapshot.py:281`, unchanged from Phase 4/S4).
+      363 = the 360 tests Phase 5 S4 left the suite at, plus 3 new tests 5.3 below added (first
+      run was 360 on 3 of the 4 venvs, since the fidelity table was written mid-session; all 4
+      re-run after the file was finalized -- see 5.3's own note). Zero code changes required for
+      2.7.0 -- confirms W6's original 2.7.0 finding still holds a phase later.
+
+      **5.2 -- Fresh-wheel pass, re-confirming S4's default-confidence change didn't silently
+      break anything.** `uv build` -> `dist/adk_tracegauge-0.2.0-py3-none-any.whl`, installed via
+      `uv pip install` (wheel only, no `-e`, no repo access) into a fresh venv at
+      `C:\Users\gaura\tmp\s5-wheel-install\.venv` (`google-adk[eval]==2.7.0` alongside it, real
+      dependency resolution). Examples copied to an unrelated working directory
+      (`C:\Users\gaura\tmp\s5-wheel-work\`, no relationship to the repo) and run from there:
+        - All 4 examples (`01`-`04`) ran clean. `01_minimal_cost_gate.py`: real `adk eval` CLI,
+          both runs -- `Overall Eval Status: PASSED`/`Score: 2.8, Threshold: 5.0` and `FAILED`/
+          `Score: 2.8, Threshold: 1.0`, exit code 0 both times (the documented, still-true
+          exit-code gap) -- byte-identical to README's captured output.
+        - `02_subagent_rollup.py`: real two-agent `AgentTool` delegation, rolled-up cost
+          `$0.565000` (root $0.525 + sub-agent $0.04) -- matches Phase 2 W5's original figure
+          exactly, unaffected by S4.
+        - `03_ci_regression_gate.py` (the CI-gate hero path, real `tracegauge snapshot`+`check`
+          subprocesses): `mean_baseline=$0.008583 mean_current=$0.009998`, `98% CI
+          [+0.001019, +0.001801]`, achieved power `~$0.000536 (+6.25%)`, exit code 1 -- **byte-
+          identical to the numbers README's Quickstart section currently claims**, confirming
+          S4's README re-capture (Phase 5 S4 4.4) is still accurate after S5's fresh-wheel
+          re-verification, not just self-reported by S4's own session.
+        - `04_paired_mode_via_adk_eval_cli.py` (R2's real `adk eval` CLI paired-mode proof):
+          32/32 `eval_case_id`s matched, all 32 `session_id`s differ run-to-run (the R2 finding,
+          re-confirmed), `+33.93%` observed effect, exit code 1 -- matches R2's original figures.
+        - `tracegauge check --help`: confirmed live defaults are `--confidence 0.98`
+          (`Default 0.98` in the help text), `--min-effect-usd 0.0001`, `--min-effect-pct 5.0`,
+          `--min-n 30` -- matching `docs/ci-snippet.md`'s documented YAML step's explicit flags
+          exactly (S4's change is correctly reflected in the CLI's own default, not just a docs
+          claim).
+        - `docs/ci-snippet.md`'s exact CLI invocation (`--confidence 0.98 --min-effect-usd 0.0001
+          --min-effect-pct 5.0 --min-n 30`) run for real against fresh snapshots -- reproduced
+          all 3 documented exit codes live: `0` (current vs. itself, no regression), `1` (real
+          regression, same numbers as above), `3` (`--min-n 1000`, `INSUFFICIENT DATA` message
+          text matches the doc's template verbatim, modulo the n/mean values which differ because
+          the doc's own entry-5 capture used a different synthetic fixture).
+        - `docs/troubleshooting.md`'s all 5 entries re-triggered live from the fresh wheel
+          install: entry 1 (wrong google-adk version) reproduced in a SEPARATE scratch venv
+          (`C:\Users\gaura\tmp\s5-badver\.venv`) by force-installing `google-adk[eval]==1.0.0` --
+          confirmed the SAME earlier-failure gap the doc's own Phase 4 R7 re-verification note
+          documents (`ModuleNotFoundError: No module named 'deprecated'` from
+          `google/adk/tools/base_tool.py`, one frame before `adk_tracegauge/__init__.py` is even
+          reached), and confirmed the documented `ModuleNotFoundError: No module named
+          'google.adk.evaluation.metric_evaluator_registry'` text reproduces exactly once
+          `deprecated` is installed. Entries 2 (unknown model), 3 (missing threshold), and 4
+          (local model without `ADK_TRACEGAUGE_ASSUME_LOCAL`) all reproduced **byte-for-byte
+          identical** to the doc's captured text, run against the fresh wheel install. Entry 5
+          (small eval set, exit 3) reproduced with the identical message template and exit code 3
+          (mean/n values differ only because a different synthetic fixture was used than the
+          doc's own capture -- expected, not a discrepancy).
+        - README's inline Python snippets ("Also: a real PASS/FAIL cost metric inside `adk
+          eval`", the sub-agent `App`/`InMemoryRunner` example, the "Drive it yourself"
+          `convert_events_to_eval_invocations` example) are illustrative/incomplete by
+          construction (placeholder module names, an undefined `events` variable) -- not
+          standalone-runnable as pasted, and not claimed to be; their REAL, complete, runnable
+          form is `examples/01`/`02`, both independently re-run above.
+      **Verdict: everything S4 claimed to have re-captured is still accurate; nothing broke.**
+      No fixes were needed -- this item found zero discrepancies between documented and live
+      output, the first "fresh wheel" pass in this project's history to find nothing (Phase 4 R7
+      and its own R7.1 verifier each found one real bug; Phase 4 R7.1 itself found none -- this
+      is the second clean pass in a row).
+
+      **5.3 -- Independent functional-equivalence proof of R5's ported arithmetic (the most
+      rigorous check in this item).** R5 (Phase 4) proved byte-identical SOURCE against the
+      installed `tracegauge` dependency at port time; this item independently proves FUNCTIONAL
+      equivalence across a real range of inputs, against a REAL, LIVE install of the external
+      package -- not reused from R5's own diff. Installed `tracegauge==0.10.1` (the version R5's
+      port was taken from, confirmed live-current per 5.1's PyPI check) into its own separate
+      scratch venv (`C:\Users\gaura\tmp\s5-tracegauge\.venv`) -- it is no longer a dependency of
+      this repo, so this needed its own environment.
+
+      Read `tes/cost.py`'s and `tes/_digest.py`'s actual installed source directly (not assumed
+      unchanged from R5's capture): `compute_turn_cost`'s signature and full arithmetic body are
+      IDENTICAL to `_cost.py`'s ported version, confirmed by direct comparison this session, not
+      just trusted from R5's prior diff.
+
+      For EVERY model in the bundled price table (22 entries: 21 real Gemini/Claude/GPT models
+      including both long-context synthetic tier entries, plus `__local_zero_cost__`) x 5 token-
+      count scenarios -- a small call (300 in/150 out), a call with a meaningful cached-token
+      fraction (1M in/200k out/400k cache_read), zero output tokens (500k in/0 out), a nonzero
+      `cache_creation` count (300k in/100k out/50k cache_creation, exercising the write-multiplier
+      path even though it's always 0 in this table by design), and an all-zero call -- **110
+      cases total**, using each entry's EFFECTIVE (promo-resolved, as-of-2026-08-15) rate. The
+      SAME `TurnDigest`+`prices` input was fed to BOTH `adk_tracegauge._cost.compute_turn_cost`
+      (this repo's own venv) and the REAL `tes.cost.compute_turn_cost` (the separate tracegauge
+      scratch venv), bridging `tes._digest.TurnDigest`'s extra fields (`tool_names`,
+      `content_snippet`, `h2_duplicate` -- dropped in the port, see `_cost.py`'s module
+      docstring) with placeholder values, confirmed by direct source read to be unused by
+      `compute_turn_cost`'s arithmetic. Also ran one `compute_session_cost` multi-turn,
+      multi-model aggregation case (2 AI turns across 2 different models + 1 skipped non-AI turn)
+      through both implementations.
+
+      **RESULT: all 110 arithmetic cases matched EXACTLY, bit-for-bit (Python float equality, not
+      `pytest.approx`) -- zero divergence found, no fix needed.** The session-level aggregation
+      case also matched exactly (`total_usd=$0.7433` both sides, `ai_turn_count=2` both sides,
+      per-turn breakdowns identical). Full case-by-case table (case_id | adk-tracegauge result |
+      tracegauge result | match) captured in the session's own scratch output; every one of the
+      22 models x 5 scenarios shows `match=YES`, e.g. `claude-opus-5::cached_call` ->
+      `$8.200000` both sides, `gemini-3.1-pro-preview-long-context::cached_call` -> `$6.160000`
+      both sides, `__local_zero_cost__::*` -> `$0.000000` both sides (trivial but exercised for
+      completeness).
+
+      **What had no tracegauge-side comparison, and why (per this item's own instruction, stated
+      explicitly rather than silently skipped):** long-context TIERING RESOLUTION (which price-
+      table entry a raw `prompt_token_count` maps to at the 200,000-token boundary) and PROMO-
+      EXPIRY AUTO-SWITCHING (`effective_prices`) are both adk-tracegauge-only mechanisms with no
+      tracegauge equivalent (tracegauge has no context-length-tiering or promo/staleness concept
+      at all, confirmed Phase 5 S1/S2/S3) -- but BOTH resolve to a flat per-mtok rate BEFORE
+      `compute_turn_cost` ever runs, so the downstream ARITHMETIC on an already-resolved tiered/
+      promo-adjusted rate IS covered by the 110-case sweep (the long-context entries are just 2
+      more rows in the price table; the promo-active `gemini-3.6-flash`/`gemini-3.7-flash`
+      entries used their current effective rate). Only the RESOLUTION step itself has no
+      tracegauge equivalent -- checked directly, ADK-TRACEGAUGE-ONLY, via a dedicated resolution-
+      level test: at exactly 200,000 tokens, `gemini-2.5-pro`/`gemini-3.1-pro-preview` both
+      resolve to their own base entry; at 200,001 tokens, both resolve to their `-long-context`
+      entry -- confirmed both for the report and as a permanent test (below).
+
+      **Made permanent, extending `tests/test_cost_port_fidelity.py`** (checked first: the file's
+      9 pre-existing tests covered the ported arithmetic only via a single synthetic
+      `test-model` and hand-computed values -- no per-real-model, no cached-token-at-scale, no
+      tiering-boundary, and no actual live-tracegauge comparison; extended, not replaced). Added:
+      `_TRACEGAUGE_FIDELITY_CASES` (all 110 real captured `tracegauge==0.10.1` results, frozen as
+      literal data -- the file does NOT import `tes`/`tracegauge` at runtime, that dependency
+      stays fully removed per R5); `test_every_price_table_entry_matches_live_tracegauge_arithmetic`
+      (asserts `_cost.compute_turn_cost` reproduces every one of the 110 cases' 6 output fields
+      exactly); `test_fidelity_cases_cover_every_model_in_the_bundled_price_table` (a structural
+      guard: fails loudly if a future price-table addition isn't also re-verified against a live
+      tracegauge run and added here, rather than letting the fidelity claim silently go stale for
+      the new entry); `test_long_context_tiering_boundary_resolves_correctly_adk_tracegauge_only`
+      (the resolution-level boundary check, explicitly labeled as having no tracegauge
+      equivalent). Module docstring extended to record the full provenance (how the 110-case
+      table was generated, which 2 scenario classes have no cross-package comparison and why) so
+      a future reader doesn't need this PLAN.md entry to understand the file.
+
+      **Tests: 360 -> 363** (+3, all in `test_cost_port_fidelity.py`). Coverage unchanged at 99%
+      (`_cost.py`/`_pricing.py`/`_regression.py` all still 100%) -- the new tests exercise
+      already-100%-covered code paths, adding assertion density, not new coverage. All 4 Python
+      versions in 5.1 re-run AFTER this file was finalized (formatting/lint fix applied first) to
+      confirm 363 passing identically across all 4 -- the table above reflects the final,
+      post-5.3 state. `ruff check`/`ruff format --check`/`mypy src/` all clean (one real
+      ruff finding caught and fixed along the way: an unused `effective_prices` import left over
+      from an earlier draft of the fidelity-case builder -- removed, `ruff format` re-run clean).
+
+      Final full-suite run (main repo `.venv`, `uv sync --frozen` first): **363 passed, 99%
+      coverage, 87.22s.** `git status` clean after commit. Not pushed, not tagged, not published.
+      Zero paid API calls, zero `ANTHROPIC_API_KEY` -- all live-model-call surfaces in this item
+      used deterministic fake `BaseLlm` doubles (examples 01/02/04) or pre-built synthetic
+      snapshots (example 03/ci-snippet checks), per this project's standing zero-cost rule; the
+      only "external" installs this item touched were the `tracegauge` PyPI package itself (for
+      5.3's comparison) and `google-adk` (for 5.1/5.2), neither requiring any API key or paid
+      tier.
+
+      **This closes Phase 5.** All 5 work items (S1-S5) complete: S1 found and reported (not
+      fixed, per its own read-only mandate) a live pricing-correctness bug in the external
+      `tracegauge` package; S2/S3 produced a fully-reasoned, evidence-based recommendation
+      (absorb adk-tracegauge's more-mature pricing/statistics core UP INTO `tracegauge`, not the
+      reverse) with a concrete, sequenced migration plan (not executed, flagged for a future
+      phase); S4 fixed a real, measured product-credibility problem (the shipped gate's real FPR)
+      with a properly constrained (FPR floor AND power floor, not just one) retuning; S5
+      independently re-verified the entire build is still correct end-to-end -- 4 Python versions
+      x live google-adk 2.7.0, a fresh-wheel install re-confirming every documented command and
+      number, and a rigorous, permanent, cross-package proof that R5's in-housed arithmetic is
+      functionally identical to the real external package it replaced, with zero divergence
+      found.
