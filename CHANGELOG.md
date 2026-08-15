@@ -35,11 +35,18 @@ middle digit rather than treating every 0.x release as equally unstable).
   real, explicit zero-cost price-table entry, not a bypass.
 - `ADK_TRACEGAUGE_PRICE_TABLE` environment variable for registering a
   custom/override price table.
-- `tracegauge` console script with two subcommands: `tracegauge snapshot`
-  (persist a `UsageStore`'s priced invocations to JSON) and `tracegauge check`
+- `adk-tracegauge` console script with two subcommands: `adk-tracegauge snapshot`
+  (persist a `UsageStore`'s priced invocations to JSON) and `adk-tracegauge check`
   (percentile-bootstrap cost-regression gate against a baseline, real exit
   codes 0/1/3) — the CI differentiator this package is now positioned
-  around. See `docs/ci-snippet.md` for a full GitHub Actions workflow.
+  around. See `docs/ci-snippet.md` for a full GitHub Actions workflow. Named
+  `adk-tracegauge`, not the bare `tracegauge` originally used during
+  development (Phase 6 T3): the sibling `tracegauge` PyPI package
+  (`token-efficiency-scorer`) already installs a console script under that
+  exact name, and whichever package installed second would silently
+  clobber the other's executable. `0.2.0` (the last published release)
+  shipped no console script at all, so this is a new capability, not a
+  breaking rename of anything a real user ever depended on.
 - `adk_tracegauge._compat.convert_events_to_eval_invocations` — a
   version-guarded wrapper around ADK's private
   `EvaluationGenerator.convert_events_to_eval_invocations` internal, used
@@ -56,7 +63,7 @@ middle digit rather than treating every 0.x release as equally unstable).
   PyPI publish (previously: tags only, no Release notes).
 
 ### Changed
-- **Behavior-affecting: `tracegauge check`'s default `--confidence` tightened `0.95` → `0.98`
+- **Behavior-affecting: `adk-tracegauge check`'s default `--confidence` tightened `0.95` → `0.98`
   (one-sided alpha `0.025` → `0.01`), Phase 5 S4.** Measured, not guessed: the real
   shipped-configuration false-positive rate at `min_n=30` under the OLD default was
   ~4.4% (combined across two independent 500-trial runs, real `n_boot=10,000`,

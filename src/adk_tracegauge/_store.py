@@ -82,7 +82,7 @@ class UsageStore:
         ``_plugin.py``'s module docstring for why ``before_run_callback``
         alone never captures anything during those two paths). See
         snapshot.py's module docstring for what this is used for: it's one
-        of two possible pairing keys ``tracegauge check --mode paired`` can
+        of two possible pairing keys ``adk-tracegauge check --mode paired`` can
         use, alongside eval case id (Phase 4 R2, resolved separately via
         ``_compat.load_eval_case_ids_by_session_id`` against ADK's own
         persisted eval-history file -- see ``snapshot.py``'s

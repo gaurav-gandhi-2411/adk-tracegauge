@@ -1,4 +1,4 @@
-"""Tests for the `tracegauge` console entry point (_cli.py): argument
+"""Tests for the `adk-tracegauge` console entry point (_cli.py): argument
 parsing in isolation, and the two subcommands' end-to-end behavior
 (snapshot creation, check exit codes 0/1/3).
 """
@@ -190,7 +190,7 @@ def test_resolve_entrypoint_puts_cwd_on_syspath_for_the_bare_console_script(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Phase 3 B7: found via a genuinely fresh pip-installed wheel run from
-    an external directory outside this repo. The installed `tracegauge`
+    an external directory outside this repo. The installed `adk-tracegauge`
     console-script entry point does NOT get cwd on sys.path automatically
     -- unlike `python -m adk_tracegauge._cli` (Python's own `-m` behavior)
     and unlike this test suite's own pytest run (`pythonpath = [".", "src",

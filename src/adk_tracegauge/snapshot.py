@@ -3,7 +3,7 @@ distribution to disk, and read it back.
 
 Nothing else in this package persists a ``UsageStore``'s captured data --
 it's process-only, built up live during an eval/agent run. The Phase 2 W4
-CI regression gate (``tracegauge check``, see ``_cli.py``) needs to compare
+CI regression gate (``adk-tracegauge check``, see ``_cli.py``) needs to compare
 TWO such distributions (a saved baseline, and the current run) across
 separate process invocations (a baseline captured on a past CI run or
 committed to the repo; the current run's own fresh process) -- so this
@@ -42,7 +42,7 @@ path as ``CostEfficiencyEvaluator`` -- an invocation whose model doesn't
 resolve, or whose streamed chunks fail the monotonicity check, or that
 carries an unpriced token category, is never fabricated a cost; it is
 recorded under ``skipped`` with the reason instead, and excluded from the
-``records`` list ``tracegauge check`` runs its statistics over). This keeps
+``records`` list ``adk-tracegauge check`` runs its statistics over). This keeps
 a single unpriceable invocation from poisoning or silently dropping an
 entire snapshot -- the caller can see exactly what was skipped and why.
 
@@ -51,7 +51,7 @@ without it still read back fine, with ``session_id=None`` per record) is
 the ADK ``session.id`` the invocation ran under, captured by
 ``TraceGaugeUsagePlugin.before_run_callback``/``after_model_callback`` via
 ``UsageStore.record_session``. B4 shipped this as the sole pairing key for
-``tracegauge check --mode paired``'s higher-power paired bootstrap (see
+``adk-tracegauge check --mode paired``'s higher-power paired bootstrap (see
 ``_regression.py``'s module docstring for why pairing matters).
 
 **Phase 4 R2 correction -- this was found to be broken for the primary
@@ -91,22 +91,22 @@ written by `adk eval` after every run), whose ``EvalCaseResult`` entries
 carry BOTH ``eval_id`` and ``session_id`` per case -- so ``session_id``
 (now capturable live, see above) is the JOIN KEY that recovers the true,
 stable ``eval_id`` post-hoc. See ``_compat.load_eval_case_ids_by_session_id``
-and ``_cli.py``'s ``tracegauge snapshot --eval-history`` flag, the real
+and ``_cli.py``'s ``adk-tracegauge snapshot --eval-history`` flag, the real
 mechanism that builds and applies this join.
 
 ``eval_case_id`` (this field, additive, schema_version bumped 1->2 -- see
 ``SNAPSHOT_SCHEMA_VERSION``) is the resolved-if-available result: populated
 by ``build_snapshot``'s ``eval_case_ids_by_session`` parameter when the
-caller supplies the eval-history join map (i.e. `tracegauge snapshot
+caller supplies the eval-history join map (i.e. `adk-tracegauge snapshot
 --eval-history <path>` was used), else ``None``.
 
-**The fallback chain `tracegauge check --mode {auto,paired}` actually
+**The fallback chain `adk-tracegauge check --mode {auto,paired}` actually
 uses** (see ``resolve_pairing`` below, and ``_cli.py``'s printed output,
 which always names which key was actually used -- never silently chosen):
 
 1. ``eval_case_id`` -- if any records in BOTH snapshots carry one (i.e.
    ``--eval-history`` was used for both the baseline and current
-   `tracegauge snapshot` runs). Works for the DEFAULT `adk eval` CLI flow,
+   `adk-tracegauge snapshot` runs). Works for the DEFAULT `adk eval` CLI flow,
    with no opt-in needed in the .evalset.json file at all.
 2. ``session_id`` -- if eval_case_id has zero overlap but session_id does
    (a hand-rolled harness pinning ``runner.run_async(session_id=...)``
@@ -165,7 +165,7 @@ class SnapshotRecord:
     """The stable, authored ``EvalCase.eval_id`` this invocation belongs to,
     if resolved -- see module docstring's Phase 4 R2 section. Populated only
     when ``build_snapshot``/``write_snapshot`` was given
-    ``eval_case_ids_by_session`` (i.e. `tracegauge snapshot --eval-history`
+    ``eval_case_ids_by_session`` (i.e. `adk-tracegauge snapshot --eval-history`
     was used) AND this record's ``session_id`` was found in that map;
     ``None`` otherwise (including for every pre-Phase-4-R2 snapshot file,
     schema_version 1 or 2)."""
@@ -191,7 +191,7 @@ class Snapshot:
     skipped: list[SnapshotSkip] = field(default_factory=list)
 
     def costs(self) -> list[float]:
-        """The per-invocation cost_usd values -- the sample tracegauge check's
+        """The per-invocation cost_usd values -- the sample adk-tracegauge check's
         (two-sample mode) bootstrap gate runs its statistics over."""
         return [r.cost_usd for r in self.records]
 
@@ -203,7 +203,7 @@ class Snapshot:
         ``session_id is None`` (no session was ever captured for them -- see
         ``SnapshotRecord.session_id``'s docstring) are excluded entirely,
         since ``None`` is not a real, comparable pairing key. Used by
-        ``pair_costs_by_session_id`` for ``tracegauge check --mode paired``.
+        ``pair_costs_by_session_id`` for ``adk-tracegauge check --mode paired``.
         """
         totals: dict[str, float] = {}
         for record in self.records:
@@ -218,7 +218,7 @@ class Snapshot:
         ``costs_by_session_id`` (an eval case can span more than one
         invocation). Records with ``eval_case_id is None`` (not resolved --
         see ``SnapshotRecord.eval_case_id``'s docstring) are excluded
-        entirely. Used by ``resolve_pairing`` for ``tracegauge check --mode
+        entirely. Used by ``resolve_pairing`` for ``adk-tracegauge check --mode
         paired``'s PRIMARY pairing key as of Phase 4 R2.
         """
         totals: dict[str, float] = {}
@@ -329,7 +329,7 @@ def write_snapshot(
 ) -> Snapshot:
     """Builds a Snapshot from ``store`` and writes it to ``output_path`` as JSON.
 
-    Returns the built Snapshot as well, so a caller (e.g. the ``tracegauge
+    Returns the built Snapshot as well, so a caller (e.g. the ``adk-tracegauge
     snapshot`` CLI subcommand) can report record/skip counts without
     re-reading the file it just wrote. ``eval_case_ids_by_session`` is
     forwarded to ``build_snapshot`` unchanged -- see its docstring.
@@ -372,7 +372,7 @@ def pair_costs_by_session_id(
     baseline: Snapshot, current: Snapshot
 ) -> tuple[list[float], list[float], list[str]]:
     """Builds the ALIGNED (baseline_costs, current_costs) lists Phase 3 B4's
-    ``tracegauge check --mode paired`` needs, by matching each snapshot's
+    ``adk-tracegauge check --mode paired`` needs, by matching each snapshot's
     ``costs_by_session_id()`` on the session_ids present in BOTH -- session
     ids present in only one snapshot are silently excluded (a case that ran
     in one snapshot but not the other has nothing to pair against; this is
@@ -413,7 +413,7 @@ def resolve_pairing(
     baseline: Snapshot, current: Snapshot
 ) -> tuple[list[float], list[float], list[str], PairingKey]:
     """Implements Phase 4 R2's fallback chain -- the SINGLE place that
-    decides which pairing key ``tracegauge check --mode {auto,paired}``
+    decides which pairing key ``adk-tracegauge check --mode {auto,paired}``
     actually uses, so the decision is made once and always reported (never
     silently chosen -- see ``_cli.py``, which prints the returned
     ``PairingKey`` on every paired-mode run).

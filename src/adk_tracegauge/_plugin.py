@@ -94,7 +94,7 @@ class TraceGaugeUsagePlugin(BasePlugin):
         _ACTIVE_INVOCATIONS.set((*stack, invocation_context.invocation_id))
         # Phase 3 B4: also record which ADK session.id this invocation ran
         # under -- see UsageStore.record_session's docstring for why this
-        # (not invocation_id) is the pairing key `tracegauge check --mode
+        # (not invocation_id) is the pairing key `adk-tracegauge check --mode
         # paired` needs. A hand-rolled harness that calls
         # `runner.run_async(session_id=..., ...)` with a caller-chosen,
         # per-eval-case-stable id (e.g. the eval case's own id) makes this

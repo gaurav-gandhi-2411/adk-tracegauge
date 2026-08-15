@@ -2,8 +2,8 @@
 
 WHAT THIS DOES
     Exercises the exact two-command pattern `docs/ci-snippet.md`'s GitHub
-    Actions workflow runs: `tracegauge snapshot` (captures a UsageStore's
-    priced invocations to a JSON file) followed by `tracegauge check`
+    Actions workflow runs: `adk-tracegauge snapshot` (captures a UsageStore's
+    priced invocations to a JSON file) followed by `adk-tracegauge check`
     (bootstrap-CI-tests one snapshot against another, real exit codes
     0/1/3 -- see `_regression.py`'s module docstring for the full
     methodology).
@@ -16,7 +16,7 @@ WHAT THIS DOES
     regression, not a hypothetical one). Deterministic seeds throughout
     (rule 40) -- the same two numbers below reproduce exactly on every run.
 
-    Runs BOTH real `tracegauge` CLI subcommands as actual subprocesses
+    Runs BOTH real `adk-tracegauge` CLI subcommands as actual subprocesses
     (not calling the Python functions directly) -- this is exactly what a
     CI step does, and this script's output is the real, unedited CLI text.
 
@@ -24,9 +24,9 @@ HOW TO RUN
     uv run python examples/03_ci_regression_gate.py
 
     To see the two subcommands run manually, exactly as CI would:
-        uv run tracegauge snapshot --entrypoint "03_ci_regression_gate:build_baseline_store" --output baseline.json
-        uv run tracegauge snapshot --entrypoint "03_ci_regression_gate:build_current_store" --output current.json
-        uv run tracegauge check --baseline baseline.json --current current.json
+        uv run adk-tracegauge snapshot --entrypoint "03_ci_regression_gate:build_baseline_store" --output baseline.json
+        uv run adk-tracegauge snapshot --entrypoint "03_ci_regression_gate:build_current_store" --output current.json
+        uv run adk-tracegauge check --baseline baseline.json --current current.json
     (run from inside examples/, so `03_ci_regression_gate` is importable --
     or add examples/ to PYTHONPATH.)
 
@@ -35,12 +35,12 @@ EXPECTED OUTPUT (real numbers -- reproduce exactly given the seeds above;
     0.95) -- the mean/effect numbers are unchanged (same generator/seeds),
     but the CI bounds and achieved-power figure widen slightly at the new,
     tighter confidence level, as expected)
-    tracegauge snapshot: wrote 40 record(s) to <tmp>/baseline.json
-    tracegauge snapshot: wrote 40 record(s) to <tmp>/current.json
-    tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
+    adk-tracegauge snapshot: wrote 40 record(s) to <tmp>/baseline.json
+    adk-tracegauge snapshot: wrote 40 record(s) to <tmp>/current.json
+    adk-tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
     overlapping match(es) < --min-n=30, so falling back from paired -- see snapshot.py's docstring
     for how to enable paired comparison)
-    tracegauge check [method=two_sample]: n_baseline=40 n_current=40 (min_n=30)
+    adk-tracegauge check [method=two_sample]: n_baseline=40 n_current=40 (min_n=30)
       mean_baseline=$0.008583  mean_current=$0.009998
       achieved power: minimum reliably-detectable effect at 80% power, given this run's observed
       variance/n, is ~$0.000536 (+6.25% of mean baseline) [normal approximation to the bootstrap CI
@@ -55,7 +55,7 @@ EXPECTED OUTPUT (real numbers -- reproduce exactly given the seeds above;
       of no regression at your configured floor -- consider a larger eval set, a lower-variance
       cost metric, or an explicitly higher floor.
       REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
-    tracegauge check exit code: 1  (would fail the build in CI -- see docs/ci-snippet.md)
+    adk-tracegauge check exit code: 1  (would fail the build in CI -- see docs/ci-snippet.md)
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def _build_store(seed: int, mean_output_tokens: float) -> UsageStore:
     """40 synthetic invocations, deterministic given `seed` -- see module
     docstring. Real CapturedCall records run through the exact same
     build_session_digest -> price_digest pricing path as a real eval run
-    (via `tracegauge snapshot`), not raw cost floats fabricated directly.
+    (via `adk-tracegauge snapshot`), not raw cost floats fabricated directly.
     """
     store = UsageStore()
     rng = random.Random(seed)
@@ -93,13 +93,13 @@ def _build_store(seed: int, mean_output_tokens: float) -> UsageStore:
 
 
 def build_baseline_store() -> UsageStore:
-    """The `--entrypoint` this file's `tracegauge snapshot` call names for
+    """The `--entrypoint` this file's `adk-tracegauge snapshot` call names for
     the baseline run."""
     return _build_store(seed=1234, mean_output_tokens=20_000)
 
 
 def build_current_store() -> UsageStore:
-    """The `--entrypoint` this file's `tracegauge snapshot` call names for
+    """The `--entrypoint` this file's `adk-tracegauge snapshot` call names for
     the current run -- 20% higher mean output tokens than baseline, a real
     injected regression."""
     return _build_store(seed=42, mean_output_tokens=20_000 * 1.20)
@@ -144,7 +144,7 @@ def main() -> None:
             ],
             cwd=examples_dir,
         )
-        print(f"tracegauge check exit code: {result.returncode}")
+        print(f"adk-tracegauge check exit code: {result.returncode}")
 
 
 if __name__ == "__main__":

@@ -239,7 +239,7 @@ def _snapshots_from_case_correlated_pair(
     baseline_costs: list[float], current_costs: list[float], *, key: str
 ) -> tuple[Snapshot, Snapshot]:
     """Builds real Snapshot objects with one record per synthetic eval case,
-    keyed by ``eval_case_id`` (key="eval_case_id", simulating a `tracegauge
+    keyed by ``eval_case_id`` (key="eval_case_id", simulating a `adk-tracegauge
     snapshot --eval-history`-resolved pair) or by ``session_id``
     (key="session_id", simulating a hand-rolled harness with NO
     --eval-history join -- B4's original mechanism, unchanged). Case ids are
@@ -279,8 +279,8 @@ def test_resolve_pairing_through_eval_case_id_key_reproduces_the_headline_4_3_re
     -- same n=25, same case-correlated +10% generator, same deterministic
     seeding -- but every trial's pairing now goes through a real Snapshot
     pair keyed on eval_case_id and resolve_pairing's actual key-selection
-    logic, exactly the path `tracegauge check --mode paired` runs when
-    `tracegauge snapshot --eval-history` was used for both the baseline and
+    logic, exactly the path `adk-tracegauge check --mode paired` runs when
+    `adk-tracegauge snapshot --eval-history` was used for both the baseline and
     current runs (the fix that makes paired mode reachable for the default
     `adk eval` CLI flow -- see snapshot.py's module docstring).
 

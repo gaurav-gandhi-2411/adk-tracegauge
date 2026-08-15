@@ -27,7 +27,7 @@ wire this into CI: `adk eval`'s own PROCESS EXIT CODE does not reflect
 PASSED/FAILED -- confirmed live, it is 0 in both runs below, regardless of
 the printed "Overall Eval Status". The real verdict lives in `adk eval`'s
 stdout table and the persisted `eval_history/*.evalset_result.json`, not in
-$?. This is exactly why `tracegauge check` (examples/03) exists as a
+$?. This is exactly why `adk-tracegauge check` (examples/03) exists as a
 separate step with its own real, distinguishable exit codes (0/1/3) --
 don't gate a CI job on `adk eval`'s exit code alone.
 

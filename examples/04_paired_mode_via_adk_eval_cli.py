@@ -1,5 +1,5 @@
 """examples/04_paired_mode_via_adk_eval_cli.py — Phase 4 R2's real end-to-end
-proof: `tracegauge check --mode paired` against the ACTUAL `adk eval` CLI
+proof: `adk-tracegauge check --mode paired` against the ACTUAL `adk eval` CLI
 command, not a hand-rolled Runner harness.
 
 WHY THIS SCRIPT EXISTS
@@ -57,9 +57,9 @@ WHAT THIS SCRIPT ACTUALLY DOES (all real, nothing simulated)
        prints, per case, whether `session_id` matches or differs between the
        two runs (empirical proof of 2.1/2.3's finding) alongside `eval_id`
        (stable both times).
-    5. Snapshots each run via `tracegauge snapshot --eval-history <path>`
+    5. Snapshots each run via `adk-tracegauge snapshot --eval-history <path>`
        (the real CLI subcommand, in-process via `_cli.main()`), then runs
-       `tracegauge check --mode paired` (also the real CLI) against the two
+       `adk-tracegauge check --mode paired` (also the real CLI) against the two
        snapshots and prints the ACTUAL, UNEDITED output.
 
 HOW TO RUN
@@ -321,7 +321,7 @@ def main() -> None:
         )
 
         print(
-            "=== Real `tracegauge check --mode paired` output (against the two ADK-eval-CLI-produced snapshots) ==="
+            "=== Real `adk-tracegauge check --mode paired` output (against the two ADK-eval-CLI-produced snapshots) ==="
         )
         exit_code = tracegauge_main(
             [
@@ -334,7 +334,7 @@ def main() -> None:
                 "paired",
             ]
         )
-        print(f"\ntracegauge check exit code: {exit_code}")
+        print(f"\nadk-tracegauge check exit code: {exit_code}")
 
 
 if __name__ == "__main__":

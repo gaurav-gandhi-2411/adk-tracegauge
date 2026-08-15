@@ -199,7 +199,7 @@ async def test_after_run_callback_restores_stack_for_calls_following_a_nested_ch
 @pytest.mark.asyncio
 async def test_before_run_callback_records_the_invocation_context_session_id(mocker):
     # Phase 3 B4: TraceGaugeUsagePlugin.before_run_callback also records
-    # invocation_context.session.id, the pairing key `tracegauge check
+    # invocation_context.session.id, the pairing key `adk-tracegauge check
     # --mode paired` uses -- see UsageStore.record_session's docstring.
     store = UsageStore()
     plugin = TraceGaugeUsagePlugin(store=store)

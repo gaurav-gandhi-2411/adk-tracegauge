@@ -1,5 +1,5 @@
 """scripts/measure_regression_power.py — Phase 3 B4: statistical POWER of
-`tracegauge check`'s two-sample regression gate (`_regression.evaluate_regression`).
+`adk-tracegauge check`'s two-sample regression gate (`_regression.evaluate_regression`).
 
 Phase 2 W4 measured the gate's false-positive rate (~2%) at a single n=40 --
 it never measured POWER, the probability of actually detecting a REAL cost

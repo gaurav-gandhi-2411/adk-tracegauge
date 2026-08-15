@@ -262,9 +262,9 @@ running your eval. If it's actually routed through Ollama Cloud, this
 refusal is correct behavior — register its real rate via
 `ADK_TRACEGAUGE_PRICE_TABLE` instead of asserting it local.
 
-## 5. `tracegauge check` refuses to run (`exit code 3`) on a small eval set
+## 5. `adk-tracegauge check` refuses to run (`exit code 3`) on a small eval set
 
-Not a bug — `tracegauge check` (this package's hero CI-gating path, see
+Not a bug — `adk-tracegauge check` (this package's hero CI-gating path, see
 README "Quickstart") refuses to emit a verdict when either snapshot has
 fewer than `--min-n` (default 30) priced invocations, because a bootstrap
 CI is not statistically meaningful below that size (see README "Known
@@ -272,13 +272,13 @@ limitations" and `adk_tracegauge._regression`'s module docstring for the
 measured detection-power reasoning behind the default).
 
 **Reproduction** (live this session, two synthetic 10-invocation snapshots,
-`tracegauge check` with no overrides):
+`adk-tracegauge check` with no overrides):
 
 ```
-tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
+adk-tracegauge check: mode=two-sample (--mode auto: best-available pairing key (none) only has 0
 overlapping match(es) < --min-n=30, so falling back from paired -- see snapshot.py's docstring for
 how to enable paired comparison)
-tracegauge check [method=two_sample]: n_baseline=10 n_current=10 (min_n=30)
+adk-tracegauge check [method=two_sample]: n_baseline=10 n_current=10 (min_n=30)
   mean_baseline=$0.008408  mean_current=$0.008385
   achieved power: minimum reliably-detectable effect at 80% power, given this run's observed
   variance/n, is ~$0.001049 (+12.48% of mean baseline) [normal approximation to the bootstrap CI --

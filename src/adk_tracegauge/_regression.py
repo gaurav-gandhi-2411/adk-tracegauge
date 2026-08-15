@@ -1,6 +1,6 @@
 """adk_tracegauge/_regression.py — Bootstrap-CI cost regression detection.
 
-Core statistics for ``tracegauge check`` (see ``_cli.py``). Given two
+Core statistics for ``adk-tracegauge check`` (see ``_cli.py``). Given two
 per-invocation cost distributions (a saved baseline, a current run), decides
 whether the current run's mean cost has REGRESSED (gotten significantly and
 meaningfully more expensive) relative to the baseline.
@@ -662,7 +662,7 @@ class RegressionCheckResult:
         statistical-honesty requirement, not only on a failing verdict.
         """
         lines = [
-            f"tracegauge check [method={self.method}]: n_baseline={self.n_baseline} "
+            f"adk-tracegauge check [method={self.method}]: n_baseline={self.n_baseline} "
             f"n_current={self.n_current} (min_n={self.min_n})",
             f"  mean_baseline=${self.mean_baseline:.6f}  mean_current=${self.mean_current:.6f}",
             self._power_line(),

@@ -850,7 +850,7 @@ def test_false_positive_rate_at_min_n_with_real_default_config():
     deliberately bypasses the practical-significance floor to isolate pure
     statistical detection, matching B4's own grid methodology), this uses
     the REAL SHIPPED DEFAULT configuration exactly as a user running
-    ``tracegauge check`` with no overrides would get it: real
+    ``adk-tracegauge check`` with no overrides would get it: real
     ``min_n=30`` (``MIN_N_DEFAULT``), real ``confidence=0.98``
     (``DEFAULT_CONFIDENCE`` -- Phase 5 S4 CHANGED this from 0.95, see that
     constant's own docstring for the full alpha x n x effect grid and

@@ -99,7 +99,7 @@ jobs:
           mkdir -p "${{ runner.temp }}/wheel-smoke-workdir"
           cp examples/03_ci_regression_gate.py "${{ runner.temp }}/wheel-smoke-workdir/"
 
-      - name: Hero path -- tracegauge snapshot + tracegauge check (literal installed console script)
+      - name: Hero path -- adk-tracegauge snapshot + adk-tracegauge check (literal installed console script)
         working-directory: ${{ runner.temp }}/wheel-smoke-workdir
         run: |
           cat > my_eval_suite.py <<'PYEOF'
@@ -130,7 +130,7 @@ jobs:
               DEFAULT_USAGE_STORE.clear()
               _populate(seed=42, mean_output_tokens=20_000 * 1.20)
           PYEOF
-          TG="${{ runner.temp }}/wheel-smoke-venv/bin/tracegauge"
+          TG="${{ runner.temp }}/wheel-smoke-venv/bin/adk-tracegauge"
           "$TG" snapshot --entrypoint my_eval_suite:run_baseline --output baseline.json
           "$TG" snapshot --entrypoint my_eval_suite:run_current --output current.json
           # A real, deliberately-regressed pair (see examples/03's own docstring) --
@@ -142,10 +142,10 @@ jobs:
           code=$?
           set -e
           if [ "$code" -ne 1 ]; then
-            echo "expected exit code 1 (regression detected) from tracegauge check, got $code"
+            echo "expected exit code 1 (regression detected) from adk-tracegauge check, got $code"
             exit 1
           fi
-          echo "hero path OK: tracegauge check correctly exited 1 on the injected regression"
+          echo "hero path OK: adk-tracegauge check correctly exited 1 on the injected regression"
 
       - name: One example end to end (examples/03_ci_regression_gate.py, as a real user would run it)
         working-directory: ${{ runner.temp }}/wheel-smoke-workdir

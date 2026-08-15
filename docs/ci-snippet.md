@@ -1,4 +1,4 @@
-# CI snippet: `tracegauge check` as a GitHub Actions cost-regression gate
+# CI snippet: `adk-tracegauge check` as a GitHub Actions cost-regression gate
 
 Produced by Phase 2 W4 (see `PLAN.md`). This is the canonical, tested
 invocation shape for `adk-tracegauge`'s CI regression gate -- W5's README
@@ -6,7 +6,7 @@ rewrite should embed this verbatim, not re-derive it.
 
 Requires `TraceGaugeUsagePlugin` to be wired into the agent/`App` your eval
 entrypoint runs against (see README's "What this actually is") -- otherwise
-the snapshot will be empty and `tracegauge check` will report
+the snapshot will be empty and `adk-tracegauge check` will report
 `insufficient_data`, not a false "pass".
 
 Your own `my_eval_suite.run_eval_and_return_store` entrypoint is a
@@ -15,7 +15,7 @@ zero-argument callable you write: it drives your agent's real eval run
 harness) and either returns a `UsageStore` directly, or simply lets the
 calls land in `adk_tracegauge.DEFAULT_USAGE_STORE` as a side effect (the
 common case, since `TraceGaugeUsagePlugin` defaults to that store) --
-`tracegauge snapshot` accepts either.
+`adk-tracegauge snapshot` accepts either.
 
 ```yaml
 # .github/workflows/cost-regression-gate.yml
@@ -48,7 +48,7 @@ jobs:
 
       - name: Snapshot current run's cost distribution
         run: >
-          uv run tracegauge snapshot
+          uv run adk-tracegauge snapshot
           --entrypoint my_eval_suite:run_eval_and_return_store
           --output current.json
 
@@ -58,7 +58,7 @@ jobs:
       # gate future runs against.
       - name: Compare against baseline (fails the build on regression)
         run: >
-          uv run tracegauge check
+          uv run adk-tracegauge check
           --baseline eval_baselines/cost_baseline.json
           --current current.json
           --confidence 0.98
@@ -75,7 +75,7 @@ jobs:
 
 ## Exit codes
 
-`tracegauge check` distinguishes three outcomes by exit code -- a CI step
+`adk-tracegauge check` distinguishes three outcomes by exit code -- a CI step
 should treat all non-zero as build-failing, but a human reading job logs
 should not conflate "regressed" with "couldn't tell":
 
@@ -91,7 +91,7 @@ keep it distinguishable.)
 
 ## Statistical methodology, in one paragraph
 
-`tracegauge check` runs a percentile bootstrap (10,000 resamples by
+`adk-tracegauge check` runs a percentile bootstrap (10,000 resamples by
 default, seeded for reproducibility) on the difference in per-invocation
 mean cost between the baseline and current snapshots -- never a naive
 point-estimate delta. A regression requires BOTH: (1) the bootstrap CI's

@@ -1,9 +1,9 @@
-"""adk_tracegauge/_cli.py — `tracegauge` console entry point.
+"""adk_tracegauge/_cli.py — `adk-tracegauge` console entry point.
 
 Two subcommands:
 
-    tracegauge snapshot --entrypoint <module:callable> --output <path>
-    tracegauge check --baseline <path> --current <path> [options]
+    adk-tracegauge snapshot --entrypoint <module:callable> --output <path>
+    adk-tracegauge check --baseline <path> --current <path> [options]
 
 **Why `snapshot` takes an `--entrypoint`, not a bare `--store` path.** A
 ``UsageStore`` only exists as live in-process state, built up by
@@ -13,7 +13,7 @@ zero-argument callable (``module.path:function_name``, importable on
 ``sys.path``/``PYTHONPATH``) that this command imports and calls -- your
 current working directory is inserted onto ``sys.path`` first if it isn't
 already there (Phase 3 B7: found and fixed because the installed
-``tracegauge`` console script, unlike ``python -m adk_tracegauge._cli``,
+``adk-tracegauge`` console script, unlike ``python -m adk_tracegauge._cli``,
 does not get cwd on ``sys.path`` for free), so a module sitting next to
 where you run the command resolves without any extra ``PYTHONPATH`` setup;
 that callable is expected to run your eval (e.g. call
@@ -31,7 +31,7 @@ with any snapshot. `paired` (`evaluate_regression_paired`) is substantially
 more statistically powerful at the same n, but requires a real pairing key
 matched between both snapshots' records -- resolved by `snapshot.py`'s
 `resolve_pairing` via a fallback chain: (1) `eval_case_id`, populated when
-`tracegauge snapshot --eval-history <path>` was used for both runs (works
+`adk-tracegauge snapshot --eval-history <path>` was used for both runs (works
 with the DEFAULT `adk eval` CLI flow, no .evalset.json changes needed); (2)
 `session_id`, when a hand-rolled harness pinned `runner.run_async(session_id=
 <stable-per-eval-case-id>, ...)` in both runs (B4's original mechanism); (3)
@@ -102,17 +102,17 @@ def _resolve_entrypoint(spec: str) -> UsageStore:
         )
     module_name, _, func_name = spec.partition(":")
     # `python -m adk_tracegauge._cli` gets the caller's cwd on sys.path[0]
-    # automatically (Python's own `-m` behavior); the installed `tracegauge`
+    # automatically (Python's own `-m` behavior); the installed `adk-tracegauge`
     # console-script entry point does NOT -- its sys.path[0] is the venv's
     # Scripts/ dir instead. Without this, the exact README quickstart
-    # command (`tracegauge snapshot --entrypoint my_eval_suite:...` run from
+    # command (`adk-tracegauge snapshot --entrypoint my_eval_suite:...` run from
     # a plain project directory) fails with "could not import module" even
     # though the file is right there in cwd -- a real gap found during
     # Phase 3 B7's fresh-pip-install verification (running from a source
     # checkout or via `uv run` already has cwd on sys.path one way or
     # another, which is why this was never observed before that test).
     # Inserted explicitly so --entrypoint resolution behaves identically
-    # regardless of how `tracegauge` was invoked.
+    # regardless of how `adk-tracegauge` was invoked.
     cwd = os.getcwd()
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
@@ -150,7 +150,7 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
             f"via --eval-history {args.eval_history}"
         )
     print(
-        f"tracegauge snapshot: wrote {len(snapshot.records)} record(s) to "
+        f"adk-tracegauge snapshot: wrote {len(snapshot.records)} record(s) to "
         f"{args.output}{skip_note}{resolved_note}"
     )
     return 0
@@ -207,15 +207,15 @@ def _cmd_check(args: argparse.Namespace) -> int:
             raise SystemExit(
                 f"--mode paired requires >= {args.min_n} overlapping pairing keys between "
                 f"--baseline and --current, but only {len(matched_keys)} matched ({key_note}). "
-                "Pass --eval-history <path-to-adk-eval's-.evalset_result.json> to `tracegauge "
+                "Pass --eval-history <path-to-adk-eval's-.evalset_result.json> to `adk-tracegauge "
                 "snapshot` for both runs (resolves the stable, authored eval case id -- works "
                 "with the default `adk eval` CLI flow), or pin a stable session_id via "
                 "runner.run_async(session_id=...) in a hand-rolled harness, or pass "
                 "--mode two-sample."
             )
         print(
-            f"tracegauge check: mode=paired (key={resolved_key}, {len(matched_keys)} overlapping "
-            f"{resolved_key}s matched between baseline and current)"
+            f"adk-tracegauge check: mode=paired (key={resolved_key}, {len(matched_keys)} "
+            f"overlapping {resolved_key}s matched between baseline and current)"
         )
         result = evaluate_regression_paired(
             paired_baseline,
@@ -229,7 +229,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
         )
     else:
         print(
-            "tracegauge check: mode=two-sample"
+            "adk-tracegauge check: mode=two-sample"
             + (
                 f" (--mode auto: best-available pairing key ({resolved_key}) only has "
                 f"{len(matched_keys)} overlapping match(es) < --min-n={args.min_n}, so falling "
@@ -259,11 +259,11 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Builds the `tracegauge` argument parser -- factored out from `main`
+    """Builds the `adk-tracegauge` argument parser -- factored out from `main`
     so tests can exercise argument parsing in isolation, without invoking
     a subcommand's actual side effects."""
     parser = argparse.ArgumentParser(
-        prog="tracegauge",
+        prog="adk-tracegauge",
         description="adk-tracegauge's CI cost-regression gate for ADK evals.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -288,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Phase 4 R2: path to an `adk eval`-written .evalset_result.json file "
             "(<agents_dir>/<app_name>/.adk/eval_history/*.evalset_result.json) -- when given, "
             "resolves each captured invocation's stable, authored eval_case_id by joining on "
-            "session_id, so `tracegauge check --mode paired` can pair by eval case id even "
+            "session_id, so `adk-tracegauge check --mode paired` can pair by eval case id even "
             "against the default `adk eval` CLI flow (no --eval-history means eval_case_id is "
             "never populated and paired mode falls back to session_id, then two-sample)."
         ),
@@ -359,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(evaluate_regression). 'paired': a per-eval-case paired bootstrap "
             "(evaluate_regression_paired), substantially more powerful at the same n but "
             "requires a matching pairing key on both snapshots -- eval_case_id (preferred, via "
-            "`tracegauge snapshot --eval-history`) or session_id (see snapshot.py docstring) -- "
+            "`adk-tracegauge snapshot --eval-history`) or session_id (see snapshot.py docstring) -- "
             "fails with an actionable error if requested explicitly and too few keys overlap. "
             "'auto' (default): uses paired when enough keys overlap (>= --min-n) on the "
             "best-available key, else falls back to two-sample -- the resolved mode AND key are "
@@ -372,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`tracegauge` console entry point (see [project.scripts] in pyproject.toml)."""
+    """`adk-tracegauge` console entry point (see [project.scripts] in pyproject.toml)."""
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
