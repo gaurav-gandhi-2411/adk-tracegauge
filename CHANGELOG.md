@@ -9,19 +9,26 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
-Phase 2 work (`feat/cost-regression-gate` branch) — not yet published to
-PyPI, not yet tagged. `pyproject.toml`'s version remains `0.2.0` until this
-ships. Recorded here now so the next release's notes don't have to be
-reconstructed after the fact.
+Nothing yet — Phase 6 (`feat/cost-regression-gate` branch) closed out with
+the `0.3.0` release below.
 
-**Proposed next version: 0.3.0** (not 1.0.0 — this package's public API is
-still young and marked Alpha; not a patch release either — see "Changed"
-below for the breaking change that rules that out). Per this project's own
-0.x convention (established at the 0.1.0 → 0.2.0 "honest repositioning"
-bump): the middle number is where a breaking API change lands while still
-pre-1.0, not the first (SemVer's major-version-zero clause: "anything MAY
-change at any time," but this project still signals intent through the
-middle digit rather than treating every 0.x release as equally unstable).
+## [0.3.0] — 2026-08-15
+
+Phases 2–6 combined (`feat/cost-regression-gate` branch, 54 commits over
+`main`) — not yet published to PyPI, not yet tagged, not yet merged.
+`pyproject.toml`'s version bumped `0.2.0` → `0.3.0` in this same release.
+This entry consolidates the full branch, not just whatever happened to
+still be sitting under `[Unreleased]` at the end — cross-checked against
+`git log main..HEAD` and all five phase reports
+(`docs/audit/PHASE{1,2,3,4,5}_REPORT.md`) so nothing significant is missing.
+
+Per this project's own 0.x convention (established at the 0.1.0 → 0.2.0
+"honest repositioning" bump): the middle number is where a breaking API
+change lands while still pre-1.0, not the first (SemVer's major-version-zero
+clause: "anything MAY change at any time," but this project still signals
+intent through the middle digit rather than treating every 0.x release as
+equally unstable). Not `1.0.0` — the public API is still young and marked
+Alpha.
 
 ### Added
 - `CostThresholdCriterion(BaseCriterion)` — a real, required max-USD-per-invocation
@@ -32,9 +39,64 @@ middle digit rather than treating every 0.x release as equally unstable).
   `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.1`, `gpt-5`), reached through
   ADK's `LiteLlm` integration.
 - Local/self-hosted model support (Ollama, vLLM prefixes) — resolves to a
-  real, explicit zero-cost price-table entry, not a bypass.
+  real, explicit zero-cost price-table entry, not a bypass, but **only
+  after an explicit `ADK_TRACEGAUGE_ASSUME_LOCAL` opt-in** (Phase 3 B1):
+  Ollama Cloud, a real paid product, shares the identical `ollama_chat/`/
+  `ollama/` LiteLlm prefix with local Ollama, and nothing this package
+  captures can tell the two apart, so a recognized prefix alone is no
+  longer sufficient — without the opt-in, a local-prefixed call reports
+  `NOT_EVALUATED` with an actionable message, never a silently-possibly-wrong
+  `$0.00`.
 - `ADK_TRACEGAUGE_PRICE_TABLE` environment variable for registering a
   custom/override price table.
+- Promotional/introductory pricing now expires automatically, not silently
+  (Phase 3 B2): price-table entries can carry `promo_until` (ISO date) and
+  a published `standard_rate`; the resolver switches to `standard_rate` on
+  its own once `promo_until` passes, and the per-call rationale states
+  plainly whether a promo is still active (with its expiry date) or has
+  already ended. If a promotional entry's post-promo rate isn't published
+  yet, this package now warns loudly starting 14 days before expiry rather
+  than silently freezing at a rate that may no longer apply.
+- `.github/workflows/price-freshness.yml` — a weekly, schedule-triggered CI
+  job (not just push-triggered) that fails if any price entry is stale
+  (`is_stale`, `STALE_THRESHOLD_DAYS`) or has a promotional rate expiring
+  within 14 days / already expired (Phase 2 W1, extended Phase 3 B2.4).
+- `adk-tracegauge check --mode {auto,two-sample,paired}` (Phase 3 B4,
+  re-keyed Phase 4 R2): a paired-comparison bootstrap, keyed on
+  `EvalCase.eval_id` (recovered post-hoc via `adk-tracegauge snapshot
+  --eval-history <path>`, joining ADK's own persisted
+  `*.evalset_result.json`) with a fallback chain to `session_id` then
+  plain `two-sample` — measured dramatically more sensitive than
+  two-sample at the same `n` whenever real per-case cost variance exists
+  (0/200 vs. 200/200 detection on a case-correlated +10%-effect fixture at
+  `n=25`). `auto` (the default) picks paired automatically whenever enough
+  pairing keys overlap; the resolved mode and key are always printed, never
+  silently chosen. See README "Known limitations" for the full measured
+  power comparison and honest caveats (paired's own FPR at this `n`, 5.5%,
+  is flagged as worth a larger confirmatory run).
+- Real-time "achieved statistical power" reporting on every
+  `adk-tracegauge check` run (Phase 4 R4): the minimum effect size the
+  bootstrap test could reliably (80% power) detect given THIS run's own
+  observed variance and `n` — printed unconditionally, pass or fail or
+  insufficient-data — plus an explicit `WARNING` whenever the configured
+  `--min-effect-usd`/`--min-effect-pct` floor is smaller than that
+  achievable floor. A normal-approximation to the (closed-form-free)
+  bootstrap CI power, validated against a real measured power grid to
+  within 2–8 percentage points; see `_regression.py`'s "Achieved
+  statistical power" section for the full derivation and accuracy table.
+- A real runtime `warnings.warn` (Phase 3 B3) firing when this metric is
+  evaluated under a real `AgentEvaluator.evaluate()` call — names the
+  known ADK-side polarity bug (see "Known limitations" below) and the
+  installed `google-adk` version, so the caveat isn't documentation-only.
+  Known gap, documented: the very first `AgentEvaluator.evaluate()` call in
+  a process can miss the warning if `adk_tracegauge` is imported for the
+  first time as a side effect of that same call.
+- `.github/workflows/ci.yml` gained a wheel-only install smoke-test job
+  (Phase 4 R7): builds the real wheel, installs it into a fresh venv with
+  no repo on `sys.path`, and runs the literal installed `adk-tracegauge`
+  console script from a directory outside the repo — catches the class of
+  bug ("works in my editable dev checkout, breaks for a real user") that a
+  test suite run against the repo checkout alone cannot.
 - `adk-tracegauge` console script with two subcommands: `adk-tracegauge snapshot`
   (persist a `UsageStore`'s priced invocations to JSON) and `adk-tracegauge check`
   (percentile-bootstrap cost-regression gate against a baseline, real exit
@@ -52,9 +114,9 @@ middle digit rather than treating every 0.x release as equally unstable).
   `EvaluationGenerator.convert_events_to_eval_invocations` internal, used
   only by the optional hand-rolled sub-agent-rollup harness (not the
   primary `adk eval` quickstart path, which never calls it).
-- `examples/` directory: three runnable, independently-verified scripts
-  covering the quickstart, sub-agent cost rollup, and the CI regression
-  gate end to end.
+- `examples/` directory: four runnable, independently-verified scripts
+  covering the quickstart, sub-agent cost rollup, the CI regression gate
+  end to end, and paired-mode against the real `adk eval` CLI (Phase 4 R2).
 - `CHANGELOG.md`, `CONTRIBUTING.md`, `docs/troubleshooting.md`, and GitHub
   issue templates (bug report, price-table correction).
 - CI test matrix across Python 3.10–3.13 (previously only 3.11 was
