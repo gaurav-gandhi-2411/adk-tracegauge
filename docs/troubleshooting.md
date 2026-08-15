@@ -5,7 +5,13 @@ captured directly (not reconstructed from memory or the source). Entries
 1–3 date from Phase 2 W5; entry 1's related sub-note, and entries 4–5, were
 added/re-verified in Phase 3 B6, re-triggering each live rather than
 trusting the earlier capture (entry 2's captured text had gone stale after
-Phase 3 B1 changed the actual behavior — see the note under entry 2). Each
+Phase 3 B1 changed the actual behavior — see the note under entry 2). All
+five entries were re-triggered live again in Phase 4 R7, this time from a
+genuinely fresh **wheel-only** install (not an editable dev checkout) in a
+clean venv outside the repo — entries 2–4's captured text reproduced
+byte-identical; entry 1 surfaced a real, previously-invisible gap (see its
+own re-verification note below — a dev-checkout environment had an
+undeclared transitive dependency a clean install doesn't). Each
 one is a deliberate fail-closed design choice (see `PLAN.md`/README), not
 an accident: this package would rather raise or refuse a number loudly
 than guess.
@@ -36,6 +42,33 @@ exist yet at that version. The failure is immediate and unambiguous:
 `import adk_tracegauge` cannot succeed at all, which is the intended
 failure mode (see README, "Compatibility risk" — "a loud, immediate error
 ... not a silent no-op").
+
+**Re-verified Phase 4 R7, from a genuinely fresh wheel-only install (not an
+editable dev checkout) — a real, earlier-failure gap was found and is worth
+knowing before you follow this reproduction literally:** installing
+`google-adk[eval]==1.0.0` into a clean venv (via `uv pip install`, full
+dependency resolution, not `--no-deps`) and then running the exact command
+above fails **one import frame earlier** than documented — `ModuleNotFoundError:
+No module named 'deprecated'`, raised from `google/adk/tools/base_tool.py`,
+before Python ever reaches `adk_tracegauge/__init__.py`. Confirmed by direct
+inspection: `google-adk==1.0.0`'s own PyPI metadata (`importlib.metadata.
+metadata("google-adk").get_all("Requires-Dist")`, all 52 entries checked) never
+declares a dependency on the `deprecated` package under any extra, despite
+`base_tool.py` importing `from deprecated import deprecated` unconditionally —
+a real, undeclared-dependency packaging bug in the `google-adk==1.0.0` release
+itself, independent of adk-tracegauge, that a genuinely clean resolver hits
+today. (Phase 2 W5's original capture likely didn't hit this because its dev
+venv already had `deprecated` installed transitively from some other
+already-present package — editable/dev-checkout environments accumulate
+transitive packages a fresh install doesn't, the exact class of gap this
+Phase 4 work item exists to catch.) The documented text above **does**
+reproduce exactly once `deprecated` is installed first (`uv pip install
+deprecated`) — verified live this session. If you hit `No module named
+'deprecated'` instead of the text above while reproducing this on a truly
+clean environment, that's this same upstream gap, not a new problem — install
+`deprecated` and re-run, or (more usefully) just don't install
+`google-adk==1.0.0` at all outside of deliberately reproducing this doc entry;
+it predates this package's supported floor for unrelated reasons too.
 
 **Fix:** `pip install "google-adk[eval]>=2.6.0,<2.8.0"` (or let
 `adk-tracegauge`'s own dependency pin resolve it for you — this error only
