@@ -2413,3 +2413,87 @@ at kickoff, not re-litigated this phase.
       "CONTRADICTED" was a methodology misread, now settled three ways (orchestrator's own
       source read, this blind adjudication) -- recorded regardless of outcome, per standing
       rule 2.3/2.4.**
+
+- [x] T3 -- Fix the console-script name collision (Phase 5 S2/S3 standalone finding: both
+      `adk-tracegauge` and the sibling `tracegauge` PyPI package installed a console script
+      literally named `tracegauge`; whichever installed second silently clobbered the
+      other's executable). DONE 2026-08-16, same branch, adk-tracegauge side only (the
+      sibling `tracegauge` package keeps its own `tracegauge` command untouched, per this
+      item's scope).
+
+      **3.1 rename:** `pyproject.toml`'s `[project.scripts]` entry renamed
+      `tracegauge = "adk_tracegauge._cli:main"` -> `adk-tracegauge = "adk_tracegauge._cli:main"`.
+      `_cli.py`'s own self-references updated: module docstring usage examples, `argparse`
+      `prog="tracegauge"` -> `prog="adk-tracegauge"`, every printed message
+      (`"tracegauge snapshot: wrote..."` -> `"adk-tracegauge snapshot: wrote..."`,
+      `"tracegauge check: mode=..."` -> `"adk-tracegauge check: mode=..."`), every `--help`
+      text string, and every inline comment that named the console script. Also found and
+      fixed the SAME self-reference one layer down: `_regression.py`'s `CostRegressionResult
+      .report()` (the function that actually produces the `"tracegauge check [method=...]:
+      ..."` line printed by `_cmd_check`) had its own hardcoded `"tracegauge check [method="`
+      f-string -- would have been a half-fixed rename (renamed entry point, unrenamed
+      output) if only `_cli.py` had been checked.
+
+      **3.2 repo-wide sweep:** used a Python regex (`(?<!adk-)(?<!adk_)\btracegauge\b`) to
+      distinguish "the `tracegauge` command a user types" from "the `adk_tracegauge`/
+      `adk-tracegauge` package/import name" from "the sibling `tracegauge` PyPI package
+      referred to by name" -- the first category gets renamed, the other two don't. First
+      pass over README.md's "Pricing" and "Relationship to tracegauge" sections
+      auto-renamed 3 genuine sibling-package references incorrectly (e.g. "`tracegauge`'s
+      bundled price table covers Claude models only" -- a true statement about the OTHER
+      package -- became the false claim "`adk-tracegauge`'s bundled price table covers
+      Claude models only"); caught by re-reading the full diff before committing, not by
+      the regex itself, and hand-reverted to the correct package name. Files actually
+      changed (command-usage only, verified via a second regex pass finding zero remaining
+      bare `tracegauge snapshot`/`tracegauge check` occurrences repo-wide outside
+      `docs/audit/*.md` and this file's own pre-T3 history, both left as an honest
+      unmodified record of what was true when written): `pyproject.toml`, `_cli.py`,
+      `_regression.py`, `snapshot.py`, `_store.py`, `_plugin.py`, `README.md`,
+      `CHANGELOG.md`, `docs/ci-snippet.md`, `docs/troubleshooting.md`,
+      `.github/workflows/ci.yml` (the wheel-smoke-test job's literal
+      `wheel-smoke-venv/bin/tracegauge` binary path -- the one place this rename could have
+      silently broken CI if missed), `examples/01_minimal_cost_gate.py`,
+      `examples/03_ci_regression_gate.py`, `examples/04_paired_mode_via_adk_eval_cli.py`,
+      `scripts/measure_regression_power.py`, `tests/test_cli.py`, `tests/test_plugin.py`,
+      `tests/test_regression.py`, `tests/test_regression_power.py`. Deliberately NOT
+      changed: `docs/audit/PHASE1-5_REPORT.md` (historical record), this file's own Phase
+      1-5 entries (same reason), `RELEASING.md`/`CONTRIBUTING.md`/`uv.lock`/
+      `data/gemini_prices.json`/`.github/ISSUE_TEMPLATE/*.yml`/`pypi-canary.yml` (checked,
+      contain zero command-usage references -- only sibling-package or import-name
+      mentions). Second repo touched per this item's own scope:
+      `C:\Users\gaura\ml-projects\oss-contrib\adk-docs`, branch
+      `docs/adk-tracegauge-integration` -- `docs/integrations/adk-tracegauge.md` (Phase 4
+      R3's rewrite) had zero sibling-package references to protect, so a clean bulk rename
+      (25 occurrences) was safe; verified via the same zero-remaining-bare-references check.
+      Committed locally on that branch, not pushed (repo-scope rule unchanged from Phase 4).
+
+      **3.3 fresh-install, both packages, both install orders:** built the current wheel
+      (`adk_tracegauge-0.2.0-py3-none-any.whl`; `entry_points.txt` confirmed
+      `adk-tracegauge = adk_tracegauge._cli:main`, no `tracegauge` entry at all). Two fresh
+      `uv venv`s (Python 3.11, in the session scratchpad): venv-order1 installed
+      `adk-tracegauge` then real `tracegauge==0.10.1` from PyPI; venv-order2 installed
+      `tracegauge==0.10.1` then `adk-tracegauge`. In BOTH venvs, `adk-tracegauge --help`
+      printed this package's own `usage: adk-tracegauge [-h] {snapshot,check} ...` banner,
+      and `tracegauge --help` printed the sibling package's real `usage: tes [-h]
+      [--version] {score,backfill-waste,serve,export-contribution,ask,patterns,corpus,
+      budget,monitor} ...` banner -- byte-identical output regardless of install order,
+      confirming neither script clobbers the other and each resolves to the correct
+      package. Also re-ran the actual installed `adk-tracegauge.exe` end to end (the exact
+      CI wheel-smoke-test sequence: snapshot baseline, snapshot current, check) from a
+      directory outside the repo -- real exit code 1 on the injected regression, output
+      byte-identical to `examples/03_ci_regression_gate.py`'s own in-repo run (same seeds),
+      confirming the rename introduced no behavior drift in the printed report text.
+
+      **3.4 CHANGELOG framing:** confirmed via Phase 2 W4 (this file, above) that the
+      `tracegauge` console script was added AFTER `0.2.0` was published -- it lives entirely
+      in the `[Unreleased]` section, never shipped to a real user under any name. Framed as
+      "new in 0.3.0: `adk-tracegauge` console script," not a breaking rename, with an
+      explicit note naming the collision as the reason for the `adk-tracegauge` (not bare
+      `tracegauge`) name from the start.
+
+      **Verification:** 363/363 tests passing, 99% coverage (`src/adk_tracegauge/_cli.py`
+      99%, one branch at line 382 -- `if __name__ == "__main__":` -- structurally
+      untestable via pytest, pre-existing, unrelated to this change). `ruff check`: all
+      checks passed. `ruff format --check`: 47 files already formatted. `mypy src/`:
+      success, no issues, 11 source files. `uv.lock` unchanged (rename touched no
+      dependency, only the `[project.scripts]` entry point name).
