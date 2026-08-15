@@ -40,6 +40,30 @@ $ echo $?
 
 **Why this is the hero path, not the `adk eval` metric below:** `adk eval`'s own process exit code does not reflect PASSED/FAILED (verified live — see below), so it cannot gate a CI job on its own; and `AgentEvaluator.evaluate()`, ADK's pytest-style harness, has a real, source-confirmed polarity bug that can invert pass/fail for a lower-is-better metric like cost (see "Known limitations"). `adk-tracegauge check` is this package's own code, with its own real exit codes, proven to work standalone — that's the actual, statistically-measured differentiator (see "Known limitations" for the honest caveats on detection power at small `n`, and how `--mode paired` fixes them).
 
+## Shipped default, stated plainly
+
+`adk-tracegauge check` defaults to `--mode auto`, and — as of Phase 7 U1 — that default now **prefers a paired comparison**: whenever a stable per-eval-case key resolves (`eval_case_id` first, recovered via `--eval-history`; `session_id` as a fallback) with at least `--min-n` (30) overlapping cases between baseline and current, paired mode runs. **Only when no such key resolves, or fewer than `min_n` cases overlap, does it automatically fall back to an unpaired two-sample comparison** using the full baseline/current cost distributions — never a mix of the matched subset and the rest. The resolved mode and key are printed on every single run, unconditionally, never silently assumed.
+
+At the shipped configuration — `confidence=0.98`, `min_n=30` — here is what that default actually detects, measured by Phase 7 U2's 2,000-trial-per-cell grid (`scripts/measure_regression_confidence_grid.py`, Wilson 95% CIs on every cell; full 18+18-cell table in "Known limitations" below and `reports/confidence_grid_u2.json`):
+
+**Paired mode — the default, whenever a pairing key resolves:**
+- False-positive rate: **1.40% [0.97%, 2.02%] (28/2,000 trials)**
+- Power to detect a true 10% cost regression: **99.45% [99.02%, 99.69%] (1,989/2,000 trials)**
+
+**Two-sample fallback — what you get when no pairing key resolves, stated separately and not blended into the paired numbers above:**
+- False-positive rate: **0.85% [0.53%, 1.36%] (17/2,000 trials)**
+- Power to detect a true 10% cost regression: **57.80% [55.62%, 59.95%] (1,156/2,000 trials)**
+
+## What this gate can and cannot detect
+
+No competitor found in this project's Phase 1 competitive research reports statistical power at all — only pass/fail. This honest breakdown of what the test can and can't actually see, at the sizes real ADK eval sets run at, is the differentiator:
+
+- **Large regressions (25%+): reliably detected at any realistic `n`, either mode.** Both modes saturate to ≥99.95% detection at every measured `n`/confidence combination (Phase 7 U2's grid; full data in `reports/confidence_grid_u2.json`) — this is the case the gate was always going to catch.
+- **Moderate regressions (10%): near-ceiling when a pairing key resolves; only moderately-to-poorly caught under the two-sample fallback.** Paired mode: **99.45% [99.02%, 99.69%] (1,989/2,000 trials)** at `n=30`, **100.00% [99.81%, 100%] (2,000/2,000 trials)** at `n=50` — both at the shipped `confidence=0.98`. Two-sample fallback, same configuration: **57.80% [55.62%, 59.95%] (1,156/2,000 trials)** at `n=30` up to **81.25% [79.48%, 82.90%] (1,625/2,000 trials)** at `n=50` — real, meaningfully non-ceiling detection that a team relying only on the fallback path should know about, not a rounding difference from the paired numbers above it.
+- **Small regressions (5%): not reliably detected at small `n`, under either mode.** At the shipped `confidence=0.98`, two-sample at `n=30` (`min_n` itself) detects a true 5% regression only **16.20% [13.23%, 19.69%] (81/500 trials)** of the time (Phase 5 S4's grid), rising to **24.80% [21.22%, 28.77%] (124/500 trials)** at `n=50` — nowhere near the project's own 80%-power "reliable" bar. Pairing helps but does not fix this at small `n`: Phase 7 U1's paired-mode grid measured **49.80% [46.71%, 52.89%] (498/1,000 trials)** at `n=25`, still well under 80%. A 5% regression at a realistic ADK eval-set size is a real blind spot of this gate, in both modes — not something the paired-mode default quietly papers over.
+
+This honest framing — stating where the gate is weak, in numbers, rather than only where it's strong — **is the actual value proposition**: a cost gate that silently pass/fails with no power information gives you false confidence exactly where this one tells you, on every run (the "achieved power" line above), that it can't reliably see what you configured it to catch.
+
 ## Also: a real PASS/FAIL cost metric inside `adk eval`
 
 Register the metric with a threshold, wire the plugin into your agent, and `adk eval` itself prints a real dollar score and PASSED/FAILED verdict per invocation — useful for inline cost visibility while iterating on an eval set, complementary to (not a replacement for) the CI gate above.

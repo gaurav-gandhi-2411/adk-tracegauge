@@ -3189,3 +3189,116 @@ without reporting first, no subagent/fork dispatch at any point).
       as "hung." Confirm liveness via process CPU time (`wmic process where "ProcessId=<pid>"
       get UserModeTime,KernelModeTime`, sampled twice a few seconds apart) instead of stdout
       content when polling a long-running background measurement on Windows.
+
+- [x] U3 -- README coherence pass (one clear shipped-configuration statement, an honest
+      "what this gate can/cannot detect" section) plus the matching adk-docs PR update. DONE
+      2026-08-16, same branch, `adk-tracegauge` side plus `oss-contrib/adk-docs` side (local
+      commit only). No subagent/fork dispatched at any point, per instruction.
+
+      **Premise check first**: read `docs/audit/PHASE6_REPORT.md` and this file's entire
+      Phase 7 U1/U2 entries, then the CURRENT `README.md` in full (already touched twice this
+      phase by U1's "Known limitations" rewrite and U2's CI-audit pass). Confirmed U2's own 2.4
+      already brought every pre-existing power/FPR figure in "Known limitations" up to the
+      "point estimate + trial count + Wilson 95% CI" standard -- re-swept the WHOLE file
+      (`grep -n -E "[0-9]+(\.[0-9]+)?%" README.md`, every match manually inspected) and found
+      zero bare percentages anywhere, confirming U2's claim held; U3's job was coherence and a
+      new honest-limits section, not re-fixing already-fixed numbers.
+
+      **3.1 -- one clear shipped-configuration statement.** New `## Shipped default, stated
+      plainly` section inserted immediately after the Quickstart section (before "## Also: a
+      real PASS/FAIL cost metric inside `adk eval`"), the first thing a reader hits after the
+      install/run commands. States: (a) `check` defaults to `--mode auto`, which now PREFERS
+      paired mode whenever `eval_case_id`/`session_id` resolves with >= `--min-n` (30)
+      overlap, falling back to two-sample automatically (never a mixed distribution) only when
+      no key resolves or overlap is insufficient -- mode/key always printed; (b) paired mode's
+      (the default's) own FPR and 10%-effect power at the shipped `n=30`/`confidence=0.98`,
+      each with Wilson 95% CI and trial count, sourced directly from U2's own 2,000-trial grid:
+      **FPR 1.40% [0.97%, 2.02%] (28/2,000 trials)**, **power 99.45% [99.02%, 99.69%]
+      (1,989/2,000 trials)**; (c) the two-sample FALLBACK's own numbers, same `n`/confidence,
+      stated in a SEPARATE, explicitly-labeled subsection ("what you get when no pairing key
+      resolves"), not blended into (b): **FPR 0.85% [0.53%, 1.36%] (17/2,000 trials)**, **power
+      57.80% [55.62%, 59.95%] (1,156/2,000 trials)**. All four numbers reused verbatim from
+      U2's own grid (no new measurement needed or taken).
+
+      **3.2 -- "What this gate can and cannot detect" section.** New `## What this gate can
+      and cannot detect` heading, placed immediately after 3.1's section (findable right after
+      the shipped-config statement, not buried in "Known limitations"). Three honest bullets:
+      large regressions (25%+) reliably detected at any realistic `n`, either mode (>=99.95%
+      saturation, both modes, Phase 7 U2 grid); moderate regressions (10%) near-ceiling when a
+      pairing key resolves (99.45% at `n=30` / 100.00% at `n=50`, U2 grid) but only
+      moderately-to-poorly caught under the two-sample fallback (57.80% at `n=30` up to 81.25%
+      at `n=50`, same grid, same CIs as above); small regressions (5%) NOT reliably detected at
+      small `n` under EITHER mode -- two-sample at `n=30`/confidence=0.98 detects a true 5%
+      regression only **16.20% [13.23%, 19.69%] (81/500 trials)** of the time, rising to
+      **24.80% [21.22%, 28.77%] (124/500 trials)** at `n=50` (both Wilson CIs freshly computed
+      this session from Phase 5 S4's own already-published grid cells -- S4's grid reported
+      point estimates plus the 500-trials/cell count but no CI on the 5%-effect column
+      specifically; the raw phat/n was already public, so the CI is a direct, verifiable
+      recomputation, not a new measurement); paired mode helps but does not fix this at small
+      `n` either -- Phase 7 U1's own paired grid measured **49.80% [46.71%, 52.89%] (498/1,000
+      trials)** at `n=25` (also a freshly-computed Wilson CI on U1's already-published
+      255/1,000 and 498/1,000 point estimates, since U1's original grid reported point
+      estimates only, no CI -- recomputed via the same Wilson formula U2's own harness uses,
+      spot-checked against `wilson_score_interval` at `n=25`/`phat=0.498` matching to 4 decimal
+      places). States explicitly, per instruction, that this honest framing (showing where the
+      gate is weak, not only where it's strong) IS the value proposition, since no competitor
+      found in this project's Phase 1 competitive research reports statistical power at all.
+
+      **Verification the new numbers are correct**: every percentage in the two new sections
+      traces to either a value already published in this file/PLAN.md (U1's 1.5 grid, U2's
+      2.1/2.2 grid, S4's 4.2 grid) or a Wilson-CI recomputation of an already-published
+      phat/n pair using the identical formula `_regression.py`'s `wilson_score_interval`
+      implements (verified by hand for one cell, `n=25`/`phat=0.498`, matching the function's
+      own output to 4 decimal places) -- no new simulation was run for 3.1/3.2, consistent with
+      this being a documentation-coherence work item, not a new measurement item.
+
+      **3.3 -- adk-docs PR updated to match.** `oss-contrib/adk-docs`, branch
+      `docs/adk-tracegauge-integration` (clean, 3 commits ahead of origin, unpushed, per Phase
+      6 T5's last state). Read `docs/integrations/adk-tracegauge.md` in full first. The
+      "Paired mode" section (`### Paired mode for higher power at the same sample size`) still
+      framed paired as something opted into via `--mode paired`, on top of an "independent-
+      samples" default -- stale since Phase 7 U1, not previously caught because Phase 6 T5 only
+      fixed a stale confidence-interval LABEL in the same block, not the mode-selection
+      framing itself. Rewritten: new heading (`### Paired mode: the default, whenever a
+      pairing key resolves`), rewritten intro stating `--mode auto` now PREFERS paired
+      whenever a key resolves and falls back to two-sample only when it can't (mirroring
+      README 3.1's framing); the CLI example's `adk-tracegauge check ... --mode paired` command
+      had its `--mode paired` flag REMOVED (default behavior, not opt-in) with an explicit
+      callout ("Note there is no `--mode` flag above") pointing this out; a new paragraph added
+      stating the condensed headline shipped-config numbers (paired FPR 1.40% [0.97%, 2.02%]
+      (28/2,000 trials) vs. two-sample 0.85% [0.53%, 1.36%] (17/2,000 trials); paired 10%-effect
+      power 99.45% [99.02%, 99.69%] (1,989/2,000 trials) vs. two-sample 57.80% [55.62%, 59.95%]
+      (1,156/2,000 trials)) with a pointer to the full README grid rather than reproducing all
+      36 cells; a trailing paragraph restating "`--mode auto` uses paired automatically" was
+      deleted as fully redundant with the rewritten intro and the new numbers paragraph.
+
+      **Fresh-wheel re-verification of the updated code block** (rule per every prior phase):
+      `uv build` in `adk-tracegauge` -> `dist/adk_tracegauge-0.3.0-py3-none-any.whl`; fresh venv
+      at `C:\Users\gaura\tmp\u3-fresh-install\.venv` (`uv venv --python 3.12` + `uv pip install`
+      the wheel plus `google-adk[eval]>=2.6.0,<2.8.0`, which resolved live to **2.7.0**);
+      confirmed `import adk_tracegauge`/`import google.adk` both resolve to `site-packages`,
+      not any repo checkout. From `C:\Users\gaura\tmp\u3-fresh-install\work\` (no relationship
+      to either repo): a self-contained script mirroring `examples/04`'s pattern (real 32-case
+      EvalSet, two real agent packages with case-dependent deterministic fake token usage, real
+      `adk eval` CLI via `click.testing.CliRunner`, two separate runs) wrote both snapshots via
+      the real `--eval-history` join, then ran the literal freshly-installed
+      `adk-tracegauge.exe check` command **with NO `--mode` flag at all** (the exact form the
+      rewritten doc now shows). Output matched the doc's committed block BYTE-FOR-BYTE:
+      `mode=paired (key=eval_case_id, 32 overlapping eval_case_ids matched...)`,
+      `mean_baseline=$0.005306 mean_current=$0.007106`, `+0.001800 USD (+33.93%)`, exit code 1
+      -- confirming the doc's example produces the documented output with zero `--mode` flag,
+      a fresh wheel, and a directory with no relationship to either repo, exactly matching Phase
+      7 U1's own 1.6 fresh-wheel standard. The doc's other code blocks (`Use with agent`
+      wiring, the `adk eval` metric quickstart) were not modified by this work item and were
+      not re-run (out of scope -- Phase 6 T5 already re-verified them against the same 0.3.0
+      wheel; nothing in this work item touches their content).
+
+      **Tests/lint (adk-tracegauge)**: no source or test files changed (docs-only work item) --
+      re-ran the full suite anyway to confirm nothing regressed: 382 passed (unchanged from
+      U2), coverage 99% (`_cli.py` 99%/107 stmts/1 miss, `evaluator.py` 99%/152 stmts/1 miss,
+      `snapshot.py` 99%/108 stmts/1 miss, all others 100% -- same 3 pre-existing uncovered
+      lines as every prior phase, `TOTAL` 1026 stmts/3 miss/99%). `ruff check`: all checks
+      passed. `ruff format --check`: 51 files already formatted. `mypy src/`: no issues found
+      in 11 source files. Zero paid API calls, zero `ANTHROPIC_API_KEY`, zero new numpy/scipy
+      dependency. `git status` clean after commit in `adk-tracegauge`. adk-docs commit is
+      LOCAL ONLY, not pushed (per instruction). Neither repo pushed, tagged, or published.
