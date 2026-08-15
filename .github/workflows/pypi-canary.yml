@@ -35,9 +35,12 @@ jobs:
           enable-cache: true
 
       - name: Install this package's non-google-adk dependencies, then latest google-adk[eval]
+        # No separate `tracegauge` install needed as of Phase 4 R5 -- the
+        # cost arithmetic this package used from it was ported in-house
+        # (src/adk_tracegauge/_cost.py) and the dependency was removed from
+        # pyproject.toml entirely, so -e . --no-deps has nothing left to add.
         run: |
           uv pip install --system -e . --no-deps
-          uv pip install --system "tracegauge>=0.10.0,<0.11.0"
           uv pip install --system --upgrade "google-adk[eval]"
           uv pip install --system "pytest>=8.3,<9" "pytest-asyncio>=0.25,<1" pytest-mock
 

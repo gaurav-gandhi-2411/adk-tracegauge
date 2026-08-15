@@ -137,10 +137,9 @@ from google.adk.evaluation.evaluator import (
     PerInvocationResult,
 )
 from pydantic import ValidationError
-from tes._digest import SessionDigest
-from tes.cost import SessionCost
 
 from ._adapter import build_session_digest, price_digest, unknown_model_message
+from ._cost import SessionCost, SessionDigest
 from ._pricing import LOCAL_MODEL_KEY, STALE_THRESHOLD_DAYS, load_gemini_prices, resolve_model
 from ._store import DEFAULT_USAGE_STORE, UsageStore
 
@@ -257,9 +256,10 @@ def _price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCo
 
     `prices` remains required with no default here too -- see
     ``_adapter.price_digest``'s docstring for the full rationale (the
-    single sanctioned call site for tracegauge's ``compute_session_cost``,
-    now living in ``_adapter.py`` so ``snapshot.py`` (Phase 2 W4) can share
-    it instead of duplicating the same wrapper).
+    single sanctioned call site for ``_cost.compute_session_cost`` -- an
+    in-house function as of Phase 4 R5, previously an external
+    ``tracegauge`` dependency -- living in ``_adapter.py`` so ``snapshot.py``
+    (Phase 2 W4) can share it instead of duplicating the same wrapper).
     """
     return price_digest(digest, prices=prices)
 
@@ -761,8 +761,17 @@ class CostEfficiencyEvaluator(Evaluator):
                 )
                 continue
 
+            digest = adapted.digest
+            assert digest is not None  # adapted.ok guarantees this; narrows for mypy.
+            # (Phase 4 R5: this narrowing was previously a silent gap -- mypy
+            # treated adapted.digest as Any because the external tracegauge
+            # package it came from carried no py.typed marker, so a missing
+            # assert here never surfaced. Owning SessionDigest in-house made
+            # mypy strict actually check this call site for the first time;
+            # snapshot.py already had the identical assert for the same
+            # reason -- see that module for the matching pattern.)
             per_invocation_results.append(
-                _priced_result(actual, expected, adapted.digest, threshold_usd=self._threshold_usd)
+                _priced_result(actual, expected, digest, threshold_usd=self._threshold_usd)
             )
 
         scores: list[float] = [r.score for r in per_invocation_results if r.score is not None]

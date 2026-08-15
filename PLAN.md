@@ -1232,3 +1232,202 @@ re-duplicated here.
       behavior. `git status` clean after commit. Zero paid API calls, zero `ANTHROPIC_API_KEY`,
       pure local stdlib statistics throughout (no numpy/scipy, matching the module's existing
       constraint). No subagent/fork dispatched at any point in this work item, per instruction.
+
+- [x] R5 -- Documented every point of dependence on `tracegauge`'s internal (undocumented)
+      shape, added contract tests against it, assessed and implemented moving the dollar-cost
+      arithmetic in-house, and verified against every `tracegauge` version admitted by the
+      pin before removing it. DONE 2026-08-16.
+
+      5.1: Read `tracegauge==0.10.0`'s own installed source directly (`.venv/Lib/site-packages/
+      tes/`), its `__init__.py` (`__all__` = score_session/ThreeAxisResult/JudgeConfig/etc. --
+      Claude-Code-session scoring only, nothing cost-related re-exported at package top level),
+      and `tes/cost.py`/`tes/_digest.py` in full. Found 6 distinct reverse-engineered
+      assumptions, none documented anywhere in tracegauge itself:
+      1. **`tes._digest.SessionDigest`/`TurnDigest` are imported from a module tracegauge's OWN
+         docstring calls non-public**: `tes/_digest.py`'s module docstring states outright
+         "These are internal to the tes package -- not part of the public API." adk-tracegauge's
+         `_adapter.py`/`evaluator.py` imported and constructed these directly anyway (no
+         alternative existed) -- zero version-stability guarantee, by tracegauge's own
+         admission, for the exact type this package's entire pricing pipeline was built around.
+      2. **The `prices: dict` shape `compute_turn_cost`/`compute_session_cost` require is
+         nowhere documented** -- no docstring mention, no TypedDict, no schema, no jsonschema.
+         Recovered entirely by reading `tes/cost.py`'s source: `prices["models"][key]
+         ["input_usd_per_mtok"/"output_usd_per_mtok"]`, `prices["cache_multipliers"]["read"/
+         "write_5min"/"write_1hr"]`, `prices["default_model"]` (required, no `.get`, a `KeyError`
+         if missing -- adk-tracegauge's own table has this key, but nothing forces it to),
+         `prices.get("model_patterns", [])`, `prices.get("as_of", "unknown")` (adk-tracegauge's
+         own table has NO `as_of` key at all -- confirmed by direct inspection; this always
+         evaluates to the literal string `"unknown"` for every real call, silently, since
+         Phase 2 W3), `prices.get("approximate_threshold_pct", 25)`. This is the exact
+         undocumented shape Phase 3 B2 found `compute_turn_cost` reads with "zero knowledge of
+         `promo_until`/`standard_rate`," forcing the `effective_prices()` dict-rewrite
+         workaround -- B2 found the SYMPTOM; this item traces it to its root (no schema exists
+         anywhere to have known about it in advance).
+      3. **`compute_session_cost`'s own `prices=None` default silently loads tracegauge's
+         bundled Claude table** -- confirmed by reading `load_price_table`'s fallback chain
+         (explicit path > `TES_PRICE_TABLE` env var > `~/.tes/prices.json` > bundled
+         `tes/data/prices.json`, a Claude-only table). This IS the exact mechanism behind the
+         real historical bug `_adapter.price_digest`'s docstring already documents (a $2.80
+         gemini-2.5-flash call priced at $18.00) -- Phase 2 built a wrapper requiring `prices=`
+         at adk-tracegauge's OWN call site to guard around it, but never touched the default
+         itself, which remained live in the dependency this whole time.
+      4. **Passing an already-resolved model_key straight through relies on tracegauge's own
+         PRIVATE `_resolve_model` (underscore-prefixed, no stability marker) doing an exact-match
+         lookup first, before its default-fallback path** -- adk-tracegauge's `_pricing.
+         resolve_model_for_call` pre-resolves every real call to an exact price-table key (or
+         refuses closed) before a `TurnDigest` is ever built, so `TurnDigest.model` always
+         exact-matches a `prices["models"]` key by construction -- meaning tracegauge's own
+         `_resolve_model` NEVER actually reaches its default-fallback branch on any REAL
+         adk-tracegauge invocation. `session_cost.approximate`/`.approximate_reasons` (read in
+         `evaluator._priced_result`) are therefore always `False`/`[]` for every real call --
+         grep-confirmed zero test in this repo's suite ever asserts `approximate is True`,
+         confirming this branch was pure dead code from adk-tracegauge's own perspective, riding
+         along inside a dependency this package paid full transitive-dependency cost for
+         (flask/werkzeug/blinker/itsdangerous, tracegauge's own web-dashboard stack, none of it
+         ever imported or reachable from adk-tracegauge's own code).
+      5. **`TurnCost`/`SessionCost` field names read downstream** (`.model_key`, `.turn_index`,
+         `.fresh_tokens`, `.fresh_cost`, `.cache_read_cost`, `.output_cost`, `.total_usd` on
+         `TurnCost`; `.total_usd`, `.turn_costs`, `.approximate`, `.approximate_reasons`,
+         `.ai_turn_count` on `SessionCost`) -- grep-confirmed exact list, `evaluator.py`/
+         `snapshot.py`. `SessionCost.session_id`/`.domain_of_validity`/`.approximate_turn_count`
+         and `TurnDigest.tool_names`/`.content_snippet`/`.h2_duplicate` and `SessionDigest.
+         domain`/`.resolved`/`.total_tokens`/`.h2_duplicate_count`/`.cache_hit_rate`/
+         `.p25_token_ratio`/`.output_tokens_available`/`.task_description` were confirmed NEVER
+         read anywhere in this repo's `src/` or `tests/` (grep, both directions) -- they existed
+         purely to satisfy tracegauge's OWN judge/dashboard rendering (`tes._digest.
+         digest_to_text`), which adk-tracegauge never called even once.
+      6. **A load-bearing, never-actually-checked-against-the-installed-package licensing
+         claim**: `README.md`'s "Relationship to tracegauge" section asserted adk-tracegauge's
+         own Apache-2.0 license rests on `tes/cost.py`/`tes/_digest.py` being dual-licensed
+         (AGPL-3.0-only OR Apache-2.0) -- sourced only to the UPSTREAM repo's own README, never
+         verified against what was actually installed. Checked directly: the installed
+         `tracegauge==0.10.0`'s `tes/cost.py`/`tes/_digest.py` carry ZERO license text/SPDX
+         header at all (read in full, confirmed); `tracegauge`'s dist-info METADATA has no
+         "Apache" mention either. The dual-license SPDX header (`SPDX-License-Identifier:
+         AGPL-3.0-only OR Apache-2.0`) is confirmed present in both files as of
+         `tracegauge==0.10.1` (installed and checked directly) and the current upstream
+         `token-efficiency-scorer` HEAD (commit `b582c60565150015d4a9f3cc87bc64f19375e52a`) --
+         diffed byte-for-byte identical to the installed 0.10.0 source below the header
+         (`diff -B -w`, only CRLF/LF differed) -- but genuinely ABSENT as a per-file header from
+         0.10.0, the older of the two versions this package's own pin admitted. This matches
+         `RELEASING.md`'s own pre-existing note that 0.10.1 specifically "carries the Apache-2.0
+         grant," but that note had never been traced to a concrete in-file difference before.
+
+      5.2: Wrote 8 contract tests (`test_tracegauge_contract.py`, run as a standalone scratch
+      exercise directly against `tes.cost`/`tes._digest` -- not through adk-tracegauge's own
+      wrapper, so each test asserts the SHAPE assumption itself, independent of adk-tracegauge's
+      own logic, which is already covered elsewhere) -- one per 5.1 finding plus a signature/
+      default check on each of `compute_turn_cost`/`compute_session_cost`:
+      `test_tes_cost_module_still_exposes_expected_public_names`,
+      `test_tes_digest_module_still_exposes_sessiondigest_and_turndigest`,
+      `test_compute_turn_cost_signature_unchanged`,
+      `test_compute_session_cost_signature_and_default_unchanged`,
+      `test_prices_dict_shape_compute_turn_cost_actually_reads` (a real hand-computed arithmetic
+      spot check, not just "doesn't raise"), `test_turncost_and_sessioncost_field_names_...`,
+      `test_turndigest_and_sessiondigest_field_names_...`, and
+      `test_installed_tracegauge_version_reports_expected_dual_license_header` (finding 6, a
+      real per-version report rather than a hard pass/fail, since the answer genuinely differs
+      by version -- see 5.4). Every assertion carries a custom failure message naming the exact
+      incompatibility -- example (from `test_compute_session_cost_signature_and_default_unchanged`):
+      *"tes.cost.compute_session_cost's prices parameter no longer defaults to None -- [...] If
+      this default's behavior changed, that historical rationale needs re-checking, not just
+      this test's own literal assertion."* -- not a bare `AttributeError`/`KeyError` traceback.
+      Run for real against both admitted `tracegauge` versions (see 5.4): 8/8 passed on both.
+
+      5.3: Assessed moving the arithmetic in-house. Read `tes/cost.py`'s actual implementation
+      in full: `compute_turn_cost` is 39 lines (4 arithmetic lines: fresh/cache-read/cache-
+      creation/output cost, summed), `compute_session_cost` is 59 lines (loop + 2 aggregate
+      flags), `_resolve_model` (private) is 18 lines -- genuinely simple, not hidden complexity.
+      Cross-checked tracegauge's OTHER features (self-baseline token scoring, trajectory judge,
+      waste detection, the dashboard/CLI) against adk-tracegauge's own `src/` via grep: **zero
+      references** -- the arithmetic plus the two internal dataclasses (5.1 findings 1-5) were
+      the ONLY thing this package ever used from tracegauge, anywhere. **DECISION: move it
+      in-house. IMPLEMENTED.** New `src/adk_tracegauge/_cost.py`: `TurnDigest`/`SessionDigest`/
+      `TurnCost`/`SessionCost` (trimmed to only the fields with a real reader anywhere in this
+      repo per 5.1 finding 5 -- `SessionDigest.turn_count` is now a derived `@property`
+      (`len(turns)`) rather than a separately-passed field, removing a real invariant-violation
+      risk tracegauge's own shape carried), `compute_turn_cost`/`compute_session_cost`/
+      `_resolve_model_key` (ported verbatim -- diffed byte-for-byte, modulo line endings,
+      against the actual installed `tracegauge==0.10.0` source before writing the port, per
+      5.1 finding 6's diff). One DELIBERATE behavior change, not a bug: `compute_session_cost`
+      has no `prices=None` default here (finding 3's fallback risk removed at the source,
+      not just guarded around -- nothing in this codebase ever called it without an explicit
+      `prices=` argument). `_adapter.py`/`evaluator.py` now import from `._cost` instead of
+      `tes._digest`/`tes.cost`; `_adapter.build_session_digest`'s `TurnDigest`/`SessionDigest`
+      construction lost 8 dead-value keyword arguments as a direct, confirmed-safe consequence
+      of owning the trimmed type. `pyproject.toml`'s `tracegauge>=0.10.0,<0.11.0` dependency
+      line removed entirely; `uv lock` also dropped `flask`/`werkzeug`/`blinker`/
+      `itsdangerous` (tracegauge's own web-dashboard transitive deps, never reachable from
+      adk-tracegauge's own code -- confirmed by the removal itself, not asserted in advance).
+      Proof of behavior-preservation: full 348-test suite (pre-existing tests, zero changes to
+      their assertions) re-run with `tracegauge` genuinely UNINSTALLED from `.venv` (confirmed
+      via `import tes` -> `ModuleNotFoundError` first) -- 348/348 passed, byte-identical
+      output/warnings to the pre-port run. New `tests/test_cost_port_fidelity.py` (9 tests,
+      permanent) hand-computes the exact same arithmetic scenario 5.2's retired contract test
+      used ($6.64 total from $1M input/$500k output/$200k cache-read tokens at $2/$10 per-Mtok,
+      0.1x cache multiplier) plus the dead-but-ported default-fallback/empty-string/
+      model-patterns-prefix branches (exercised directly since nothing else in the suite ever
+      triggers them), the deliberate no-default hardening, the `turn_count` derived-property
+      invariant, a structural grep guard (`test_cost_module_no_longer_imports_the_external_
+      tracegauge_package`, matching `test_pricing_call_site.py`'s own existing pattern), and a
+      field-presence regression guard. `_cost.py` reached 100% coverage (2 branches needed the
+      2 new spot-check tests above; the rest was already exercised by the pre-existing 348).
+      **Real, unplanned finding during implementation**: mypy caught a genuine pre-existing gap
+      at `evaluator.py`'s `_priced_result` call site (`adapted.digest` passed where
+      `SessionDigest` was expected, never narrowed past `SessionDigest | None`) -- invisible
+      before this port because `tes` ships with no `py.typed` marker (confirmed:
+      `.venv/Lib/site-packages/tes/` has no `py.typed` file), so with `ignore_missing_imports =
+      true`, mypy treated every `tes`-sourced type as `Any` and silently skipped this check
+      entirely. Owning `SessionDigest` as a real, typed, in-repo class made mypy strict actually
+      check this call site for the first time ever. Fixed with the same `assert digest is not
+      None  # adapted.ok guarantees this; narrows for mypy.` idiom `snapshot.py` already used
+      for the identical narrowing (that call site never had this gap, since it always went
+      through the assert). This is itself a real instance of rule 85a's pattern -- a control
+      (mypy strict) covering less than advertised because of an untyped upstream dependency,
+      closed as a side effect of removing that dependency, not by any change to the mypy config
+      itself.
+
+      5.4: `pyproject.toml`'s constraint before this item's own removal was
+      `tracegauge>=0.10.0,<0.11.0`. PyPI's JSON API confirmed the full release history (10
+      releases, 0.1.0 through 0.10.1) admits exactly TWO versions into that range: `0.10.0` and
+      `0.10.1` (no other patch releases exist between them). Verified against BOTH, using a
+      `git worktree add <path> HEAD --detach` snapshot of this repo's PRE-R5 (pre-5.3) source
+      (read-only, no branch created, removed via `git worktree remove` immediately after) so
+      the exact PRE-in-house-port code -- the code that genuinely still depended on tracegauge
+      -- was what got tested, not the post-port code (which no longer imports `tes` at all and
+      would trivially "pass" against any tracegauge version by not importing it):
+
+      | tracegauge version | `test_pricing.py`+`test_adapter.py`+`test_pricing_call_site.py` (125 tests) | 5.2 contract tests (8 tests) | `tes/cost.py` SPDX dual-license header |
+      |---|---|---|---|
+      | 0.10.0 | 125/125 PASS | 8/8 PASS | **ABSENT** (confirmed by direct file read) |
+      | 0.10.1 | 125/125 PASS | 8/8 PASS | **PRESENT** (confirmed by direct file read) |
+
+      No behavioral/shape difference found between the two versions -- `diff -B -w` on both
+      `tes/cost.py` and `tes/_digest.py` (0.10.0-installed vs. current upstream HEAD, which
+      carries 0.10.1's content) showed zero content difference below the added license header
+      block, so both admitted versions were always arithmetic-identical; the ONLY real
+      per-version difference this pin ever admitted was the license-header finding (5.1 #6).
+      Both scratch venvs built via `uv venv --python 3.11 <short-path-under-C:\Users\gaura\tmp>`
+      (MAX_PATH lesson from Phase 3 B7/RELEASING.md applied proactively, not re-discovered).
+
+      Verification: full suite 348 -> 357 passing (+9, all in `tests/test_cost_port_fidelity.py`),
+      99% coverage (3 pre-existing uncovered lines, unchanged in kind from Phase 2/3/4 --
+      `_cli.py`'s `if __name__=="__main__"` guard, `evaluator.py`'s pragma-adjacent line,
+      `snapshot.py`'s defensive `if not calls: continue`; `_cost.py` itself reached 100%, 0
+      uncovered lines). ruff check/ruff format --check/mypy src/ all clean. `uv sync --frozen`
+      confirmed clean against the new lockfile. `README.md`'s "Relationship to tracegauge"
+      section rewritten (dependency removal + the license-attribution/finding-6 note),
+      `pyproject.toml`'s `description` field corrected (no longer claims "built on tracegauge's
+      cost engine"), `.github/workflows/pypi-canary.yml`'s now-unnecessary
+      `tracegauge>=0.10.0,<0.11.0` install line removed, `RELEASING.md`'s post-publish
+      tracegauge-version/license-grant verification step marked historical/obsolete (not
+      deleted -- kept as the documented reason this project's release process ships an rc
+      before a final on packaging-relevant changes), `CHANGELOG.md`'s `[Unreleased]/Changed`
+      section gained the R5 entry. `docs/audit/*.md` (historical phase reports) and this file's
+      own pre-R5 entries deliberately left unedited (append-only history, per this project's
+      honest-documentation convention) -- only the CLI command name `tracegauge` (the
+      `[project.scripts]` entry point, unrelated to the removed PyPI dependency) and genuinely
+      historical mentions remain across `examples/`, `docs/ci-snippet.md`,
+      `docs/troubleshooting.md`. `git status` clean after commit. Zero paid API calls, zero
+      `ANTHROPIC_API_KEY`. No subagent/fork dispatched at any point in this work item, per
+      instruction.

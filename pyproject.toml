@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adk-tracegauge"
 version = "0.2.0"
-description = "Per-invocation cost-in-USD evaluator for custom Google ADK eval harnesses, built on tracegauge's cost engine. Not a drop-in adk eval/AgentEvaluator metric -- see README. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models."
+description = "Per-invocation cost-in-USD evaluator for custom Google ADK eval harnesses. Not a drop-in adk eval/AgentEvaluator metric -- see README. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models."
 authors = [{ name = "Gaurav Gandhi", email = "gaurav.gandhi2411@gmail.com" }]
 requires-python = ">=3.10"
 readme = "README.md"
@@ -39,7 +39,12 @@ dependencies = [
     # past 2.7.0 since 2.8.0 doesn't exist yet (checked via PyPI JSON API) and hasn't
     # been verified.
     "google-adk[eval]>=2.6.0,<2.8.0",
-    "tracegauge>=0.10.0,<0.11.0",
+    # tracegauge dependency removed, Phase 4 R5: the only things this package
+    # ever used from it (tes.cost.compute_session_cost/compute_turn_cost's
+    # arithmetic, plus the tes._digest.SessionDigest/TurnDigest dataclasses
+    # it operated on -- confirmed by grep, nothing else) are now ported
+    # in-house at src/adk_tracegauge/_cost.py. See that module's docstring
+    # for the full audit/rationale.
 ]
 
 [dependency-groups]

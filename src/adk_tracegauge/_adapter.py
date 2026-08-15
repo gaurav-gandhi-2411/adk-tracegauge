@@ -1,11 +1,17 @@
-"""adk_tracegauge/_adapter.py — Maps captured ADK usage data onto tracegauge's digest shape.
+"""adk_tracegauge/_adapter.py — Maps captured ADK usage data onto this
+package's own cost-digest shape.
 
-tracegauge's tes.cost.compute_session_cost operates on a tes._digest.SessionDigest
-(a list of TurnDigest, one per AI turn). One ADK invocation can involve more
+``_cost.compute_session_cost`` operates on a ``_cost.SessionDigest`` (a list
+of ``TurnDigest``, one per AI turn). One ADK invocation can involve more
 than one real model call (tool loops, sub-agent delegation), so it maps onto
 a SessionDigest with one TurnDigest per real call -- summed cost across the
-whole invocation, same as tracegauge sums cost across a whole Claude Code
-session.
+whole invocation.
+
+Through Phase 3, ``_cost``'s digest/cost types and arithmetic were an
+external dependency (the ``tracegauge`` PyPI package's ``tes._digest``/
+``tes.cost``). Phase 4 R5 ported the arithmetic in-house and removed that
+dependency entirely -- see ``_cost.py``'s module docstring for the full
+audit findings and rationale.
 
 Three things happen here before any TurnDigest is built, all fail-closed:
 
@@ -42,9 +48,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from tes._digest import SessionDigest, TurnDigest
-from tes.cost import SessionCost, compute_session_cost
-
+from ._cost import SessionCost, SessionDigest, TurnDigest, compute_session_cost
 from ._pricing import (
     ASSUME_LOCAL_ENV_VAR,
     PRICE_TABLE_ENV_VAR,
@@ -159,8 +163,6 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
             TurnDigest(
                 turn_index=index,
                 role="ai",
-                tool_names=[],
-                content_snippet="",
                 token_count_input=final_call.prompt_token_count,
                 # thoughts_token_count ("thinking" tokens) is billed as
                 # output per Gemini's pricing pages -- folded in here so it
@@ -169,63 +171,50 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
                     final_call.candidates_token_count + final_call.thoughts_token_count
                 ),
                 cache_read=final_call.cached_content_token_count,
-                h2_duplicate=False,
                 cache_creation=0,
                 model=resolved.model_key,
             )
         )
 
-    digest = SessionDigest(
-        session_id=invocation_id,
-        domain="adk_invocation",
-        resolved=True,
-        total_tokens=sum(
-            g[-1].prompt_token_count + g[-1].candidates_token_count + g[-1].thoughts_token_count
-            for g in groups
-        ),
-        turn_count=len(turns),
-        h2_duplicate_count=0,
-        cache_hit_rate=0.0,
-        p25_token_ratio=0.0,
-        output_tokens_available=True,
-        task_description="",
-        turns=turns,
-    )
+    digest = SessionDigest(session_id=invocation_id, turns=turns)
     return AdaptResult(digest=digest)
 
 
 def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
-    """The single sanctioned call site for tracegauge's compute_session_cost
-    in this package -- every caller that needs a priced SessionDigest
+    """The single sanctioned call site for ``_cost.compute_session_cost`` in
+    this package -- every caller that needs a priced SessionDigest
     (``evaluator.py``'s per-invocation eval result, ``snapshot.py``'s
     regression-gate snapshots -- Phase 2 W4) must go through this function,
     never call ``compute_session_cost`` directly.
 
     `prices` is required with no default -- deliberately, not by
-    convention. tracegauge's own ``compute_session_cost(digest,
-    prices=None, ...)`` silently falls back to its bundled Claude price
-    table when `prices` is omitted, and that fallback bug actually happened
-    during this package's own development: omitting `prices=` priced a
-    $2.80 gemini-2.5-flash call at $18.00 (Claude Sonnet's rate), no error,
-    just a buried `approximate` flag. This module's own pre-check
-    (``build_session_digest``) only guards against *unresolvable* models --
-    it does nothing to stop the wrong price *table* being passed for an
-    otherwise-valid model, which is exactly what happened. Routing every
-    call through this one function, with `prices` required, converts
-    "forgot the argument" from a silent wrong number into a TypeError.
-    ``tests/test_pricing_call_site.py`` asserts this is the only place
-    ``compute_session_cost`` is called in ``src/``, so a future call site
-    added elsewhere can't reintroduce the same bug by skipping this
-    wrapper.
+    convention. Through Phase 3, this wrapped an EXTERNAL dependency
+    (tracegauge's own ``compute_session_cost(digest, prices=None, ...)``,
+    which silently fell back to ITS bundled Claude price table when
+    `prices` was omitted) -- that fallback bug actually happened during this
+    package's own development: omitting `prices=` priced a $2.80
+    gemini-2.5-flash call at $18.00 (Claude Sonnet's rate), no error, just a
+    buried `approximate` flag. Phase 4 R5 ported the arithmetic in-house
+    (``_cost.py``) and removed the ``None``-defaulting fallback at the
+    source rather than merely guarding around it (``_cost.compute_session_cost``
+    now requires `prices` itself, no default at all) -- this wrapper's own
+    required-`prices` guarantee stays regardless, as defense in depth and
+    because ``build_session_digest``'s own pre-check only guards against
+    *unresolvable* models, not the wrong price *table* being passed for an
+    otherwise-valid one. ``tests/test_pricing_call_site.py`` asserts this is
+    the only place ``compute_session_cost`` is called in ``src/``, so a
+    future call site added elsewhere can't reintroduce the same bug by
+    skipping this wrapper.
 
-    ``prices`` is passed through ``effective_prices`` before reaching
-    tracegauge's engine (Phase 3 B2) -- tracegauge's own
-    ``compute_turn_cost`` reads ``prices["models"][key]["input_usd_per_mtok"]``
-    directly off whatever dict it's given, with zero knowledge of this
-    package's ``promo_until``/``standard_rate`` schema fields, so the
-    automatic promo-expiry rate switch has to be applied here, on every
-    call through this single sanctioned call site, rather than relying on
-    every caller to remember to call ``effective_prices`` themselves.
+    ``prices`` is passed through ``effective_prices`` before reaching the
+    arithmetic (Phase 3 B2) -- ``_cost.compute_turn_cost`` reads
+    ``prices["models"][key]["input_usd_per_mtok"]`` directly off whatever
+    dict it's given (a ported, unchanged behavior -- see ``_cost.py``'s
+    module docstring), with zero knowledge of this package's
+    ``promo_until``/``standard_rate`` schema fields, so the automatic
+    promo-expiry rate switch has to be applied here, on every call through
+    this single sanctioned call site, rather than relying on every caller
+    to remember to call ``effective_prices`` themselves.
     """
     return compute_session_cost(digest, prices=effective_prices(prices))
 

@@ -592,12 +592,13 @@ def test_promo_boundary_day_itself_is_still_promotional():
     assert resolved_next_day.input_usd_per_mtok == 2.0
 
 
-def test_effective_prices_bakes_in_the_auto_switch_for_tracegauges_own_engine():
-    # effective_prices is what actually reaches tes.cost.compute_session_cost
+def test_effective_prices_bakes_in_the_auto_switch_for_the_cost_arithmetic():
+    # effective_prices is what actually reaches _cost.compute_session_cost
     # (which reads prices["models"][key]["input_usd_per_mtok"] straight off
-    # the dict it's given -- confirmed by reading tes/cost.py directly --
-    # with zero knowledge of promo_until/standard_rate), so the switch must
-    # be visible on the RAW DICT too, not just on a ResolvedModel object.
+    # the dict it's given -- ported unchanged from tracegauge's own
+    # tes/cost.py, Phase 4 R5 -- with zero knowledge of promo_until/
+    # standard_rate), so the switch must be visible on the RAW DICT too, not
+    # just on a ResolvedModel object.
     prices = _custom_prices_with_promo(
         promo_until=(date.today() - timedelta(days=1)).isoformat(),
         standard_rate={"input_usd_per_mtok": 2.0, "output_usd_per_mtok": 4.0},

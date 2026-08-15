@@ -83,15 +83,19 @@ assert 'adk_tracegauge_cost_usd' in names
 print('registered OK')
 "
 
-# The resolver check that's the entire reason this package ships as an rc before a final:
+# Historical (through the release that shipped Phase 3): this package depended on
+# `tracegauge` as a library, and this rc-before-final process existed specifically to
 # confirm tracegauge>=0.10.1 (the version carrying the Apache-2.0 grant) actually resolved,
-# not an older cached/pinned version
-C:\adk-tg-verify\Scripts\python.exe -c "import importlib.metadata as m; print(m.version('tracegauge'))"
-
-# Confirm the Apache grant shipped in what was actually installed -- not just declared in
-# this repo's own README
-find C:\adk-tg-verify\Lib\site-packages\tracegauge-*.dist-info -iname "*LICENSE*"
-# expect: .../licenses/LICENSE and .../licenses/LICENSE-APACHE
+# not an older cached/pinned version -- checked via:
+#   python -c "import importlib.metadata as m; print(m.version('tracegauge'))"
+#   find <venv>\Lib\site-packages\tracegauge-*.dist-info -iname "*LICENSE*"
+#   (expect: .../licenses/LICENSE and .../licenses/LICENSE-APACHE)
+# As of Phase 4 R5, `tracegauge` is no longer a dependency at all -- the cost arithmetic
+# this package used from it was ported in-house (src/adk_tracegauge/_cost.py, which
+# carries its own attribution note). This check is obsolete for any release from here on;
+# left here, not deleted, as the reason this package's release process still ships an rc
+# before a final on any packaging-relevant change -- that discipline predates and outlives
+# this one specific check.
 
 rm -rf C:\adk-tg-verify
 ```

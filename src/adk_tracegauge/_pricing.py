@@ -7,14 +7,17 @@ integration, plus a synthetic zero-cost entry for local/self-hosted models
 ``gemini_prices.json``/``load_gemini_prices`` naming, kept as-is rather than
 renamed -- Phase 2 W3 broadened scope, not the file); every symbol here now
 covers all three real providers plus the local-model case. This module is
-deliberately independent of tracegauge's own ``tes.cost._resolve_model``,
-which silently defaults to a fallback model rate on no match. That is the
-right call for tracegauge's own problem (best-effort scoring of imperfect
-session logs) but wrong here: a cost evaluator that fabricates a number for
-an unrecognized model is worse than one that refuses. ``resolve_model``
-below returns ``None`` on no match instead of defaulting, and callers must
-treat ``None`` as "do not report a cost for this invocation" rather than
-falling through to tracegauge's own default-model path.
+deliberately independent of ``_cost._resolve_model_key`` (through Phase 3,
+an external dependency, tracegauge's own ``tes.cost._resolve_model`` --
+ported in-house Phase 4 R5, see ``_cost.py``'s module docstring), which
+silently defaults to a fallback model rate on no match. That was the right
+call for tracegauge's own original problem (best-effort scoring of
+imperfect session logs) but wrong here: a cost evaluator that fabricates a
+number for an unrecognized model is worse than one that refuses.
+``resolve_model`` below returns ``None`` on no match instead of defaulting,
+and callers must treat ``None`` as "do not report a cost for this
+invocation" rather than falling through to ``_cost``'s own (provably dead
+for every real call path -- see ``_cost.py``) default-model fallback.
 
 Phase 2 W3 additions, because they're load-bearing and not obvious from the
 code:
@@ -92,9 +95,10 @@ post-promo input/output rate); ``resolve_model``/``resolve_model_for_call``
 report the *effective* rate for "today" automatically (the promotional
 rate while ``date.today() <= promo_until``, the standard rate once past
 it, no manual table edit required), and ``effective_prices`` below does
-the same for the raw dict tracegauge's own ``compute_session_cost`` reads
-directly (see that function's docstring for why the rewrite has to happen
-there and not inside tracegauge's engine). An entry whose promo is
+the same for the raw dict ``_cost.compute_session_cost`` reads directly
+(an in-house function as of Phase 4 R5, previously tracegauge's own -- see
+that function's docstring for why the rewrite has to happen here and not
+inside the arithmetic itself). An entry whose promo is
 approaching or past expiry with no published ``standard_rate`` warns
 loudly (``ResolvedModel.standard_rate_warning_due``) rather than silently
 either freezing at a now-possibly-wrong number or guessing one.
@@ -357,14 +361,15 @@ def effective_prices(prices: dict[str, Any] | None = None) -> dict[str, Any]:
     output_usd_per_mtok rewritten to its EFFECTIVE (promo-aware) rate for
     "today" -- see _effective_rates.
 
-    This is the dict real pricing call sites must hand to tracegauge's
-    compute_session_cost/compute_turn_cost (via _adapter.price_digest,
-    which calls this internally -- Phase 3 B2), because that engine reads
-    prices["models"][key]["input_usd_per_mtok"] straight off whatever dict
-    it's given (confirmed by reading tes/cost.py directly) with zero
-    knowledge of promo_until/standard_rate -- the automatic promo-expiry
-    switch has to happen here, before the dict is handed over, not inside
-    tracegauge's own engine.
+    This is the dict real pricing call sites must hand to
+    _cost.compute_session_cost/compute_turn_cost (via _adapter.price_digest,
+    which calls this internally -- Phase 3 B2), because that arithmetic
+    reads prices["models"][key]["input_usd_per_mtok"] straight off whatever
+    dict it's given (ported unchanged from tracegauge's own tes/cost.py,
+    Phase 4 R5 -- see _cost.py's module docstring) with zero knowledge of
+    promo_until/standard_rate -- the automatic promo-expiry switch has to
+    happen here, before the dict is handed over, not inside the arithmetic
+    itself.
 
     Returns a new dict (top level shallow-copied, each model entry
     shallow-copied) -- never mutates the cached table in place, so this can

@@ -88,6 +88,15 @@ middle digit rather than treating every 0.x release as equally unstable).
   distinguish "should have auto-resolved as local" from "routed through a
   platform whose pricing can diverge" from "genuinely unknown," and point
   at the `ADK_TRACEGAUGE_PRICE_TABLE` mechanism.
+- **(Phase 4 R5) The `tracegauge` PyPI dependency is removed entirely.**
+  An audit found it was used for exactly one thing across this whole
+  package (~55 lines of dollar-cost arithmetic plus two internal-only
+  dataclasses, grep-confirmed — none of `tracegauge`'s own actual
+  differentiators were ever touched); that arithmetic is now ported
+  in-house at `src/adk_tracegauge/_cost.py` (behavior-preserving — proven
+  via the full existing test suite plus hand-computed spot checks). No
+  observable behavior change for any caller. See `_cost.py`'s module
+  docstring for the full audit and license-attribution note.
 
 ### Fixed
 - 3 Gemini models missing from the price table entirely

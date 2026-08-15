@@ -1,6 +1,10 @@
 """Structural guard for the bug caught during development: compute_session_cost
-called without an explicit price table silently prices against tracegauge's
-bundled Claude table instead of ours.
+called without an explicit price table silently prices against a default
+Claude table instead of ours (through Phase 3, tracegauge's own bundled
+table via the external dependency; Phase 4 R5 removed even the possibility
+by dropping the `prices=None` default from the now-in-house function --
+this guard's own required-`prices` assertion below stays regardless, as
+defense in depth).
 
 _adapter.price_digest is the only sanctioned call site (prices is a
 required kwarg there, so omitting it is a TypeError, not a wrong number).
@@ -11,15 +15,20 @@ this one wrapper rather than each calling compute_session_cost themselves
 so a second real caller could exist without reintroducing the bug. This
 test asserts no call site can bypass that wrapper -- it greps the actual
 source tree rather than trusting a code review comment to stay true
-forever.
+forever. Phase 4 R5 moved compute_session_cost itself in-house
+(adk_tracegauge._cost, ported from the external `tracegauge` package,
+which is no longer a dependency at all -- see _cost.py's module docstring)
+-- this guard still finds exactly one INVOCATION of it in src/ (the `def
+compute_session_cost(...):` in _cost.py itself is a definition, not an
+invocation, and doesn't match this guard's call-pattern regex).
 
 Phase 3 B2: price_digest now wraps the caller's `prices` through
 _pricing.effective_prices (the promo-expiry auto-switch -- see that
 function's docstring for why the rewrite has to happen here, since
-tracegauge's own compute_session_cost reads promo-unaware raw rates
-straight off whatever dict it's given) before calling compute_session_cost.
-The guard below was updated accordingly -- it still asserts the value fed
-to compute_session_cost's `prices=` kwarg is derived from the caller's own
+compute_session_cost's arithmetic reads promo-unaware raw rates straight
+off whatever dict it's given) before calling compute_session_cost. The
+guard below was updated accordingly -- it still asserts the value fed to
+compute_session_cost's `prices=` kwarg is derived from the caller's own
 `prices` argument, not a re-fetched default or a hardcoded table.
 """
 
