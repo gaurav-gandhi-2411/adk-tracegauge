@@ -73,6 +73,17 @@ class AdaptResult:
     Gemini's server-side built-in tools). Same fail-closed philosophy as
     unresolved_model -- refuse rather than under-report cost by silently
     ignoring billed tokens. See CapturedCall's docstring in _store.py."""
+    agent_names_by_turn: tuple[str, ...] = ()
+    """LL2: one entry per ``digest.turns`` entry, same order, same length
+    (indexed by ``turn_index``) -- the agent_name of the CapturedCall that
+    terminated that turn's group. Deliberately kept OUT of
+    ``_cost.TurnDigest``/``TurnCost`` -- that module is pure dollar
+    arithmetic, kept byte-equivalent to its ported origin (Phase 4 R5,
+    re-confirmed Phase 6 T2) and has no business carrying agent identity.
+    A caller that needs per-agent cost zips this tuple against
+    ``SessionCost.turn_costs`` by position -- see snapshot.py's
+    ``_cost_by_agent`` and evaluator.py's rationale builder, the two real
+    call sites."""
 
     @property
     def ok(self) -> bool:
@@ -133,6 +144,7 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         return AdaptResult(digest=None, streaming_anomaly=anomaly)
 
     turns: list[TurnDigest] = []
+    agent_names: list[str] = []
 
     for index, group in enumerate(groups):
         # The non-partial terminator carries each real call's true, complete
@@ -175,9 +187,13 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
                 model=resolved.model_key,
             )
         )
+        # LL2: the group's own terminator call's agent_name -- a streamed
+        # group's chunks all belong to the same real call, hence the same
+        # agent, by construction (see _group_streaming_calls above).
+        agent_names.append(final_call.agent_name)
 
     digest = SessionDigest(session_id=invocation_id, turns=turns)
-    return AdaptResult(digest=digest)
+    return AdaptResult(digest=digest, agent_names_by_turn=tuple(agent_names))
 
 
 def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:

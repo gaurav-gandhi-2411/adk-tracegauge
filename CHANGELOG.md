@@ -7,6 +7,28 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Added
+- **Sub-agent cost attribution (`agent_name`).** `CapturedCall` now records
+  which ADK agent made each priced call (sourced from
+  `callback_context.agent_name` inside `after_model_callback` — the one hook
+  proven to fire through every integration path this package supports,
+  including `adk eval`; deliberately not `invocation_context.agent.name`,
+  which never fires there). Surfaced in three places:
+  - the `check`/eval rationale text now prefixes each call line with
+    `agent=<name>`;
+  - `adk-tracegauge snapshot` records a new `cost_by_agent: dict[str, float]`
+    field per invocation (snapshot `schema_version` bumped 2→3 — additive,
+    old files still read fine, `cost_by_agent` just defaults to `{}`);
+  - `adk-tracegauge check --agent <name>` scopes the regression gate to one
+    agent's own cost (works in both two-sample and paired mode).
+
+  Tested against the real two-agent `AgentTool` delegation case, agents
+  sharing a name (documented collapsed behavior, not a crash), a
+  three-level nested delegation chain, and the single-agent backward-compat
+  case. Verified from a fresh wheel install against google-adk 2.7.0.
+
 ## [0.3.2] — 2026-08-16
 
 ### Added
