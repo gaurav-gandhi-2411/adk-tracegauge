@@ -153,6 +153,13 @@ def test_parser_requires_a_subcommand():
         parser.parse_args([])
 
 
+def test_parser_quickstart_subcommand_takes_no_required_args():
+    # HH1.1: zero-config by design -- must parse with no flags at all.
+    parser = build_parser()
+    args = parser.parse_args(["quickstart"])
+    assert args.command == "quickstart"
+
+
 # --- _resolve_entrypoint --------------------------------------------------
 
 
