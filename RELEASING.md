@@ -36,7 +36,26 @@ This document describes the actual flow, written after running it twice for real
    fails against it, then confirming it passes once the fix is applied — see the
    `fix/version-single-source` PR description for the fail-then-pass proof.
    - Regenerate the lockfile: `uv lock`
-2. **Commit and open a PR.** CI (`ci.yml`) runs the full test suite (including the version
+2. **README must document any user-facing command or flag this release adds.** The
+   CHANGELOG alone is not sufficient — it tells *existing* users what changed since their
+   last install; the README is what a *prospective* user (or PyPI's own rendered project
+   page) reads to learn the tool exists at all. A feature with a CHANGELOG entry but no
+   README section is invisible to anyone who hasn't already installed the package.
+
+   **Real incident, not hypothetical:** `0.4.0` (sub-agent cost attribution — `--agent`,
+   `cost_by_agent`, `agent_name`) shipped to PyPI with a correct, detailed CHANGELOG entry
+   and zero mentions of `--agent` anywhere in the README — caught only after the release
+   was already published and permanently locked into that version's PyPI page (PyPI does
+   not allow re-uploading a version's metadata). Fixed in the next release, `0.4.1`, but the
+   gap in `0.4.0`'s own published page is permanent. Checklist for every release:
+   - Every new subcommand and flag has a README section with **real captured output from
+     the published artifact**, not an invented example.
+   - Any documented backward-compatibility claim (a schema bump, a changed default) is
+     verified against a real old-format input, not asserted from memory.
+   - Verify the *published* README (`curl -s https://pypi.org/pypi/<pkg>/<version>/json`,
+     string-search the `description` field) contains the new command/flag names — not just
+     that the local `README.md` file does; a build/publish step could in principle diverge.
+3. **Commit and open a PR.** CI (`ci.yml`) runs the full test suite (including the version
    guard test above), ruff, and mypy strict against the version-bumped code.
 
    One friction point encountered on every version-bump PR so far: this repo's merge-gate
@@ -55,13 +74,13 @@ This document describes the actual flow, written after running it twice for real
    document's own prerequisite) exists to close — the reasoning ("trivial, docs-only, CI
    green") was identical to the incident it followed, not a different judgment (2026-08-16).
    Prepare the PR, confirm every gate passes, then stop and wait for GG.
-3. **Merge, then tag the merged commit:**
+4. **Merge, then tag the merged commit:**
    ```bash
    git checkout main && git pull
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
-4. **`release.yml` builds and publishes** — same pattern as tracegauge's own `release.yml`
+5. **`release.yml` builds and publishes** — same pattern as tracegauge's own `release.yml`
    (mirrored byte-for-byte): `uv build`, `twine check`, then
    `pypa/gh-action-pypi-publish@release/v1` over OIDC via the `pypi` GitHub Environment.
    Confirm the actual upload, not just the green checkmark:
@@ -71,11 +90,13 @@ This document describes the actual flow, written after running it twice for real
    ```
    Expect a Sigstore `Successfully verified SCT...` line and
    `View at: https://pypi.org/project/adk-tracegauge/X.Y.Z/`.
-5. **Post-publish verify from a fresh environment against the real index** — see below.
+6. **Post-publish verify from a fresh environment against the real index** — see below.
    This package's verification is stricter than a typical library's: it must also confirm
    the *dependency* resolution (`tracegauge`'s pinned range) and that the dual-licensed
    files' Apache grant actually shipped in what got installed — see "What to check" below.
-6. **Never yank a published version**, including a superseded pre-release. `0.1.0rc1`
+   Also confirm (step 2's checklist) that the published README actually rendered the new
+   commands/flags, via PyPI's JSON API — not just that CI succeeded.
+7. **Never yank a published version**, including a superseded pre-release. `0.1.0rc1`
    stays live and installable even after `0.1.0` shipped — a pinned `adk-tracegauge==0.1.0rc1`
    install must keep working indefinitely. If a release has a real problem, ship a new
    version; don't delete the old one.
