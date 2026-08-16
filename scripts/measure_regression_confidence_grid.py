@@ -3,6 +3,33 @@ across ``confidence`` x ``n`` x ``true effect``, for BOTH two-sample and paired
 mode, with a real confidence interval (Wilson score) on every reported detection
 rate -- not a bare point estimate.
 
+**FPR-anomaly audit addendum (post-U2, see ``docs/audit/FPR_ANOMALY.md`` for the
+full investigation)**: U2's original 2,000-trial-per-cell run reported paired
+mode's FPR exceeding two-sample's at 4 of the 6 shared (confidence, n) FPR
+cells, and that comparison was published (README, this module's own docstring
+history) WITHOUT ever being significance-tested. The audit found: (1) the
+paired-mode bootstrap correctly resamples DELTA VECTORS as a unit (no
+implementation bug); (2) the null-data generators for both modes correctly
+preserve/omit case-level pairing structure as appropriate (no generator bug);
+(3) a two-proportion z-test on the ORIGINAL grid's own counts finds the
+paired-vs-two-sample gap was NOT significant at any of the 6 cells (largest
+z=1.80, p=0.07 at confidence=0.98/n=30); (4) an independent 5,000-trial
+re-measurement (different seed base) found paired vs two-sample not
+significant at any cell either (largest z=1.29, p=0.20), while BOTH modes
+independently showed significant elevation above their own nominal one-sided
+alpha at most cells -- the SAME, already-documented, generic small-n
+percentile-bootstrap anti-conservatism (see ``_regression.py``'s "Anti-
+conservatism at small n" section), present in both modes, not a paired-
+specific defect. CONCLUSION: the original "paired FPR > two-sample FPR"
+cross-mode ranking was a measurement-count artifact (2,000 trials/cell is
+enough to estimate each mode's OWN FPR reliably but not enough to reliably
+RANK two nearby proportions against each other), not a real property of the
+estimator. ``N_TRIALS`` was raised to 5,000 (still >= U2's own 2,000 floor)
+specifically because that trial count was directly demonstrated (not assumed)
+to stabilize the cross-mode comparison -- see ``two_proportion_z_test`` and
+the "FPR cross-mode significance" table this script now prints/writes on
+every run, added so this gap can't recur silently.
+
 **Why this exists**: Phase 7 U1 made PAIRED mode the DEFAULT ``--mode auto``
 preference whenever a pairing key resolves (the common case for the primary
 ``adk eval`` documented workflow, per Phase 4 R2). Every prior alpha/confidence
@@ -118,11 +145,26 @@ from adk_tracegauge._regression import (  # noqa: E402
 CONFIDENCE_GRID = [0.95, 0.98, 0.99]
 N_GRID = [30, 50]
 EFFECT_PCT_GRID = [0.0, 10.0, 25.0]
-N_TRIALS = 2_000
-"""U2's own explicit minimum ('>=2000 trials each'). 3x2x3 = 18 cells/mode x
-2 modes x 2,000 trials = 72,000 total simulated `check`-equivalent bootstrap
-evaluations minimum -- matches U2's own '>=36,000 simulated calls minimum'
-requirement PER 2.1/2.2 (18 cells x 2,000 trials each), x2 for both modes."""
+N_TRIALS = 5_000
+"""RAISED from U2's original 2,000 during the FPR-anomaly audit
+(``docs/audit/FPR_ANOMALY.md``) -- 2,000 trials/cell (U2's own stated
+minimum) turned out to be enough to estimate EACH mode's own FPR reliably
+(every individual cell's original 2,000-trial point estimate replicated
+within noise, p>0.08, against an independent 5,000-trial re-measurement --
+see the audit doc's reproducibility check) but NOT enough to reliably RANK
+the two modes against each other at the gap sizes actually observed
+(<1 percentage point on a ~1-3% base rate): the original grid's own
+"paired FPR > two-sample FPR at 4/6 cells" comparison did not reach
+significance at ANY cell when tested properly (largest z=1.80, p=0.07,
+n=2,000/side) and did not reproduce at 5,000 trials/side with an
+independent seed base (largest z=1.29, p=0.20; see the audit doc's
+``reproducibility_check.py`` output). 5,000 trials/cell (2.5x the original,
+still using ``SEED_BASE_TWO_SAMPLE``/``SEED_BASE_PAIRED`` below so trials
+0-1,999 are byte-identical to U2's original run, extending rather than
+replacing that data) is the trial count actually demonstrated to stabilize
+the cross-mode comparison, not an arbitrary round-number bump. 3x2x3 = 18
+cells/mode x 2 modes x 5,000 trials = 180,000 total simulated
+`check`-equivalent bootstrap evaluations."""
 N_BOOT = 1_000
 """See module docstring note 3 -- validated against n_boot=10,000 below
 before being trusted for this grid."""
@@ -164,6 +206,30 @@ def wilson_score_interval(successes: int, n: int, z: float = WILSON_Z) -> tuple[
     lower = (center - margin) / denom
     upper = (center + margin) / denom
     return (max(0.0, lower), min(1.0, upper))
+
+
+def two_proportion_z_test(x1: int, n1: int, x2: int, n2: int) -> tuple[float, float]:
+    """Two-sided two-proportion z-test (pooled SE) for whether
+    ``x2/n2`` differs from ``x1/n1`` -- added during the FPR-anomaly audit
+    (``docs/audit/FPR_ANOMALY.md``) specifically because the original grid
+    published a cross-mode inequality claim ("paired FPR > two-sample FPR at
+    4/6 cells") that was never actually significance-tested before being
+    written up as a finding; every cross-mode FPR comparison this script
+    prints from now on carries this test alongside the two independent
+    Wilson intervals, so a future reader/re-run can see directly whether an
+    apparent gap between the two modes' point estimates is or isn't
+    distinguishable from noise, not just eyeball two overlapping-looking
+    interval strings. Returns ``(z, two_sided_p)``; ``z`` positive means
+    ``x2/n2 > x1/n1``.
+    """
+    p1, p2 = x1 / n1, x2 / n2
+    pooled = (x1 + x2) / (n1 + n2)
+    se = math.sqrt(pooled * (1.0 - pooled) * (1.0 / n1 + 1.0 / n2))
+    if se == 0.0:
+        return (0.0, 1.0)
+    z = (p2 - p1) / se
+    p = math.erfc(abs(z) / math.sqrt(2.0))
+    return (z, p)
 
 
 CellKey = tuple[float, int, float]  # (confidence, n, effect_pct)
@@ -354,6 +420,29 @@ def main() -> int:
         f"paired {paired_elapsed:.1f}s)"
     )
 
+    # FPR-anomaly audit (docs/audit/FPR_ANOMALY.md): the ORIGINAL grid never
+    # tested whether an apparent paired-vs-two-sample FPR gap was actually
+    # significant before it got published as a finding -- print that test
+    # explicitly, every run, for every FPR (effect=0.0) cell, so this can't
+    # recur silently.
+    print("\n=== FPR (0% effect) cross-mode significance: paired vs two-sample ===")
+    print(
+        f"{'confidence':>10} {'n':>3} | {'two-sample':>24} | {'paired':>24} | z (paired-2samp)  p"
+    )
+    fpr_significance: dict[str, dict[str, float]] = {}
+    for confidence in CONFIDENCE_GRID:
+        for n in N_GRID:
+            key = (confidence, n, 0.0)
+            x1, n1 = two_sample_grid[key]
+            x2, n2 = paired_grid[key]
+            z, p = two_proportion_z_test(x1, n1, x2, n2)
+            fpr_significance[f"{confidence}|{n}"] = {"z": z, "p": p}
+            sig = " *** p<0.05 ***" if p < 0.05 else ""
+            print(
+                f"{confidence:>10} {n:>3} | {x1:>4}/{n1:<6} {x1 / n1 * 100:>5.2f}%      | "
+                f"{x2:>4}/{n2:<6} {x2 / n2 * 100:>5.2f}%      | z={z:>7.3f} p={p:.4f}{sig}"
+            )
+
     out_path = Path(__file__).resolve().parent.parent / "reports" / "confidence_grid_u2.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     serializable = {
@@ -375,6 +464,7 @@ def main() -> int:
             }
             for (c, n, e), (det, nt) in paired_grid.items()
         },
+        "fpr_cross_mode_significance": fpr_significance,
         "wall_clock_seconds": elapsed,
     }
     out_path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
