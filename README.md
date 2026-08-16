@@ -50,6 +50,14 @@ $ echo $?
 
 `adk-tracegauge check` defaults to `--mode auto`, and — as of Phase 7 U1 — that default now **prefers a paired comparison**: whenever a stable per-eval-case key resolves (`eval_case_id` first, recovered via `--eval-history`; `session_id` as a fallback) with at least `--min-n` (30) overlapping cases between baseline and current, paired mode runs. **Only when no such key resolves, or fewer than `min_n` cases overlap, does it automatically fall back to an unpaired two-sample comparison** using the full baseline/current cost distributions — never a mix of the matched subset and the rest. The resolved mode and key are printed on every single run, unconditionally, never silently assumed.
 
+**Which harness yields which key — verified live against the published package, both paths, not assumed:**
+| Harness | Key that resolves | How |
+|---|---|---|
+| `adk eval` CLI (this package's documented quickstart) | `eval_case_id` | `adk-tracegauge snapshot --eval-history <path-to-adk-eval's-.evalset_result.json>` |
+| Hand-rolled `Runner`/`InMemoryRunner`, `session_id` pinned by hand (`runner.run_async(session_id=...)`), no `adk eval` involved | `session_id` | Live-captured directly, no `--eval-history` needed |
+
+A hand-rolled harness resolving `key=session_id` is the *expected*, correct outcome for that harness — it is not the `adk eval` path, and does not indicate `eval_case_id` resolution failing there. See `examples/04_paired_mode_via_adk_eval_cli.py` (the real `adk eval` CLI path) and `examples/05_hand_rolled_session_id_pairing.py` (the hand-rolled path) for both, runnable end to end.
+
 At the shipped configuration — `confidence=0.98`, `min_n=30` — here is what that default actually detects, measured by Phase 7 U2's grid (`scripts/measure_regression_confidence_grid.py`, Wilson 95% CIs on every cell; full 18+18-cell table in "Known limitations" below and `reports/confidence_grid_u2.json`), corrected to **5,000 trials/cell** during the Phase 8 FPR-anomaly audit (`docs/audit/FPR_ANOMALY.md`) — trials 0–1,999 are byte-identical to the original 2,000-trial run, extended rather than replaced:
 
 **Paired mode — the default, whenever a pairing key resolves:**
