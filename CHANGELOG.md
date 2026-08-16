@@ -7,7 +7,7 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
-## [0.3.1] — Unreleased
+## [0.3.1] — 2026-08-16
 
 ### Fixed
 - **GG's first-run failure: `adk-tracegauge --help` raised `CommandNotFoundException` on
