@@ -9,6 +9,15 @@ A statistically-validated **CI cost-regression gate** for [Google ADK](https://g
 
 ---
 
+## Try it right now — no ADK app, no API key, no network call
+
+```bash
+pip install adk-tracegauge
+adk-tracegauge quickstart
+```
+
+Two commands, no files to create. This runs a deterministic, in-memory demo agent (bundled with the package — nothing is read from your machine) through a real `InMemoryRunner`, twice, with a deliberate cost regression injected into the second run, then fires the real `adk-tracegauge check` gate against it. **Measured live, not estimated: 78.2s wall-clock from a genuine fresh `pip install --user` on Windows** (the install mode that hits the PATH issue below) **to the printed regression verdict.** Same exact output every run — see `examples/` for the full script this reuses.
+
 ## Quickstart: the CI cost-regression gate
 
 ```bash

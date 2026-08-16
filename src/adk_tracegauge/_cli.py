@@ -343,6 +343,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
+def _cmd_quickstart(args: argparse.Namespace) -> int:
+    from adk_tracegauge._quickstart import run_quickstart
+
+    return run_quickstart()
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Builds the `adk-tracegauge` argument parser -- factored out from `main`
     so tests can exercise argument parsing in isolation, without invoking
@@ -453,6 +459,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_check.set_defaults(func=_cmd_check)
+
+    subparsers.add_parser(
+        "quickstart",
+        help=(
+            "Run a deterministic, self-contained demo (no API key, no network call, no "
+            "ADK app of your own) that fires a real regression gate immediately."
+        ),
+    ).set_defaults(func=_cmd_quickstart)
 
     return parser
 
