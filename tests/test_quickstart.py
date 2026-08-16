@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """tests/test_quickstart.py — HH1.1: end-to-end coverage for
 `adk-tracegauge quickstart`. This is a real, live run (a real InMemoryRunner
 through 64 total toy invocations, ~15-20s wall-clock) -- deliberately not
@@ -8,6 +6,8 @@ box against what actually ships in the wheel; a mocked version of this test
 would not have caught the real mypy-surfaced callback-signature issue or
 verified the real deterministic numbers below.
 """
+
+from __future__ import annotations
 
 from adk_tracegauge._quickstart import run_quickstart
 
