@@ -7,7 +7,7 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
-## [Unreleased]
+## [0.4.0] — 2026-08-17
 
 ### Added
 - **Sub-agent cost attribution (`agent_name`).** `CapturedCall` now records
@@ -19,8 +19,7 @@ see `CONTRIBUTING.md`).
   - the `check`/eval rationale text now prefixes each call line with
     `agent=<name>`;
   - `adk-tracegauge snapshot` records a new `cost_by_agent: dict[str, float]`
-    field per invocation (snapshot `schema_version` bumped 2→3 — additive,
-    old files still read fine, `cost_by_agent` just defaults to `{}`);
+    field per invocation;
   - `adk-tracegauge check --agent <name>` scopes the regression gate to one
     agent's own cost (works in both two-sample and paired mode).
 
@@ -28,6 +27,26 @@ see `CONTRIBUTING.md`).
   sharing a name (documented collapsed behavior, not a crash), a
   three-level nested delegation chain, and the single-agent backward-compat
   case. Verified from a fresh wheel install against google-adk 2.7.0.
+
+### Changed
+- **Snapshot `schema_version` bumped 2→3** for the new `cost_by_agent`
+  field. **Backward compatible, plainly stated:** every snapshot file
+  written by 0.3.x (`schema_version` 1 or 2) still reads correctly under
+  0.4.0 — `cost_by_agent` simply defaults to `{}` for every record in an
+  old file (the same additive-field pattern this package has used for every
+  prior schema bump: `session_id` and `eval_case_id` before it). The
+  concrete effect for someone mid-comparison across the upgrade: a baseline
+  snapshot captured on 0.3.x and a current snapshot captured on 0.4.0 still
+  compare correctly under plain `adk-tracegauge check` (unscoped) — nothing
+  changes there. The one thing that does NOT work across that mix is
+  `check --agent <name>` against the OLDER (0.3.x-captured) side: since that
+  snapshot has no `cost_by_agent` data at all, every record reports zero
+  cost for any agent, which `--agent` correctly reports as
+  `insufficient_data` rather than fabricating a comparison against absent
+  data (see `tests/test_sub_agent_attribution.py::test_cli_check_agent_flag_on_old_schema_file_reports_zero_cost_not_a_crash`).
+  Re-running `adk-tracegauge snapshot` on 0.4.0 for BOTH sides resolves
+  this — a one-time re-capture, not a required migration for anyone not
+  using `--agent`.
 
 ## [0.3.2] — 2026-08-16
 
