@@ -31,7 +31,6 @@ wheels = [
 
 [[package]]
 name = "adk-tracegauge"
-version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-adk", extra = ["eval"] },

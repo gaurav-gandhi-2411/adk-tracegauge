@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adk-tracegauge"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Per-invocation cost-in-USD evaluator for custom Google ADK eval harnesses. Not a drop-in adk eval/AgentEvaluator metric -- see README. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models."
 authors = [{ name = "Gaurav Gandhi", email = "gaurav.gandhi2411@gmail.com" }]
 requires-python = ">=3.10"
@@ -66,6 +66,16 @@ adk-tracegauge = "adk_tracegauge._cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["adk_tracegauge*"]
+
+[tool.setuptools.dynamic]
+# Single source of truth for the package version: src/adk_tracegauge/__init__.py's
+# __version__ literal. setuptools reads it via static AST analysis (no import needed,
+# so no side effects from that module's heavy google-adk imports run at build time --
+# verified working with this repo's setuptools>=70 in the guard test / build check below).
+# This replaces the old two-hand-maintained-locations scheme (pyproject.toml's static
+# `version = "..."` plus __init__.py's `__version__ = "..."`) that caused a real bug:
+# PR #6 bumped only pyproject.toml's 0.2.0 -> 0.3.0, leaving __init__.py stale at 0.2.0.
+version = { attr = "adk_tracegauge.__version__" }
 
 [tool.setuptools.package-data]
 "adk_tracegauge" = ["data/gemini_prices.json"]

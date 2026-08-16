@@ -9,13 +9,35 @@ This document describes the actual flow, written after running it twice for real
 
 ## The flow
 
-1. **Bump the version** in exactly two places (confirmed by grep — these are the only two
-   places the version string appears in this repo):
-   - `pyproject.toml`: `[project].version`
-   - `src/adk_tracegauge/__init__.py`: `__version__`
+1. **Bump the version** in exactly one place: `src/adk_tracegauge/__init__.py`'s
+   `__version__` literal.
+
+   Until the fix below, this was two hand-maintained places (`pyproject.toml`'s
+   `[project].version` and `__init__.py`'s `__version__`) with no mechanism keeping them in
+   sync — and that gap caused a real bug: the PR that bumped `0.2.0` → `0.3.0` bumped only
+   `pyproject.toml`'s literal, squash-merged into `main`, and left `__init__.py` stale at
+   `0.2.0`. `0.3.0` had not been tagged/published yet, so it was fixable pre-release; caught
+   by a release gate, not by any test that existed at the time (none did).
+
+   The fix: `pyproject.toml` now declares `dynamic = ["version"]` and resolves it via
+   `[tool.setuptools.dynamic]`'s `version = { attr = "adk_tracegauge.__version__" }` —
+   setuptools reads `__init__.py`'s `__version__` literal via static AST analysis at build
+   time (no import, so none of that module's `google-adk` import-time side effects run
+   during a build). `__init__.py` is now the single source of truth; `pyproject.toml` has no
+   version literal of its own to drift.
+
+   A guard test, `tests/test_version_consistency.py`, asserts
+   `importlib.metadata.version("adk-tracegauge") == adk_tracegauge.__version__` — this is
+   the regression gate for the exact bug above: it fails whenever the installed package's
+   metadata and the runtime `__version__` attribute disagree, which is now structurally only
+   possible if the single-source mechanism itself breaks (e.g. a future setuptools change
+   that can't resolve `attr =`), not from a second hand-edit being forgotten. Verified by
+   deliberately reproducing the two-hardcoded-literals mismatch and confirming this test
+   fails against it, then confirming it passes once the fix is applied — see the
+   `fix/version-single-source` PR description for the fail-then-pass proof.
    - Regenerate the lockfile: `uv lock`
-2. **Commit and open a PR.** CI (`ci.yml`) runs the full test suite (47 tests), ruff, and
-   mypy strict against the version-bumped code.
+2. **Commit and open a PR.** CI (`ci.yml`) runs the full test suite (including the version
+   guard test above), ruff, and mypy strict against the version-bumped code.
 
    One friction point encountered on every version-bump PR so far: this repo's merge-gate
    hook (rule 70a, gate 3b) requires the PR body to explicitly declare the reviewable/
@@ -48,20 +70,30 @@ This document describes the actual flow, written after running it twice for real
    install must keep working indefinitely. If a release has a real problem, ship a new
    version; don't delete the old one.
 
-## The tag-must-match-pyproject gotcha (real incident, not hypothetical)
+## The tag-must-match-source gotcha (real incident, not hypothetical)
 
-`pyproject.toml` has no dynamic versioning — the published version comes entirely from
-`[project].version`, and the git tag is only a trigger, not a version source. **This bit
-this exact repo's `0.1.0rc1` release before the tag was ever pushed**: `pyproject.toml`
-still said `0.1.0` (the final version) when the plan was to tag `v0.1.0rc1` for the resolver
-verification pass. Tagging as-is would have silently published `0.1.0` — skipping the rc
-entirely, and unable to be un-published afterward (see "never yank" above). Caught in review
-before the tag was pushed by explicitly checking:
+The git tag is only a trigger for `release.yml`, never a version source — the published
+version comes entirely from whatever `src/adk_tracegauge/__init__.py`'s `__version__` reads
+on `main` at the moment the tag is pushed (as of the `dynamic = ["version"]` fix,
+`pyproject.toml` itself carries no version literal of its own to check; it derives one from
+`__init__.py` at build time — see "Bump the version" above). **This bit this exact repo's
+`0.1.0rc1` release before the tag was ever pushed**, back when the version lived as a static
+literal directly in `pyproject.toml`: it still said `0.1.0` (the final version) when the
+plan was to tag `v0.1.0rc1` for the resolver verification pass. Tagging as-is would have
+silently published `0.1.0` — skipping the rc entirely, and unable to be un-published
+afterward (see "never yank" above). Caught in review before the tag was pushed.
+
+The discipline this incident established — verify what will actually get read *before*
+tagging, not after — still applies exactly the same way today, just against one file instead
+of two:
 ```bash
-git show origin/main:pyproject.toml | grep "^version"
+git show origin/main:src/adk_tracegauge/__init__.py | grep '__version__ ='
 ```
-before every tag, not after. Do this every time, no exceptions — it costs one command and
-the failure mode it prevents is permanent.
+Do this every time, no exceptions — it costs one command and the failure mode it prevents is
+permanent. (The single-source fix and its guard test, `tests/test_version_consistency.py`,
+prevent the *two-places-disagree* failure mode this document originally described; they do
+not prevent tagging against the wrong commit or a not-yet-bumped `main`, which is what this
+check still catches.)
 
 ## Post-publish verification
 
