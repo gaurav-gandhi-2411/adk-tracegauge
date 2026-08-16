@@ -18,12 +18,16 @@ jobs:
       fail-fast: false
       matrix:
         # Matches pyproject.toml's requires-python floor (>=3.10) and classifiers
-        # (3.10-3.13) exactly -- previously only 3.11 was exercised despite the
+        # (3.10-3.14) exactly -- previously only 3.11 was exercised despite the
         # package claiming broader support (Phase 1 finding D3). Lint/format/mypy
         # only need to run once (see the single-job steps below); ruff and mypy
         # don't vary per interpreter, so running them on every matrix leg would be
         # redundant CI minutes without adding coverage.
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        #
+        # 3.14 added Phase 8 CC2: verified (clean-venv install, full suite, every
+        # example) against both google-adk 2.6.3 and 2.7.0 -- the two versions the
+        # unpinned >=2.6.0,<2.8.0 range actually admits. No code changes required.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 

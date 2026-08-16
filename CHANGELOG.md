@@ -7,9 +7,21 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
-## [Unreleased]
+## [0.3.1] — Unreleased
 
 ### Fixed
+- **GG's first-run failure: `adk-tracegauge --help` raised `CommandNotFoundException` on
+  Windows.** Root cause: a default (non-venv) `pip install` performs a user-site install,
+  and the console script lands in a per-user `Scripts` directory Windows does not add to
+  PATH by default. Added `src/adk_tracegauge/__main__.py` so `python -m adk_tracegauge`
+  always works regardless of PATH (only needs `python` itself on PATH, which every Python
+  install guarantees). README and the adk-docs integration page now state this fix and the
+  PATH workaround directly in the install step, not buried in troubleshooting.
+- **Python 3.14 support**: `requires-python` had no upper bound but was untested past 3.13.
+  Verified clean on Python 3.14.4 in an isolated venv — full 395-test suite and all 5
+  `examples/` scripts pass, against both `google-adk==2.6.3` and `google-adk==2.7.0` (the
+  two versions the unpinned `>=2.6.0,<2.8.0` range admits). No code changes required. Added
+  to the CI matrix and `Programming Language :: Python :: 3.14` classifier.
 - **Corrected a published-but-never-significance-tested claim: paired mode's FPR was
   reported as exceeding two-sample's at 4 of 6 grid cells (Phase 7 U2,
   `reports/confidence_grid_u2.json`) — an audit found this comparison was never actually

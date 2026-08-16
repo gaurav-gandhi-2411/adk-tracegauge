@@ -18,6 +18,12 @@ adk-tracegauge snapshot --entrypoint my_eval_suite:run_and_return_store --output
 adk-tracegauge check --baseline baseline.json --current current.json
 ```
 
+**If `adk-tracegauge` isn't found right after installing** (`CommandNotFoundException` in PowerShell, "not recognized" in cmd), this is a PATH issue, not a broken install — `pip install --user` (the default outcome of `pip install` outside a venv) puts the console script in a per-user directory Windows doesn't add to PATH automatically. Two fixes, either works:
+1. Use `python -m adk_tracegauge` in place of `adk-tracegauge` everywhere in this README — always works, since it only needs `python` itself on PATH (available from `adk-tracegauge>=0.3.1`).
+2. Add the script directory Windows already installed to (printed as a `WARNING` during `pip install`, typically `%APPDATA%\Python\PythonXYZ\Scripts` on Windows) to your PATH.
+
+Installing into a virtual environment (`python -m venv`/`uv venv` + activate, then `pip install adk-tracegauge`) avoids this entirely, since an activated venv's `Scripts`/`bin` directory is already on PATH.
+
 `my_eval_suite:run_and_return_store` is a zero-argument callable you already have (it runs your ADK eval — `AgentEvaluator.evaluate()` or your own `Runner` harness — with `TraceGaugeUsagePlugin` wired in; see "What this actually is" below). `adk-tracegauge check` runs a percentile bootstrap on the difference in mean cost and exits with a **real, distinguishable exit code**: `0` pass, `1` regression, `3` insufficient data. Real output, from a genuine +20%-mean injected regression measured fresh this session (`examples/03_ci_regression_gate.py`, both `snapshot` calls plus `check` itself run as real subprocesses, `google-adk==2.6.3`):
 
 ```
