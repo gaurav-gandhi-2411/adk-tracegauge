@@ -9,21 +9,20 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
-Nothing yet — Phase 7 (`feat/cost-regression-gate` branch) folds into the
-still-unpublished `0.3.0` below (confirmed via `git tag --list`: only
-`v0.1.0rc1`/`v0.1.0`/`v0.2.0` exist, `pyproject.toml` already reads
-`0.3.0` from Phase 6's version bump) rather than opening a new version.
+Nothing yet.
 
 ## [0.3.0] — 2026-08-15
 
-Phases 2–7 combined (`feat/cost-regression-gate` branch) — not yet
-published to PyPI, not yet tagged, not yet merged. `pyproject.toml`'s
-version bumped `0.2.0` → `0.3.0` in Phase 6; Phase 7 adds to this same,
-still-unpublished entry rather than opening a new version. This entry
-consolidates the full branch, not just whatever happened to still be
+Phases 2–7 combined (`feat/cost-regression-gate` branch), merged into
+`main` via PR #6, with PR #7 fixing a version-single-source bug found
+pre-release (see that PR's own entry below and `docs/audit/RELEASE_0_3_0.md`
+for the full incident). `src/adk_tracegauge/__init__.py`'s `__version__` is
+now the single source of truth for the package version (Phase 6 bumped it;
+`pyproject.toml` derives its version dynamically from it since PR #7). This
+entry consolidates the full branch, not just whatever happened to still be
 sitting under `[Unreleased]` at the end — cross-checked against
 `git log main..HEAD` and all phase reports
-(`docs/audit/PHASE{1,2,3,4,5,6}_REPORT.md`) so nothing significant is
+(`docs/audit/PHASE{1,2,3,4,5,6,7}_REPORT.md`) so nothing significant is
 missing.
 
 ### Changed (Phase 7 U1)
@@ -256,6 +255,18 @@ Alpha.
   claims 3.10 support.
 - 2 shallow `is not None` test assertions in `test_registration.py`
   strengthened to real identity/type checks.
+- **(PR #7) Version single-source bug, caught pre-release by a release gate.**
+  PR #6's squash-merge bumped only `pyproject.toml`'s `version = "0.3.0"`,
+  leaving `src/adk_tracegauge/__init__.py`'s `__version__` stale at
+  `0.2.0` — two independently hand-maintained literals with no mechanism
+  keeping them in sync. `0.3.0` had not been tagged/published yet, so this
+  was fixable pre-release. Fix: `pyproject.toml` now declares
+  `dynamic = ["version"]`, resolved from `__init__.py`'s `__version__` via
+  setuptools' static-AST `attr =` reader at build time — `__init__.py` is
+  now the single source of truth. New guard test
+  `tests/test_version_consistency.py` asserts installed distribution
+  metadata and the runtime `__version__` attribute always agree. See
+  `docs/audit/RELEASE_0_3_0.md` for the full incident writeup.
 
 ## [0.2.0] — 2026-08-14
 
