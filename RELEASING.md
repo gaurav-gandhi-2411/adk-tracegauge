@@ -95,6 +95,35 @@ prevent the *two-places-disagree* failure mode this document originally describe
 not prevent tagging against the wrong commit or a not-yet-bumped `main`, which is what this
 check still catches.)
 
+## Statistical comparisons require a significance test before they become a documented claim
+
+Any change to README/docs that compares two *measured* rates against each other (not a rate
+against a fixed nominal target — comparing two independently-measured empirical numbers) must
+carry a significance test result (e.g. a two-proportion z-test, with its z/p reported) before
+the comparison ships as a stated finding. A visible gap between two point estimates is not
+evidence of a real difference on its own — small-count binomial proportions (as few as a few
+dozen successes out of a few thousand trials, exactly the regime this project's own FPR
+grids run at) are noisy enough that a real, reproducible-sounding ranking can flip on
+re-measurement.
+
+**Real incident, not hypothetical:** the published README claim "paired mode's FPR exceeds
+two-sample's at 4 of 6 shared grid cells" (Phase 7 U2, 2,000 trials/cell) reached
+`main`, a tagged release, and PyPI's published `0.3.0` README without ever being
+significance-tested. It does not survive testing — a two-proportion z-test on the same
+published counts finds no cell significant (largest z=1.80, p=0.07), and an independent
+5,000-trial re-measurement confirms the ranking does not reproduce (0/6 cells significant,
+one cell's ranking flips outright). See `docs/audit/FPR_ANOMALY.md` for the full
+investigation. No production code defect caused this — the numbers themselves were measured
+correctly; the defect was publishing a cross-measurement *comparison* as a finding without
+testing whether the gap was distinguishable from noise.
+
+**The rule this establishes:** before writing "X's rate is higher/lower/different than Y's
+rate" anywhere that ships (README, docs site, a PR description asserting a regression), run
+the significance test and cite its result alongside the claim — the same discipline this
+project already applies to the rates themselves (Wilson CIs, stated trial counts). A rate
+reported alone (no comparison implied) needs only its own CI, as before; this rule applies
+specifically to comparative claims between two measured quantities.
+
 ## Post-publish verification
 
 Manual today (see the backlog note in this session's memory: an automated post-publish step
