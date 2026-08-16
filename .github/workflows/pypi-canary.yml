@@ -34,18 +34,32 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install this package's non-google-adk dependencies, then latest google-adk[eval]
-        # No separate `tracegauge` install needed as of Phase 4 R5 -- the
-        # cost arithmetic this package used from it was ported in-house
-        # (src/adk_tracegauge/_cost.py) and the dependency was removed from
-        # pyproject.toml entirely, so -e . --no-deps has nothing left to add.
+      - name: Install the real published adk-tracegauge from PyPI, then latest google-adk[eval]
+        # This is a *canary* -- it must install what a real user actually gets
+        # (the published PyPI wheel), not this checkout's local source via
+        # `-e .`. `--upgrade` after the plain install lets google-adk[eval]'s
+        # own extras resolve to the latest release, ignoring this repo's
+        # <2.8.0 pin, so a breaking change surfaces here instead of via a
+        # user's own import failing with no warning.
         run: |
-          uv pip install --system -e . --no-deps
+          uv pip install --system adk-tracegauge
           uv pip install --system --upgrade "google-adk[eval]"
           uv pip install --system "pytest>=8.3,<9" "pytest-asyncio>=0.25,<1" pytest-mock
+
+      - name: Report the installed adk-tracegauge version
+        run: python -c "import importlib.metadata as m; print('adk-tracegauge', m.version('adk-tracegauge'))"
 
       - name: Report the installed google-adk version
         run: python -c "import importlib.metadata as m; print('google-adk', m.version('google-adk'))"
 
       - name: Run the test suite against latest google-adk
-        run: pytest tests/ -v
+        # This repo's own pyproject.toml sets `pythonpath = [".", "src", "scripts"]`
+        # so local dev/CI runs work without an install step -- but that same
+        # setting would shadow the real PyPI install just performed above with
+        # this checkout's local src/, defeating the entire point of a canary.
+        # Override to drop "." and "src" (only "scripts" is still needed --
+        # test_regression_confidence_grid.py / test_regression_power.py import
+        # helper modules from there directly), so `import adk_tracegauge` in
+        # the test suite resolves to the real published wheel on sys.path via
+        # site-packages, not this checkout.
+        run: pytest tests/ -v --override-ini="pythonpath=scripts"
