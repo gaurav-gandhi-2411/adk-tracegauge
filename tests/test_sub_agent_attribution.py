@@ -254,7 +254,9 @@ def test_write_then_read_snapshot_round_trips_cost_by_agent(tmp_path):
     read_back = read_snapshot(out_path)
 
     assert written.schema_version == 3
-    assert written.records[0].cost_by_agent == {"root_agent": pytest.approx(written.records[0].cost_usd)}
+    assert written.records[0].cost_by_agent == {
+        "root_agent": pytest.approx(written.records[0].cost_usd)
+    }
     assert read_back.records[0].cost_by_agent == written.records[0].cost_by_agent
 
 

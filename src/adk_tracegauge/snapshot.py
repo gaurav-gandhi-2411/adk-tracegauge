@@ -295,9 +295,7 @@ class Snapshot:
         from other invocations in the same group into one session/eval-case
         TOTAL, which is a correct sum, not a padded sample.)
         """
-        return [
-            r.cost_by_agent[agent_name] for r in self.records if agent_name in r.cost_by_agent
-        ]
+        return [r.cost_by_agent[agent_name] for r in self.records if agent_name in r.cost_by_agent]
 
 
 def build_snapshot(
