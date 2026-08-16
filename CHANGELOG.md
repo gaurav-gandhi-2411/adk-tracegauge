@@ -9,7 +9,25 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- **Corrected a published-but-never-significance-tested claim: paired mode's FPR was
+  reported as exceeding two-sample's at 4 of 6 grid cells (Phase 7 U2,
+  `reports/confidence_grid_u2.json`) — an audit found this comparison was never actually
+  tested for significance before being written up, and does not hold up when tested: a
+  two-proportion z-test on the ORIGINAL grid's own counts finds no cell significant
+  (largest z=1.80, p=0.07), and an independent 5,000-trial re-measurement with a new seed
+  base confirms the ranking does not reproduce (largest z=1.29, p=0.20). No code defect
+  was found in either mode's bootstrap implementation or null-data generator — both
+  modes instead show the SAME already-documented small-`n` percentile-bootstrap
+  anti-conservatism, at comparable magnitude, not a paired-specific issue.
+  `scripts/measure_regression_confidence_grid.py`'s `N_TRIALS` raised 2,000 → 5,000
+  (demonstrated, not assumed, to stabilize the cross-mode comparison) and a
+  `two_proportion_z_test` significance check added to the harness so this gap can't
+  recur silently. Corrected figures in `README.md` and
+  `_regression.py`'s `DEFAULT_CONFIDENCE` docstring. See `docs/audit/FPR_ANOMALY.md` for
+  the full investigation. No shipped default (`DEFAULT_CONFIDENCE`, `min_n`, mode
+  auto-selection) was changed — this is a documentation/measurement-methodology
+  correction, not a behavior change.
 
 ## [0.3.0] — 2026-08-15
 

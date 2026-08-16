@@ -326,7 +326,46 @@ existing single constant this work item was scoped to decide on; noted as
 a candidate for a future work item, not implemented here. See
 `scripts/measure_regression_confidence_grid.py` and PLAN.md's Phase 7 U2
 entry for the full 18+18-cell grid, both Wilson CIs, and this reasoning in
-full."""
+full.
+
+Phase 8 V1 (FPR anomaly audit, see docs/audit/FPR_ANOMALY.md): the table
+above's own FPR column shows paired mode's measured rate exceeding
+two-sample's at 4 of the 6 shared cells (e.g. 3.70% vs 3.00% at
+confidence=0.95/n=50) -- this was published WITHOUT ever being
+significance-tested. It does not hold up when tested: a two-proportion
+z-test on the table's own counts (`reports/confidence_grid_u2.json`) finds
+NO cell significant (largest z=1.80, p=0.07 at confidence=0.98/n=30), and
+an independent 5,000-trial re-measurement (new seed base,
+`scripts/measure_fpr_anomaly_reproducibility.py`) confirms the ranking does
+not reproduce (largest z=1.29, p=0.20) -- both modes instead independently
+show significant elevation above their OWN nominal one-sided alpha, at
+comparable magnitude, which IS real but is the SAME generic small-n
+percentile-bootstrap anti-conservatism this module already documents above
+("Anti-conservatism at small n" section, n=10/n=25), not a paired-specific
+defect. A structural hypothesis (one-sample paired bootstrap vs two-sample
+bootstrap having intrinsically different small-n coverage at matched
+variance/n) was also tested directly on synthetic Gaussian data using the
+REAL production bootstrap functions
+(`scripts/measure_fpr_anomaly_h1_discriminant.py`) and REFUTED (5/6 cells
+not significant). The FULL 18-cell/mode grid was re-run at 5,000 trials/cell
+(same seed base as the original run above, so trials 0-1,999 are
+byte-identical, extended rather than replaced) -- the corrected FPR at the
+shipped cell (confidence=0.98/n=30) is paired 1.46% [1.16%, 1.83%]
+(73/5,000) vs two-sample 1.30% [1.02%, 1.65%] (65/5,000), z=0.686, p=0.493,
+not significant; ALL 6 cross-mode cells are non-significant in the
+corrected grid (largest z=0.975, p=0.330 at confidence=0.98/n=50), and at
+confidence=0.95/n=30 the original ranking FLIPS (paired 2.98% < two-sample
+3.18%) -- consistent with an underlying true difference of zero, not a
+newly-discovered real effect. 10%-effect power at the corrected 5,000
+trials is consistent within noise with the table above (e.g. paired
+99.22% vs the original 99.45% at n=30) -- no re-decision triggered. Full
+corrected 12-row table in README.md and docs/audit/FPR_ANOMALY.md section
+3.5; `reports/confidence_grid_u2.json` now holds the corrected/extended
+data (git history preserves the original 2,000-trial file).
+CONCLUSION: this section's own DECISION above is UNCHANGED by the audit --
+no new evidence argues for revisiting confidence=0.98, min_n, or the mode
+auto-selection threshold. See docs/audit/FPR_ANOMALY.md for the full
+investigation."""
 DEFAULT_MIN_EFFECT_USD = 0.0001
 """A tenth of a cent per invocation. Below this, an "increase" is not worth
 failing a build over even if statistically real -- see module docstring's

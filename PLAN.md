@@ -3457,3 +3457,133 @@ without reporting first, no subagent/fork dispatch at any point).
       commit. Not pushed, not tagged, not published -- `feat/cost-regression-gate` is
       release-ready pending the human review/push/merge/tag/publish sequence in the Train 2
       ROUTE-TO-GG list above.
+
+## Phase 8
+
+Same branch (`main`, unprotected -- direct push, matching this session's established
+pattern; confirmed via `gh api repos/gaurav-gandhi-2411/adk-tracegauge/branches/main/protection`
+returning 404 before any commit). Same rules (zero-cost, no subagent/fork dispatch at any
+point).
+
+- [x] V1 -- FPR anomaly audit: paired mode's measured false-positive rate exceeding
+      two-sample's at 4 of 6 shared Phase 7 U2 grid cells, investigated in full. DONE
+      2026-08-16.
+
+      **Anomaly**: `reports/confidence_grid_u2.json` (Phase 7 U2, 2,000 trials/cell)
+      reported paired mode's FPR higher than two-sample's at `n=50`/confidence=0.95
+      (3.70% vs 3.00%), `n=30`/`n=50`/confidence=0.98 (1.40% vs 0.85%, 1.80% vs 1.20%),
+      and `n=30`/`n=50`/confidence=0.99 (0.90% vs 0.50%, 1.10% vs 0.65%) -- above the
+      ~2.5%-ish nominal expectation and counter to the theoretical expectation that
+      pairing should sharpen, not degrade, a test.
+
+      **3.1-3.3 (code/generator audit)**: read `_regression.py`'s
+      `evaluate_regression`/`evaluate_regression_paired` and both bootstrap functions in
+      full, plus both null-data generators
+      (`measure_regression_alpha_grid._generate_pair`,
+      `measure_regression_power.generate_case_correlated_pair`). Found NO bug in any of
+      the three investigated areas: (1) the paired null generator correctly preserves the
+      same case-level pairing structure the alternative (true-regression) generator uses
+      -- only `effect_usd` differs between them, never the pairing structure itself; (2)
+      `bootstrap_mean_of_paired_deltas` correctly resamples the precomputed
+      `current[i]-baseline[i]` DELTA VECTOR as a unit, never baseline/current
+      independently; (3) interval construction (percentile bootstrap, no BCa) and the
+      practical-significance floor check (`is_regression = statistically_significant and
+      practically_significant`) are byte-identical between both modes, and moot for this
+      specific anomaly since the confidence-grid measurement disables floors entirely
+      (`min_effect_usd=0.0`/`min_effect_pct=0.0`, isolating pure statistical
+      significance).
+
+      **3.4 (hypothesis testing, two rounds)**: H1 (a generic one-sample-vs-two-sample
+      structural variance-averaging effect -- two-sample's CI width benefits from
+      averaging two independent empirical variance estimates, paired's relies on only
+      one) tested directly via a NEW script
+      (`scripts/measure_fpr_anomaly_h1_discriminant.py`) comparing the REAL production
+      bootstrap functions on matched-total-variance, exactly-Gaussian synthetic data (no
+      case structure, no floor clipping) -- **REFUTED**: 5/6 cells show no significant
+      one-sample-vs-two-sample difference (3,000 trials/cell, `N_BOOT=1,000`), the 6th a
+      single p=0.031 crossing consistent with chance across 6 tests, not a robust
+      pattern. H2 (the original grid's cross-mode ranking is sampling noise in a
+      2,000-trial rare-event proportion, never significance-tested before publication)
+      tested via a second NEW script
+      (`scripts/measure_fpr_anomaly_reproducibility.py`) re-measuring the REAL null
+      generators at 5,000 trials/cell with an independent seed base --
+      **CONFIRMED**: zero of 6 paired-vs-two-sample cells reach significance (largest
+      z=1.29, p=0.20); both modes instead independently show significant elevation above
+      their OWN nominal one-sided alpha at 5-6 of 6 cells each -- the SAME, already
+      documented (module's "Anti-conservatism at small n" section, `n=10`/`n=25`),
+      generic small-`n` percentile-bootstrap phenomenon, present at comparable magnitude
+      in BOTH modes, not a paired-specific defect. A direct two-proportion z-test applied
+      to the ORIGINAL grid's own published counts (no new measurement) independently
+      confirms the "4 of 6 cells" narrative was never actually significant even in the
+      original data (largest z=1.80, p=0.072) -- the finding was published without ever
+      being tested. Both scripts committed as permanent, reproducible artifacts (matching
+      this codebase's `scripts/measure_*.py` convention), with
+      `tests/test_fpr_anomaly_audit.py` smoke-testing the harness (12 new tests: 5
+      standalone `two_proportion_z_test` correctness tests including a known-textbook
+      two-proportion-test value, 7 determinism/shape smoke tests for the 4 new cell
+      functions plus the seed-base-independence and shared-import regression checks).
+
+      **3.5 (harness fix + full re-run)**: `scripts/measure_regression_confidence_grid.py`
+      `N_TRIALS` raised 2,000 -> 5,000 (same `SEED_BASE_TWO_SAMPLE`/`SEED_BASE_PAIRED` as
+      the original U2 run, so trials 0-1,999 are byte-identical, extending rather than
+      replacing that data) -- a trial count directly demonstrated (not assumed) by 3.4's
+      H2 re-measurement to stabilize the cross-mode comparison. A new
+      `two_proportion_z_test` helper plus an "FPR cross-mode significance" table (printed
+      every run, written to `reports/confidence_grid_u2.json`'s new
+      `fpr_cross_mode_significance` key) added to the harness itself, so a future re-run
+      can never again publish a cross-mode ranking without the significance test sitting
+      next to it -- addresses this specific control gap (rule 85a: the original harness's
+      "surface" never included a significance check on its own headline comparison).
+      Full 18-cell/mode grid (all `confidence` x `n` x `effect` cells) re-run at
+      `N_TRIALS=5,000`, `N_BOOT=1,000` (validated against real `n_boot=10,000` at the two
+      most sensitive cells, both modes: 96.7%-100.0% verdict agreement, 150 trials each),
+      real Wilson 95% CIs, same generators/methodology as the original U2 grid, real
+      wall-clock 2,318.0s (two-sample 1,681.6s + paired 636.3s). **All 6 FPR cross-mode
+      cells: zero significant** (largest z=0.975, p=0.330 at confidence=0.98/n=50) --
+      corrected FPR at the shipped cell (confidence=0.98/n=30): paired 1.46% [1.16%,
+      1.83%] (73/5,000) vs two-sample 1.30% [1.02%, 1.65%] (65/5,000), z=0.686, p=0.493,
+      not significant; at confidence=0.95/n=30 the original run's ranking FLIPS (paired
+      2.98% < two-sample 3.18%) -- direction instability consistent with an underlying
+      true difference of zero, not a newly-discovered real effect. Corrected 10%-effect
+      power (both modes stay reliable): paired 99.22% [98.94%, 99.43%] (4,961/5,000) at
+      n=30, two-sample 57.46% [56.08%, 58.82%] (2,873/5,000) at n=30 -- consistent within
+      noise with the original 2,000-trial figures (99.45%/57.80%), no re-decision
+      triggered. Full 12-row corrected table (all 6 confidence/n cells x both modes, FPR
+      + 10%-power) and the FPR cross-mode significance table committed to
+      `docs/audit/FPR_ANOMALY.md` section 3.5; `reports/confidence_grid_u2.json`
+      overwritten with the corrected/extended data (trials 0-1,999 byte-identical to the
+      original U2 run; git history preserves the original 2,000-trial file for
+      provenance).
+
+      **3.6 (real property assessment)**: no NEW real, mode-specific statistical property
+      was found. What DID reproduce -- generic percentile-bootstrap anti-conservatism at
+      small `n`, roughly equal magnitude in both modes -- is not new; it was already
+      documented at `n=10`/`n=25` (BCa tried and found no improvement; studentized
+      bootstrap assessed and rejected on stated theoretical grounds) and this audit
+      confirms it persists, comparably in both modes, at `n=30`/`n=50` too. The shipped
+      default (paired mode, confidence=0.98) does not need reassessment on the grounds
+      investigated here -- no default (`DEFAULT_CONFIDENCE`, `min_n`, mode
+      auto-selection) was changed in this audit.
+
+      **Documentation**: full investigation, both discriminating tests' exact output,
+      the resolution, and what remains open written to
+      `docs/audit/FPR_ANOMALY.md`. Concise "Note on paired-mode FPR" subsection added to
+      `README.md`'s statistical-methodology / "Known limitations" section. Corrected
+      table numbers propagated to `_regression.py`'s `DEFAULT_CONFIDENCE` docstring (new
+      "Phase 8 V1" addendum, prior Phase 7 U2 text left intact per this project's
+      never-silently-rewrite-history convention) and
+      `oss-contrib/adk-docs/docs/integrations/adk-tracegauge.md`'s paired-mode section
+      (separate repo, same branch `docs/adk-tracegauge-integration`, PR #2128 already
+      open).
+
+      **Verification**: `uv run ruff check .` -- all checks passed (59 files, including the
+      2 new scripts, 1 new test file, and a markdown code-fence formatting fix in the new
+      audit doc). `uv run ruff format --check .` -- all 59 files formatted. `uv run mypy
+      src/` -- no issues found in 11 source files (unchanged file count; `_regression.py`'s
+      docstring-only edit doesn't touch typed code). `uv run pytest tests/
+      --cov=adk_tracegauge --cov-report=term-missing` -- **395 passed** (382 baseline + 12
+      new `test_fpr_anomaly_audit.py` tests + 1 pre-existing test not previously counted in
+      this session's baseline), 130.6s wall-clock, coverage **99%** (1026 stmts, 3 miss --
+      identical to the pre-audit baseline; the new scripts/tests live outside `src/`, not
+      part of the coverage gate per rule 24). `git status` clean after commit (see commit
+      list below).
