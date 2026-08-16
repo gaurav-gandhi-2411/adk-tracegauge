@@ -45,6 +45,16 @@ This document describes the actual flow, written after running it twice for real
    (`pyproject.toml`, `__init__.py`) + 1 generated line (`uv.lock`)". Missing this blocks
    the merge even when CI is green; add it up front rather than discovering the block after
    opening the PR.
+
+   **Every PR into `main`, no exception, is routed to GG for merge — CC never self-merges,
+   regardless of triviality, docs-only content, or all-gates-green (rule 70d).** This applies
+   to the version-bump PR itself and to any PR opened during the release process, including
+   a same-session follow-up fix discovered while verifying a prior PR. Incident: a 1-line,
+   docs-only `CHANGELOG.md` date fix (PR #9) was self-merged one turn after direct-to-main
+   commits on this exact repo were flagged as the process gap branch protection (this
+   document's own prerequisite) exists to close — the reasoning ("trivial, docs-only, CI
+   green") was identical to the incident it followed, not a different judgment (2026-08-16).
+   Prepare the PR, confirm every gate passes, then stop and wait for GG.
 3. **Merge, then tag the merged commit:**
    ```bash
    git checkout main && git pull
