@@ -54,6 +54,23 @@ class CapturedCall:
     partial: bool = False
     thoughts_token_count: int = 0
     tool_use_prompt_token_count: int = 0
+    agent_name: str = ""
+    """LL2 (sub-agent attribution): the name of the agent that made this
+    specific call, sourced from ``callback_context.agent_name`` --
+    VERIFIED live this session to correctly distinguish a root agent's own
+    calls from an AgentTool-delegated sub-agent's calls (empirically
+    tested against a real two-agent InMemoryRunner run, not assumed from
+    field existence). Deliberately populated from ``CallbackContext``
+    inside ``after_model_callback`` -- NOT from ``InvocationContext.agent``
+    inside ``before_run_callback`` -- because only ``after_model_callback``
+    fires during `adk eval`/``AgentEvaluator.evaluate()`` (see
+    ``_plugin.py``'s module docstring); sourcing agent_name from
+    ``before_run_callback`` would silently leave it empty on that path,
+    exactly the same class of gap Phase 4 R2 already found and fixed for
+    session_id. Empty string, not None, for a call captured before this
+    field existed or from a code path that cannot resolve it -- matches
+    this dataclass's own existing convention (0/False/"" defaults, never
+    None) for "not populated" versus "genuinely empty"."""
 
 
 @dataclass

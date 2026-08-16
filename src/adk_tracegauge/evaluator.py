@@ -328,6 +328,7 @@ def _priced_result(
     digest: SessionDigest,
     *,
     threshold_usd: float,
+    agent_names_by_turn: tuple[str, ...] = (),
 ) -> PerInvocationResult:
     session_cost = _price_digest(digest, prices=load_gemini_prices())
 
@@ -373,8 +374,19 @@ def _priced_result(
             f"${session_cost.total_usd - threshold_usd:.6f})"
         )
     for turn_cost in session_cost.turn_costs:
+        # LL2: agent= is printed whenever it resolved to a real, non-empty
+        # name -- omitted entirely (not "agent=") for a single-agent
+        # invocation or an older capture that never populated it, so the
+        # rationale text for the common case doesn't grow a redundant,
+        # always-identical column.
+        agent_name = (
+            agent_names_by_turn[turn_cost.turn_index]
+            if turn_cost.turn_index < len(agent_names_by_turn)
+            else ""
+        )
+        agent_prefix = f"agent={agent_name} " if agent_name else ""
         line = (
-            f"  call[{turn_cost.turn_index}] model={turn_cost.model_key} "
+            f"  call[{turn_cost.turn_index}] {agent_prefix}model={turn_cost.model_key} "
             f"fresh_tokens={turn_cost.fresh_tokens} fresh=${turn_cost.fresh_cost:.6f} "
             f"cache_read=${turn_cost.cache_read_cost:.6f} "
             f"output=${turn_cost.output_cost:.6f} total=${turn_cost.total_usd:.6f}"
@@ -771,7 +783,13 @@ class CostEfficiencyEvaluator(Evaluator):
             # snapshot.py already had the identical assert for the same
             # reason -- see that module for the matching pattern.)
             per_invocation_results.append(
-                _priced_result(actual, expected, digest, threshold_usd=self._threshold_usd)
+                _priced_result(
+                    actual,
+                    expected,
+                    digest,
+                    threshold_usd=self._threshold_usd,
+                    agent_names_by_turn=adapted.agent_names_by_turn,
+                )
             )
 
         scores: list[float] = [r.score for r in per_invocation_results if r.score is not None]

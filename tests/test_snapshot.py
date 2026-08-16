@@ -346,7 +346,7 @@ def test_write_then_read_snapshot_round_trips_eval_case_id(tmp_path: Path):
     written = write_snapshot(store, out_path, eval_case_ids_by_session={"sess-a": "case_1"})
     read_back = read_snapshot(out_path)
 
-    assert written.schema_version == 2
+    assert written.schema_version == SNAPSHOT_SCHEMA_VERSION
     assert written.records[0].eval_case_id == "case_1"
     assert read_back.records[0].eval_case_id == "case_1"
 

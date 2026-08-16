@@ -24,14 +24,22 @@ def _invocation(invocation_id: str) -> Invocation:
     )
 
 
-def _fake_callback_context(invocation_id: str, session_id: str = "fake-session") -> object:
+def _fake_callback_context(
+    invocation_id: str, session_id: str = "fake-session", agent_name: str = "fake-agent"
+) -> object:
     """A minimal fake CallbackContext -- real ADK CallbackContext always has
     a `.session` (a required, non-optional property backed by
     InvocationContext.session: Session), so after_model_callback's Phase 4
     R2 session_id capture (`callback_context.session.id`) needs one here
-    too, same as it would against a real ADK-built CallbackContext."""
+    too, same as it would against a real ADK-built CallbackContext.
+    `.agent_name` (LL2) is the same kind of always-present real property --
+    see _plugin.py's after_model_callback -- so this fake needs one too."""
     fake_session = type("FakeSession", (), {"id": session_id})()
-    return type("Ctx", (), {"invocation_id": invocation_id, "session": fake_session})()
+    return type(
+        "Ctx",
+        (),
+        {"invocation_id": invocation_id, "session": fake_session, "agent_name": agent_name},
+    )()
 
 
 @pytest.mark.asyncio

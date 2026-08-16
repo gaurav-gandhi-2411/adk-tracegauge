@@ -157,6 +157,13 @@ class TraceGaugeUsagePlugin(BasePlugin):
                 # silently dropped before, undercounting real cost).
                 thoughts_token_count=usage.thoughts_token_count or 0,
                 tool_use_prompt_token_count=usage.tool_use_prompt_token_count or 0,
+                # LL2: callback_context.agent_name -- verified live this
+                # session to correctly report the DELEGATED sub-agent's own
+                # name during an AgentTool-nested call, not the root's, and
+                # (unlike invocation_context.agent.name) available on the
+                # one hook that fires during every integration path this
+                # package supports, including `adk eval`.
+                agent_name=callback_context.agent_name or "",
             ),
         )
         return None

@@ -231,7 +231,7 @@ def _paired_mode_viable(matched_count: int, min_n: int) -> bool:
 
 
 def _resolve_check_mode(
-    mode: str, baseline: Snapshot, current: Snapshot, min_n: int
+    mode: str, baseline: Snapshot, current: Snapshot, min_n: int, agent: str | None = None
 ) -> tuple[str, list[float], list[float], list[str], PairingKey]:
     """Decides which comparison method `_cmd_check` actually runs, and
     returns (resolved_mode, paired_baseline_costs, paired_current_costs,
@@ -252,8 +252,15 @@ def _resolve_check_mode(
     key's overlap is enough to trust (see that function for the full
     reasoning); otherwise "two-sample". Always deterministic given the two
     snapshots' contents.
+
+    ``agent`` (LL2.3, optional): forwarded to ``resolve_pairing`` -- see its
+    own docstring. Agent-scoping never changes WHICH mode/key gets picked
+    (that decision is still driven purely by session_id/eval_case_id
+    overlap, unaffected by cost values), only which dollar figures are paired.
     """
-    paired_baseline, paired_current, matched, resolved_key = resolve_pairing(baseline, current)
+    paired_baseline, paired_current, matched, resolved_key = resolve_pairing(
+        baseline, current, agent=agent
+    )
     if mode == "paired":
         return "paired", paired_baseline, paired_current, matched, resolved_key
     if mode == "two-sample":
@@ -266,9 +273,11 @@ def _resolve_check_mode(
 def _cmd_check(args: argparse.Namespace) -> int:
     baseline = read_snapshot(args.baseline)
     current = read_snapshot(args.current)
+    agent: str | None = getattr(args, "agent", None)
+    agent_note = f" [agent={agent}]" if agent is not None else ""
 
     resolved_mode, paired_baseline, paired_current, matched_keys, resolved_key = (
-        _resolve_check_mode(args.mode, baseline, current, args.min_n)
+        _resolve_check_mode(args.mode, baseline, current, args.min_n, agent=agent)
     )
 
     if resolved_mode == "paired":
@@ -288,7 +297,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
                 "--mode two-sample."
             )
         print(
-            f"adk-tracegauge check: mode=paired (key={resolved_key}, {len(matched_keys)} "
+            f"adk-tracegauge check: mode=paired{agent_note} (key={resolved_key}, {len(matched_keys)} "
             f"overlapping {resolved_key}s matched between baseline and current)"
         )
         result = evaluate_regression_paired(
@@ -323,10 +332,12 @@ def _cmd_check(args: argparse.Namespace) -> int:
                     "usable paired sample -- see _paired_mode_viable's docstring), "
                     "falling back to two-sample)"
                 )
-        print(f"adk-tracegauge check: mode=two-sample{fallback_note}")
+        print(f"adk-tracegauge check: mode=two-sample{agent_note}{fallback_note}")
+        baseline_costs = baseline.costs_for_agent(agent) if agent is not None else baseline.costs()
+        current_costs = current.costs_for_agent(agent) if agent is not None else current.costs()
         result = evaluate_regression(
-            baseline.costs(),
-            current.costs(),
+            baseline_costs,
+            current_costs,
             confidence=args.confidence,
             min_effect_usd=args.min_effect_usd,
             min_effect_pct=args.min_effect_pct,
@@ -456,6 +467,25 @@ def build_parser() -> argparse.ArgumentParser:
             "overlap (>= --min-n) on the best-available key -- falling back to two-sample only "
             "when no key resolves or the overlap is below that bar. The resolved mode AND key "
             "(or why not) are always printed."
+        ),
+    )
+    p_check.add_argument(
+        "--agent",
+        type=str,
+        default=None,
+        help=(
+            "LL2: scope the regression gate to a single agent's own cost, via "
+            "SnapshotRecord.cost_by_agent (populated only by snapshots taken with a "
+            "version of adk-tracegauge that captures agent_name -- schema_version >= 3; an "
+            "older snapshot reports zero cost for every agent, not an error). Matches "
+            "callback_context.agent_name, i.e. the ADK agent's own `name=` -- for the "
+            "common AgentTool-delegation case this is the delegated sub-agent's name "
+            "(e.g. 'capital_finder' in examples/02_subagent_rollup.py), not the parent's; "
+            "for agent transfer/handoff within one invocation, whichever agent(s) actually "
+            "made each priced call. Works in both --mode two-sample (filters to just this "
+            "agent's own invocations) and --mode paired/auto (pairs each session/eval-case's "
+            "cost attributable to just this agent). No effect on WHICH mode/pairing key is "
+            "chosen -- only which dollar figures are compared."
         ),
     )
     p_check.set_defaults(func=_cmd_check)

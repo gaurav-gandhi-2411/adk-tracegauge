@@ -299,9 +299,11 @@ def test_cmd_snapshot_with_eval_history_resolves_eval_case_id(
         ]
     )
 
+    from adk_tracegauge.snapshot import SNAPSHOT_SCHEMA_VERSION
+
     assert exit_code == 0
     raw = json.loads(out_path.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == SNAPSHOT_SCHEMA_VERSION
     assert raw["records"][0]["session_id"] == "sess-a"
     assert raw["records"][0]["eval_case_id"] == "case_1"
     captured = capsys.readouterr()
