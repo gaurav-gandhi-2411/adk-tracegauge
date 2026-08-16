@@ -15,6 +15,18 @@ name: Price table freshness
 # daily would just add 7x the CI noise for zero earlier warning in
 # practice. Same weekday/cadence family as pypi-canary.yml, offset by an
 # hour so the two scheduled jobs don't contend for the same runner slot.
+#
+# GG1 (Phase 8): a second, independent step below fetches each vendor's own
+# published pricing page (Anthropic, Google, OpenAI) and compares it
+# directly against every entry this repo's table claims -- replaces the
+# FF4.3 cross-repo-comparison plan (never implemented), which would have
+# compared this table against a SIBLING repo's table instead of against the
+# vendor. Two tables compared only to each other stay green even while both
+# drift into staleness together -- the actual failure this repo hit once
+# already (see docs/audit/PHASE8_PLAN.md FF2.2). A vendor page fetch
+# failure or structural change fails this step loudly, distinctly from a
+# genuine price mismatch -- see scripts/check_price_table_vs_vendor.py's
+# own module docstring.
 
 on:
   schedule:
@@ -51,3 +63,6 @@ jobs:
 
       - name: Check price table freshness
         run: uv run python scripts/check_price_freshness.py
+
+      - name: Check price table against each vendor's own published page
+        run: uv run python scripts/check_price_table_vs_vendor.py
