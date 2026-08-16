@@ -7,6 +7,28 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.3.2] — 2026-08-16
+
+### Added
+- **`adk-tracegauge quickstart`**: a zero-config, one-command demo. No ADK app of
+  your own, no API key, no live model call, no files to create. Runs a
+  deterministic, in-memory demo agent (bundled with the package — nothing
+  read from the user's machine) through a real `InMemoryRunner`, twice, with
+  a deliberate cost regression injected into the second run, then fires the
+  real `adk-tracegauge check` gate against it. Reuses the exact,
+  already-proven mechanism `examples/05_hand_rolled_session_id_pairing.py`
+  demonstrates (a deterministic fake `BaseLlm` + `TraceGaugeUsagePlugin` via
+  the documented `after_model_callback` wiring), packaged as an installed
+  console subcommand instead of a script requiring the repo cloned. Measured
+  live from a genuine fresh Windows user-site install: 78.2s wall-clock,
+  well under the 5-minute target. README now leads with this command.
+
+  This release exists specifically to get the command onto PyPI:
+  `0.3.1`'s published wheel (verified by downloading and inspecting the
+  actual artifact from `files.pythonhosted.org`, not the repo) does not
+  contain it — the command was merged into `main` after `0.3.1` was already
+  tagged and published.
+
 ## [0.3.1] — 2026-08-16
 
 ### Fixed
