@@ -1,5 +1,21 @@
 """adk_tracegauge/_regression.py — Bootstrap-CI cost regression detection.
 
+**Statistical ownership note (ZZ2, tracegauge sibling package):** this
+module owns bootstrap-CI methodology for adk-tracegauge's own estimator
+shape — a two-sample difference-in-means, one-sided, over ADK eval
+invocation costs. ``tracegauge`` (the sibling package) has its own,
+independent bootstrap implementation for a different estimator shape (a
+session-level-resampled ratio-of-sums, for cost-per-edit/cost-per-100-lines
+— see ``tes/_bootstrap.py``), with its own separately-measured confidence
+level, ``n_boot``, and minimum-``n``. The two are deliberately NOT
+synchronized: this module's ``DEFAULT_CONFIDENCE=0.98``/``MIN_N_DEFAULT=30``
+below were validated for difference-in-means specifically (percentile
+intervals proven adequate for that estimator shape — see this module's own
+FPR-measurement history) and do not transfer to a skewed ratio estimator,
+where a percentile interval's coverage is a real, separately-measured
+question. A future reader should not assume a constant changed here implies
+the same change is warranted in ``tracegauge``, or vice versa.
+
 Core statistics for ``adk-tracegauge check`` (see ``_cli.py``). Given two
 per-invocation cost distributions (a saved baseline, a current run), decides
 whether the current run's mean cost has REGRESSED (gotten significantly and
