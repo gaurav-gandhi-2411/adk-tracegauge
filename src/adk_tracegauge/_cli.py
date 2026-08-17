@@ -82,15 +82,26 @@ printed, never silently assumed.
 requirement that "regression detected" and "insufficient data" not be
 conflated):
 
-    0 -- no significant regression (gate passes)
+    0 -- no significant regression (gate passes), and (for two-sample mode)
+         this run's own observed variance/n could reliably (80% power)
+         detect your configured floor
     1 -- regression detected (statistically AND practically significant)
     3 -- insufficient data (either group has fewer than --min-n invocations
          -- refuses to emit a statistically meaningless verdict)
+    4 -- Phase 9 Q2: TWO-SAMPLE MODE ONLY -- "pass" was reported, but this
+         run's own observed variance/n could NOT reliably (80% power)
+         detect your configured floor (the same condition the "achieved
+         power" WARNING line already reports in text, now also visible to
+         a CI job checking only the exit code). Real, honest signal, not
+         insufficient data -- the bootstrap CI is statistically valid, it
+         just cannot resolve an effect as small as what you configured.
+         See RegressionCheckResult.underpowered_pass's docstring
+         (_regression.py) for the full reasoning and how to respond.
 
 (argparse itself uses exit code 2 for malformed CLI invocations -- e.g. a
-missing required flag -- so 3, not 2, is used for insufficient-data to keep
-it distinguishable from an argument-parsing error, not just from the other
-two verdicts.)
+missing required flag -- so 3 and 4, not 2, are used for the two "verdict
+computed, but read the details before trusting it at face value" cases, to
+keep them distinguishable from an argument-parsing error.)
 
 **GitHub Actions usage** -- a full, copy-pasteable workflow demonstrating
 run-eval -> snapshot -> compare -> fail-build-on-regression lives at
@@ -123,6 +134,18 @@ from .snapshot import PairingKey, Snapshot, read_snapshot, resolve_pairing, writ
 EXIT_PASS = 0
 EXIT_REGRESSION = 1
 EXIT_INSUFFICIENT_DATA = 3
+EXIT_UNDERPOWERED_PASS = 4
+"""Phase 9 Q2: a distinct, non-zero exit code for `status="pass"` under
+TWO-SAMPLE mode specifically, when this run's own observed variance/n
+means the configured practical-significance floor could not be reliably
+(80% power) detected -- see RegressionCheckResult.underpowered_pass's
+docstring for the full reasoning. Deliberately NOT the same value argparse
+itself uses for a CLI usage error (2) -- kept distinguishable from an
+invocation mistake. This is a REAL exit-code semantics change: existing CI
+configs that treat `exit code == 0` as "safe, no regression" will now see
+a non-zero code on an underpowered two-sample pass they previously saw as
+a clean 0 -- intentional, not a regression in this package itself. See
+CHANGELOG for the version this shipped in."""
 
 
 def _resolve_entrypoint(spec: str) -> UsageStore:
@@ -351,6 +374,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
         return EXIT_INSUFFICIENT_DATA
     if result.status == "regression":
         return EXIT_REGRESSION
+    if result.underpowered_pass:
+        return EXIT_UNDERPOWERED_PASS
     return EXIT_PASS
 
 
@@ -512,4 +537,11 @@ if __name__ == "__main__":
     sys.exit(main())
 
 
-__all__ = ["EXIT_INSUFFICIENT_DATA", "EXIT_PASS", "EXIT_REGRESSION", "build_parser", "main"]
+__all__ = [
+    "EXIT_INSUFFICIENT_DATA",
+    "EXIT_PASS",
+    "EXIT_REGRESSION",
+    "EXIT_UNDERPOWERED_PASS",
+    "build_parser",
+    "main",
+]

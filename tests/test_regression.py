@@ -799,6 +799,82 @@ def test_evaluate_regression_report_does_not_warn_when_floor_is_generous():
     assert "WARNING:" not in result.report()
 
 
+# --- Phase 9 Q2: underpowered_pass / EXIT_UNDERPOWERED_PASS -----------------
+
+
+def test_underpowered_pass_true_for_two_sample_pass_with_real_variance_and_tiny_floor():
+    # Real variance (not a degenerate [x]*n fixture), NO injected effect
+    # (current == baseline), and a floor small enough that even near-zero
+    # noise clears it -- power_warning fires AND status stays "pass".
+    rng = random.Random(99)
+    baseline = [max(0.0001, rng.gauss(0.010, 0.006)) for _ in range(40)]
+    current = list(baseline)
+
+    result = evaluate_regression(baseline, current, min_effect_usd=1e-9, min_effect_pct=1e-9, seed=42)
+
+    assert result.status == "pass"
+    assert result.method == "two_sample"
+    assert result.power_warning is not None
+    assert result.underpowered_pass is True
+    assert "UNDERPOWERED PASS" in result.report()
+    assert "exit code 4" in result.report()
+
+
+def test_underpowered_pass_false_when_variance_is_low_enough_for_the_default_floor():
+    # Very low CV (~0.5%) -- clears BOTH default floors (the tighter USD
+    # one, $0.0001 absolute, and the 5% one), so no warning at all.
+    rng = random.Random(99)
+    baseline = [max(0.0001, rng.gauss(0.010, 0.00005)) for _ in range(40)]
+    current = list(baseline)
+
+    result = evaluate_regression(baseline, current, seed=42)  # default floors
+
+    assert result.status == "pass"
+    assert result.power_warning is None
+    assert result.underpowered_pass is False
+    assert "UNDERPOWERED PASS" not in result.report()
+
+
+def test_underpowered_pass_false_for_regression_status_even_with_power_warning():
+    # A REAL, large injected effect can be both a "regression" verdict AND
+    # still trip power_warning (the floor question is orthogonal to whether
+    # THIS run's own effect cleared it) -- underpowered_pass must not fire
+    # on a non-"pass" status; the regression status is the more important
+    # signal and must not be relabeled.
+    rng = random.Random(1234)
+    baseline = [max(0.0001, rng.gauss(0.010, 0.0015)) for _ in range(40)]
+    current = [max(0.0001, rng.gauss(0.010 * 1.20, 0.0015 * 1.20)) for _ in range(40)]
+
+    result = evaluate_regression(baseline, current, seed=42)
+
+    assert result.status == "regression"
+    assert result.power_warning is not None
+    assert result.underpowered_pass is False
+
+
+def test_underpowered_pass_false_for_paired_mode_even_with_power_warning():
+    # Q2 scopes the exit-code escalation to two-sample only (see
+    # underpowered_pass's docstring) -- paired mode still gets the
+    # power_warning TEXT, but never underpowered_pass=True.
+    # Real per-pair DELTA variance (zero-mean noise added on top of
+    # baseline, not current==baseline exactly -- a degenerate all-zero
+    # delta set would give standard_error=0 and never trip the warning).
+    rng = random.Random(7)
+    baseline = [max(0.0001, rng.gauss(0.010, 0.006)) for _ in range(40)]
+    noise = [rng.gauss(0.0, 0.004) for _ in range(40)]
+    current = [b + eps for b, eps in zip(baseline, noise, strict=True)]
+
+    result = evaluate_regression_paired(
+        baseline, current, min_effect_usd=1e-9, min_effect_pct=1e-9, seed=42
+    )
+
+    assert result.status == "pass"
+    assert result.method == "paired"
+    assert result.power_warning is not None
+    assert result.underpowered_pass is False
+    assert "UNDERPOWERED PASS" not in result.report()
+
+
 def test_evaluate_regression_paired_populates_achieved_power_fields():
     baseline = [0.01, 0.05, 0.002, 0.03, 0.08] * 10
     current = [b + 0.001 for b in baseline]

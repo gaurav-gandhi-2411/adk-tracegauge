@@ -15,6 +15,7 @@ from adk_tracegauge._cli import (
     EXIT_INSUFFICIENT_DATA,
     EXIT_PASS,
     EXIT_REGRESSION,
+    EXIT_UNDERPOWERED_PASS,
     _paired_mode_viable,
     _resolve_entrypoint,
     build_parser,
@@ -383,6 +384,69 @@ def test_cmd_check_end_to_end_insufficient_data(tmp_path: Path, capsys: pytest.C
     assert exit_code == EXIT_INSUFFICIENT_DATA
     captured = capsys.readouterr()
     assert "INSUFFICIENT DATA" in captured.out
+
+
+def _write_snapshot_with_varying_costs(path: Path, prompts: list[int]) -> None:
+    """Real per-invocation variance (not a degenerate fixed-prompt fixture)
+    -- alternating small/large prompt sizes -- for Phase 9 Q2's
+    underpowered-pass tests, which need a real, nonzero achievable MDE."""
+    store = UsageStore()
+    for i, prompt in enumerate(prompts):
+        store.record(f"inv-{i}", _call(prompt=prompt))
+    write_snapshot(store, path)
+
+
+def test_cmd_check_end_to_end_underpowered_pass_two_sample(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    # Real variance (alternating cheap/expensive invocations), IDENTICAL
+    # distribution baseline vs current (no injected effect -> real "pass"),
+    # and a near-zero configured floor so it sits below the achievable MDE.
+    prompts = ([500, 20_000] * 20)[:40]
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    _write_snapshot_with_varying_costs(baseline_path, prompts)
+    _write_snapshot_with_varying_costs(current_path, prompts)
+
+    exit_code = main(
+        [
+            "check",
+            "--baseline",
+            str(baseline_path),
+            "--current",
+            str(current_path),
+            "--min-effect-usd",
+            "0.000000001",
+            "--min-effect-pct",
+            "0.000000001",
+        ]
+    )
+
+    assert exit_code == EXIT_UNDERPOWERED_PASS
+    captured = capsys.readouterr()
+    assert "PASS" in captured.out
+    assert "UNDERPOWERED PASS" in captured.out
+    assert "exit code 4" in captured.out
+
+
+def test_cmd_check_end_to_end_pass_stays_exit_pass_with_low_variance_and_default_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    # Low, realistic variance (narrow prompt-size spread, not the extreme
+    # 40x alternation above) -- the DEFAULT floor IS achievable here, so
+    # EXIT_PASS, not EXIT_UNDERPOWERED_PASS. Regression guard: confirms
+    # Q2's change doesn't silently escalate every two-sample pass.
+    prompts = ([980, 1_020] * 20)[:40]
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    _write_snapshot_with_varying_costs(baseline_path, prompts)
+    _write_snapshot_with_varying_costs(current_path, prompts)
+
+    exit_code = main(["check", "--baseline", str(baseline_path), "--current", str(current_path)])
+
+    assert exit_code == EXIT_PASS
+    captured = capsys.readouterr()
+    assert "UNDERPOWERED PASS" not in captured.out
 
 
 # --- end-to-end: check subcommand --mode (Phase 3 B4) ---------------------
