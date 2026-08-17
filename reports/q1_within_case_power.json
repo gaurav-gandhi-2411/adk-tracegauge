@@ -1,0 +1,44 @@
+{
+  "measured_within_case_cv": 0.1566,
+  "confidence": 0.98,
+  "n_trials": 2000,
+  "n_boot": 1000,
+  "results": {
+    "30|10.0": {
+      "detections": 569,
+      "n_trials": 2000,
+      "detection_rate": 0.2845,
+      "wilson_95ci": [
+        0.26515447149589266,
+        0.30467177588232724
+      ]
+    },
+    "36|10.0": {
+      "detections": 645,
+      "n_trials": 2000,
+      "detection_rate": 0.3225,
+      "wilson_95ci": [
+        0.30237130823180935,
+        0.3433092435530354
+      ]
+    },
+    "30|25.0": {
+      "detections": 1845,
+      "n_trials": 2000,
+      "detection_rate": 0.9225,
+      "wilson_95ci": [
+        0.9099549326082559,
+        0.9334251624390852
+      ]
+    },
+    "36|25.0": {
+      "detections": 1927,
+      "n_trials": 2000,
+      "detection_rate": 0.9635,
+      "wilson_95ci": [
+        0.9543526494507533,
+        0.9708702477195251
+      ]
+    }
+  }
+}
