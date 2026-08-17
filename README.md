@@ -193,6 +193,47 @@ What you trade away versus `adk eval`/`AgentEvaluator`: every other built-in met
 
 **What sub-agent rollup doesn't cover:** if a delegation pattern doesn't share the plugin instance with the parent (`AgentTool(..., include_plugins=False)`, or any sub-Runner construction this package doesn't know about), there's no lifecycle signal to observe the nesting from, and that sub-portion's cost is invisible to this package — the same as any other "plugin never wired in" gap, not a new failure mode.
 
+### Scoping the gate to one agent (`check --agent`)
+
+Every `CapturedCall` now records which ADK agent made it — `agent_name`, sourced from `callback_context.agent_name` inside `after_model_callback` (the one hook proven to fire through every integration path this package supports, including `adk eval`). `adk-tracegauge snapshot` writes this out as a per-invocation `cost_by_agent: dict[str, float]` field, and `adk-tracegauge check --agent <name>` scopes the whole regression gate to just that agent's own cost — in both `--mode two-sample` and `--mode paired`/`auto`.
+
+`<name>` matches the agent's own `name=` (e.g. `LlmAgent(name="capital_finder", ...)`). For the common `AgentTool`-delegation case this is the *delegated* sub-agent's name, not the parent's — see `examples/02_subagent_rollup.py`'s `capital_finder` agent.
+
+Real output, from the published `adk-tracegauge==0.4.0` artifact, a real two-agent `AgentTool` run, and a genuine regression injected into just the sub-agent's cost:
+
+```
+adk-tracegauge check: mode=two-sample [agent=capital_finder]
+adk-tracegauge check [method=two_sample]: n_baseline=35 n_current=35 (min_n=30)
+  mean_baseline=$0.040000  mean_current=$0.120000
+  achieved power: minimum reliably-detectable effect at 80% power, given this run's observed variance/n, is ~$0.000000 (+0.00% of mean baseline) [normal approximation to the bootstrap CI -- see _regression.py module docstring for validated accuracy]
+  observed effect: +0.080000 USD (+200.00%), 98% CI [+0.080000, +0.080000] (n_boot=10000, seed=42)
+  statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+  REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
+```
+
+The root agent's own cost was unaffected — scoping the gate to it separately correctly passes, same baseline/current files:
+
+```
+adk-tracegauge check: mode=two-sample [agent=root_agent]
+adk-tracegauge check [method=two_sample]: n_baseline=35 n_current=35 (min_n=30)
+  mean_baseline=$0.925000  mean_current=$0.925000
+  observed effect: +0.000000 USD (+0.00%), 98% CI [+0.000000, +0.000000] (n_boot=10000, seed=42)
+  statistically_significant=False practically_significant=False (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+  PASS: no regression clearing both the statistical and practical bars.
+```
+
+**Snapshot format, backward compatibility (schema_version 2→3):** `cost_by_agent` is additive — a snapshot written by `adk-tracegauge<0.4.0` (`schema_version` 1 or 2) still reads correctly under `0.4.0`; `cost_by_agent` just defaults to `{}` for every record in an old file, the same pattern this package has used for every prior schema bump. `check --agent` against such a file doesn't crash or fabricate a comparison — every record reports zero cost for any agent name, which correctly resolves to `insufficient_data` (exit code `3`), not a wrong verdict. Real output, same published `0.4.0` artifact, against a real `schema_version=2` file with no `cost_by_agent` data at all:
+
+```
+adk-tracegauge check: mode=two-sample [agent=root_agent]
+adk-tracegauge check [method=two_sample]: n_baseline=0 n_current=0 (min_n=30)
+  mean_baseline=$0.000000  mean_current=$0.000000
+  achieved power: cannot be estimated this run (fewer than 2 samples in at least one group -- no variance estimate available).
+  INSUFFICIENT DATA: each group needs >= 30 invocations for a statistically meaningful bootstrap CI (see adk_tracegauge._regression module docstring for the n>=30 rationale) -- refusing to emit a verdict.
+```
+
+If you're mid-comparison across the 0.3.x → 0.4.0 upgrade: `adk-tracegauge check` (unscoped) works identically across old and new snapshots — nothing changes there. Re-run `adk-tracegauge snapshot` on `0.4.0` for both baseline and current once you want `--agent` to actually work; this is a one-time re-capture, not a required migration for anyone not using `--agent`.
+
 ## What it reports, and what it deliberately doesn't
 
 - **`score`**: raw cost in USD for the invocation, summed across every real model call within it (tool loops and sub-agent delegation can mean more than one model call per invocation). Not normalized, not calibrated, not a 0–1 quality score.
