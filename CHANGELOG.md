@@ -7,6 +7,27 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.4.1] — 2026-08-17
+
+### Fixed (documentation only)
+- **`0.4.0` shipped with zero README mentions of `--agent`, `cost_by_agent`,
+  or `agent_name`, despite a correct CHANGELOG entry** — permanently baked
+  into `0.4.0`'s published PyPI page, since PyPI does not allow re-uploading
+  a version's metadata. Added a "Scoping the gate to one agent (`check
+  --agent`)" README section with real captured output from the published
+  `0.4.0` artifact (a genuine two-agent regression, the correctly-passing
+  flat agent, and the schema-2 `insufficient_data` backward-compat case).
+- Added a short README note that Python 3.14 support (shipped `0.3.1`) was
+  explicitly tested (full suite + all `examples/` clean on 3.14.4), not
+  just admitted by the open-ended `requires-python` bound.
+- `RELEASING.md` gained a new release-checklist step: README must document
+  any user-facing command/flag before a release ships — CHANGELOG alone is
+  insufficient, since it tells existing users what changed, not
+  prospective users what exists. This exact incident is recorded as the
+  reason the step exists.
+
+No code changes in this release.
+
 ## [0.4.0] — 2026-08-17
 
 ### Added
