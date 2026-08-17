@@ -1,0 +1,120 @@
+{
+  "confidence": 0.98,
+  "skew_cv": 0.6,
+  "gaussian_control": {
+    "30|0.0": {
+      "detections": 84,
+      "n_trials": 5000,
+      "detection_rate": 0.0168,
+      "wilson_95ci": [
+        0.013590685009144723,
+        0.020751222150558486
+      ]
+    },
+    "30|10.0": {
+      "detections": 209,
+      "n_trials": 5000,
+      "detection_rate": 0.0418,
+      "wilson_95ci": [
+        0.0365954747193083,
+        0.047708047343142046
+      ]
+    },
+    "30|25.0": {
+      "detections": 713,
+      "n_trials": 5000,
+      "detection_rate": 0.1426,
+      "wilson_95ci": [
+        0.13318218677190885,
+        0.15256656657841802
+      ]
+    },
+    "50|0.0": {
+      "detections": 76,
+      "n_trials": 5000,
+      "detection_rate": 0.0152,
+      "wilson_95ci": [
+        0.012161871202107252,
+        0.01898249260382014
+      ]
+    },
+    "50|10.0": {
+      "detections": 267,
+      "n_trials": 5000,
+      "detection_rate": 0.0534,
+      "wilson_95ci": [
+        0.047503970713696914,
+        0.05998174066362812
+      ]
+    },
+    "50|25.0": {
+      "detections": 985,
+      "n_trials": 5000,
+      "detection_rate": 0.197,
+      "wilson_95ci": [
+        0.1862100165580495,
+        0.20825521082065518
+      ]
+    }
+  },
+  "n_boot": 1000,
+  "n_trials": 5000,
+  "generator": "lognormal per-invocation noise around case level, CV assumed not measured",
+  "paired": {
+    "30|0.0": {
+      "detections": 74,
+      "n_trials": 5000,
+      "detection_rate": 0.0148,
+      "wilson_95ci": [
+        0.011806099315891449,
+        0.01853887865159199
+      ]
+    },
+    "30|10.0": {
+      "detections": 248,
+      "n_trials": 5000,
+      "detection_rate": 0.0496,
+      "wilson_95ci": [
+        0.04392008579235034,
+        0.05597146011975712
+      ]
+    },
+    "30|25.0": {
+      "detections": 698,
+      "n_trials": 5000,
+      "detection_rate": 0.1396,
+      "wilson_95ci": [
+        0.1302700859572959,
+        0.14948327360470134
+      ]
+    },
+    "50|0.0": {
+      "detections": 87,
+      "n_trials": 5000,
+      "detection_rate": 0.0174,
+      "wilson_95ci": [
+        0.014128673436036129,
+        0.021412312481333007
+      ]
+    },
+    "50|10.0": {
+      "detections": 290,
+      "n_trials": 5000,
+      "detection_rate": 0.058,
+      "wilson_95ci": [
+        0.05185400973971144,
+        0.06482463877971908
+      ]
+    },
+    "50|25.0": {
+      "detections": 957,
+      "n_trials": 5000,
+      "detection_rate": 0.1914,
+      "wilson_95ci": [
+        0.18073414630796963,
+        0.20253967933251962
+      ]
+    }
+  },
+  "wall_clock_seconds": 425.975843667984
+}
