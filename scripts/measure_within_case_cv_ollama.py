@@ -172,11 +172,15 @@ def main() -> int:
     # Bias check: E[Delta_i] should be ~0 if runA/runB are exchangeable (no
     # systematic drift, e.g. Ollama warm-up/caching effects between passes).
     delta_sd = statistics.stdev(deltas) if n > 1 else float("nan")
-    bias_t_stat = (mean_delta / (delta_sd / (n**0.5))) if n > 1 and delta_sd != 0.0 else float("nan")
+    bias_t_stat = (
+        (mean_delta / (delta_sd / (n**0.5))) if n > 1 and delta_sd != 0.0 else float("nan")
+    )
 
     print(f"\n=== Within-case measurement (n={n} matched cases, model={OLLAMA_MODEL}) ===")
     print(f"mean(cost) across both runs: ${mean_cost:.6f}")
-    print(f"mean(delta) = mean(runB - runA): ${mean_delta:.6f}  (bias check t-stat: {bias_t_stat:.3f})")
+    print(
+        f"mean(delta) = mean(runB - runA): ${mean_delta:.6f}  (bias check t-stat: {bias_t_stat:.3f})"
+    )
     print(f"pooled within-case sd (duplicate-measurement estimator): ${pooled_within_case_sd:.6f}")
     print(f"within-case CV: {within_case_cv:.4f}")
     print("within-case skewness: NOT ESTIMABLE from 2 repeats/case -- see module docstring.")

@@ -112,8 +112,12 @@ def main() -> int:
         results = {}
         for e in EFFECT_PCT_GRID:
             grid = compute_paired_cv_grid(
-                cv_grid=[cv], n_grid=N_GRID, effect_pct=e,
-                n_trials=N_TRIALS, n_boot=N_BOOT, confidence=CONFIDENCE,
+                cv_grid=[cv],
+                n_grid=N_GRID,
+                effect_pct=e,
+                n_trials=N_TRIALS,
+                n_boot=N_BOOT,
+                confidence=CONFIDENCE,
             )
             print(f"\n=== {label} (cv={cv:.4f}, effect={e}%) ===")
             for n in N_GRID:
@@ -122,7 +126,9 @@ def main() -> int:
                 lo, hi = wilson_score_interval(det, nt)
                 print(f"n={n}: {phat:.4f} [{lo:.4f},{hi:.4f}] ({det}/{nt})")
                 results[f"{n}|{e}"] = {
-                    "detections": det, "n_trials": nt, "detection_rate": phat,
+                    "detections": det,
+                    "n_trials": nt,
+                    "detection_rate": phat,
                     "wilson_95ci": [lo, hi],
                 }
         all_results[label] = {"cv": cv, "results": results}

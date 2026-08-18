@@ -127,7 +127,9 @@ async def _run_case(runner: InMemoryRunner, app_name: str, case_id: str, prompt:
         app_name=app_name, user_id=user_id, session_id=case_id
     )
     new_message = genai_types.Content(parts=[genai_types.Part(text=prompt)], role="user")
-    async for _event in runner.run_async(user_id=user_id, session_id=case_id, new_message=new_message):
+    async for _event in runner.run_async(
+        user_id=user_id, session_id=case_id, new_message=new_message
+    ):
         pass
 
 
@@ -188,9 +190,15 @@ def main() -> int:
     skew_tok_out = _skewness([float(t) for t in tokens_out])
 
     print(f"\n=== Measured (n={len(costs)}, model={OLLAMA_MODEL}, evalset={EVALSET_PATH.name}) ===")
-    print(f"cost_usd (synthetic $, real tokens):  mean=${mean_cost:.6f}  sd=${sd_cost:.6f}  CV={cv_cost:.4f}  skew={skew_cost:.4f}")
-    print(f"tokens_input:                          mean={mean_tok_in:.1f}  sd={sd_tok_in:.1f}  CV={cv_tok_in:.4f}  skew={skew_tok_in:.4f}")
-    print(f"tokens_output:                         mean={mean_tok_out:.1f}  sd={sd_tok_out:.1f}  CV={cv_tok_out:.4f}  skew={skew_tok_out:.4f}")
+    print(
+        f"cost_usd (synthetic $, real tokens):  mean=${mean_cost:.6f}  sd=${sd_cost:.6f}  CV={cv_cost:.4f}  skew={skew_cost:.4f}"
+    )
+    print(
+        f"tokens_input:                          mean={mean_tok_in:.1f}  sd={sd_tok_in:.1f}  CV={cv_tok_in:.4f}  skew={skew_tok_in:.4f}"
+    )
+    print(
+        f"tokens_output:                         mean={mean_tok_out:.1f}  sd={sd_tok_out:.1f}  CV={cv_tok_out:.4f}  skew={skew_tok_out:.4f}"
+    )
 
     out_path = Path(__file__).resolve().parent.parent / "reports" / "ad2_real_cv_measurement.json"
     out_path.write_text(
@@ -207,9 +215,27 @@ def main() -> int:
                     "output_usd_per_mtok": SYNTHETIC_OUTPUT_USD_PER_MTOK,
                     "note": "notional dollars, real token counts -- see module docstring",
                 },
-                "cost_usd": {"mean": mean_cost, "sd": sd_cost, "cv": cv_cost, "skewness": skew_cost, "values": costs},
-                "tokens_input": {"mean": mean_tok_in, "sd": sd_tok_in, "cv": cv_tok_in, "skewness": skew_tok_in, "values": tokens_in},
-                "tokens_output": {"mean": mean_tok_out, "sd": sd_tok_out, "cv": cv_tok_out, "skewness": skew_tok_out, "values": tokens_out},
+                "cost_usd": {
+                    "mean": mean_cost,
+                    "sd": sd_cost,
+                    "cv": cv_cost,
+                    "skewness": skew_cost,
+                    "values": costs,
+                },
+                "tokens_input": {
+                    "mean": mean_tok_in,
+                    "sd": sd_tok_in,
+                    "cv": cv_tok_in,
+                    "skewness": skew_tok_in,
+                    "values": tokens_in,
+                },
+                "tokens_output": {
+                    "mean": mean_tok_out,
+                    "sd": sd_tok_out,
+                    "cv": cv_tok_out,
+                    "skewness": skew_tok_out,
+                    "values": tokens_out,
+                },
                 "case_ids": case_ids,
                 "domain_of_validity": (
                     "One evalset (36 hand-authored cases, 3 complexity tiers), one local "

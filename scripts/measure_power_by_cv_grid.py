@@ -169,7 +169,10 @@ def compute_paired_cv_grid(
 
 
 def validate_n_boot_two_sample(
-    cv: float, n: int, effect_pct: float = EFFECT_PCT, n_trials: int = 150,
+    cv: float,
+    n: int,
+    effect_pct: float = EFFECT_PCT,
+    n_trials: int = 150,
     confidence: float = CONFIDENCE,
 ) -> tuple[int, int]:
     agreements = 0
@@ -177,15 +180,22 @@ def validate_n_boot_two_sample(
         seed = SEED_BASE_TWO_SAMPLE_CV + hash((cv, n, trial)) % 1_000_000
         gen = random.Random(seed)
         baseline, current = generate_two_sample_pair_cv(gen, n, effect_pct, cv)
-        lo_fast, _ = bootstrap_diff_of_means(baseline, current, confidence=confidence, n_boot=1_000, seed=trial)
-        lo_full, _ = bootstrap_diff_of_means(baseline, current, confidence=confidence, n_boot=10_000, seed=trial)
+        lo_fast, _ = bootstrap_diff_of_means(
+            baseline, current, confidence=confidence, n_boot=1_000, seed=trial
+        )
+        lo_full, _ = bootstrap_diff_of_means(
+            baseline, current, confidence=confidence, n_boot=10_000, seed=trial
+        )
         if (lo_fast > 0.0) == (lo_full > 0.0):
             agreements += 1
     return agreements, n_trials
 
 
 def validate_n_boot_paired(
-    cv: float, n: int, effect_pct: float = EFFECT_PCT, n_trials: int = 150,
+    cv: float,
+    n: int,
+    effect_pct: float = EFFECT_PCT,
+    n_trials: int = 150,
     confidence: float = CONFIDENCE,
 ) -> tuple[int, int]:
     agreements = 0
@@ -194,15 +204,21 @@ def validate_n_boot_paired(
         gen = random.Random(seed)
         baseline, current = generate_paired_pair_cv(gen, n, effect_pct, cv)
         deltas = [c - b for b, c in zip(baseline, current, strict=True)]
-        lo_fast, _ = bootstrap_mean_of_paired_deltas(deltas, confidence=confidence, n_boot=1_000, seed=trial)
-        lo_full, _ = bootstrap_mean_of_paired_deltas(deltas, confidence=confidence, n_boot=10_000, seed=trial)
+        lo_fast, _ = bootstrap_mean_of_paired_deltas(
+            deltas, confidence=confidence, n_boot=1_000, seed=trial
+        )
+        lo_full, _ = bootstrap_mean_of_paired_deltas(
+            deltas, confidence=confidence, n_boot=10_000, seed=trial
+        )
         if (lo_fast > 0.0) == (lo_full > 0.0):
             agreements += 1
     return agreements, n_trials
 
 
 def _print_grid(grid: dict[CellKey, CellResult], label: str) -> None:
-    print(f"\n=== {label} (power to detect true {EFFECT_PCT:.0f}% regression, confidence={CONFIDENCE}) ===")
+    print(
+        f"\n=== {label} (power to detect true {EFFECT_PCT:.0f}% regression, confidence={CONFIDENCE}) ==="
+    )
     header = "CV\\n".ljust(8) + "".join(f"{n:>24}" for n in N_GRID)
     print(header)
     for cv in CV_GRID:
@@ -221,8 +237,8 @@ def main() -> int:
     for cv, n in [(0.1, 30), (1.0, 100)]:
         a2, nt2 = validate_n_boot_two_sample(cv, n)
         ap, ntp = validate_n_boot_paired(cv, n)
-        print(f"  two-sample cv={cv} n={n}: {a2}/{nt2} = {a2/nt2*100:.1f}% agreement")
-        print(f"  paired     cv={cv} n={n}: {ap}/{ntp} = {ap/ntp*100:.1f}% agreement")
+        print(f"  two-sample cv={cv} n={n}: {a2}/{nt2} = {a2 / nt2 * 100:.1f}% agreement")
+        print(f"  paired     cv={cv} n={n}: {ap}/{ntp} = {ap / ntp * 100:.1f}% agreement")
 
     print(
         f"\nComputing CV x n power grid: {len(CV_GRID)}x{len(N_GRID)} cells/mode, "
@@ -252,14 +268,18 @@ def main() -> int:
         "n_grid": N_GRID,
         "two_sample": {
             f"{cv}|{n}": {
-                "detections": det, "n_trials": nt, "detection_rate": det / nt,
+                "detections": det,
+                "n_trials": nt,
+                "detection_rate": det / nt,
                 "wilson_95ci": list(wilson_score_interval(det, nt)),
             }
             for (cv, n), (det, nt) in two_sample_grid.items()
         },
         "paired": {
             f"{cv}|{n}": {
-                "detections": det, "n_trials": nt, "detection_rate": det / nt,
+                "detections": det,
+                "n_trials": nt,
+                "detection_rate": det / nt,
                 "wilson_95ci": list(wilson_score_interval(det, nt)),
             }
             for (cv, n), (det, nt) in paired_grid.items()

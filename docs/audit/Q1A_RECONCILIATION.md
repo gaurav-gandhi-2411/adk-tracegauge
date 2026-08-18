@@ -14,13 +14,13 @@ Quoted directly from both generators:
 ```python
 # original (generate_case_correlated_pair, measure_regression_power.py)
 effect_usd = CASE_CORRELATED_BASE_MEAN * (effect_pct / 100.0)
-current = [max(0.0001, rng.gauss(d + effect_usd, CASE_CORRELATED_WITHIN_CASE_SD))
-           for d in case_levels]
+current = [
+    max(0.0001, rng.gauss(d + effect_usd, CASE_CORRELATED_WITHIN_CASE_SD)) for d in case_levels
+]
 
 # mine (generate_paired_pair_cv, measure_power_by_cv_grid.py)
 effect_usd = CASE_CORRELATED_BASE_MEAN * (effect_pct / 100.0)
-current = [max(0.0001, rng.gauss(d + effect_usd, cv * (d + effect_usd)))
-           for d in case_levels]
+current = [max(0.0001, rng.gauss(d + effect_usd, cv * (d + effect_usd))) for d in case_levels]
 ```
 
 Both add the identical flat `effect_usd` to every case's mean — a

@@ -61,7 +61,9 @@ def main() -> int:
             lo, hi = wilson_score_interval(det, nt)
             print(f"n={n} effect={e}%: {phat:.4f} [{lo:.4f},{hi:.4f}] ({det}/{nt})")
             results[f"{n}|{e}"] = {
-                "detections": det, "n_trials": nt, "detection_rate": phat,
+                "detections": det,
+                "n_trials": nt,
+                "detection_rate": phat,
                 "wilson_95ci": [lo, hi],
             }
 
