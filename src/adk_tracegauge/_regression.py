@@ -827,6 +827,37 @@ class RegressionCheckResult:
     floor is below ``min_detectable_effect_usd`` -- see
     ``_below_floor_warning``. ``None`` when no warning applies."""
 
+    @property
+    def underpowered_pass(self) -> bool:
+        """Phase 9 Q2: True when this run reported ``status="pass"`` under
+        TWO-SAMPLE mode specifically, AND ``power_warning`` fired (the
+        configured practical-significance floor sits below what this run's
+        own observed variance/n could reliably detect at
+        ``power_target``==80%).
+
+        Why two-sample only (Q2's own scope): AD2's real measurement found
+        two-sample power can be as low as 4-9% at realistic per-invocation
+        cost variance (``docs/audit/AD2_REAL_CV_MEASUREMENT.md``) -- a
+        "pass" at that power is barely more informative than a coin flip,
+        and reads as clean/confident to a CI system checking only the exit
+        code, not the log text. Paired mode is not flagged here even though
+        the same ``power_warning`` mechanism applies to it too (Q1 found
+        paired power can also be poor at high within-case CV) -- Q2 scoped
+        this specifically to two-sample; a future item could extend the
+        same treatment to paired if warranted.
+
+        ``_cmd_check`` (``_cli.py``) uses this to select
+        ``EXIT_UNDERPOWERED_PASS`` instead of ``EXIT_PASS`` -- a distinct,
+        non-zero exit code specifically for this case, so a CI job that
+        greps `$? == 0` cannot silently treat an underpowered clean result
+        as a fully-powered one. This is a REAL, INTENTIONAL exit-code
+        semantics change (not a bug) -- see CHANGELOG for the minor-version
+        rationale.
+        """
+        return (
+            self.status == "pass" and self.method == "two_sample" and self.power_warning is not None
+        )
+
     def _power_line(self) -> str:
         """The "achieved power" line -- printed on EVERY run (pass, fail,
         or insufficient_data), per 4.1's own requirement, not only on
@@ -890,6 +921,21 @@ class RegressionCheckResult:
             )
         else:
             lines.append("  PASS: no regression clearing both the statistical and practical bars.")
+        if self.underpowered_pass:
+            banner = "  " + "=" * 70
+            lines.append(banner)
+            lines.append(
+                "  UNDERPOWERED PASS (exit code 4, not 0) -- two-sample mode's power to "
+                "detect your configured floor, given THIS run's own observed cost "
+                "variance, is below 80% (see the WARNING and achieved-power lines "
+                "above). This 'no regression found' result is real but low-resolution "
+                "-- it is not strong evidence the regression you configured for isn't "
+                "there. Fix: use --mode paired if a pairing key is available (usually "
+                "far more powerful at the same n -- see README 'Shipped default'), "
+                "increase your eval-set size, or explicitly treat exit code 4 as "
+                "passing in your CI config if you understand and accept this risk."
+            )
+            lines.append(banner)
         return "\n".join(lines)
 
 
