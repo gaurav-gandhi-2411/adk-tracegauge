@@ -7,6 +7,64 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.5.0] — 2026-08-18
+
+### Changed — real exit-code behavior change, read this before upgrading in CI
+- **`adk-tracegauge check` can now exit `4`, a code that did not exist before this
+  release.** New exit code `EXIT_UNDERPOWERED_PASS=4`: fires for two-sample mode
+  specifically, when `status="pass"` AND this run's own observed variance/`n` means the
+  configured practical-significance floor could not be reliably (80% power) detected —
+  the exact condition the existing `WARNING` line already reported in text, now also
+  visible to a CI job that only checks the exit code. **If your CI treats "any nonzero
+  exit code" as failure (not just `exit != 0` meaning "no regression"), a real-variance
+  two-sample run that previously exited `0` cleanly may now exit `4` and fail your
+  build** — even though nothing about your workload changed and no regression was
+  found. This is intentional (a "pass" at 5% power was misleading by omission — see
+  below), not a bug, but it is a real behavior change worth checking your own CI
+  config against before upgrading. Paired mode is unaffected (never returns exit `4`,
+  even though the same underlying `power_warning` mechanism also applies to it — see
+  `RegressionCheckResult.underpowered_pass`'s docstring in `_regression.py` for why
+  this was deliberately scoped to two-sample only). Full exit-code table in `_cli.py`'s
+  module docstring.
+
+### Added
+- **The published power grid was found to depend heavily on an assumed cost-variance
+  level nobody had ever measured against real data** — replaced with a series of real
+  measurements instead of one more assumption:
+  - **CV-swept power table** (`scripts/measure_power_by_cv_grid.py`): both modes,
+    CV ∈ {0.1, 0.2, 0.4, 0.6, 1.0} × `n` ∈ {30, 50, 100}, confidence=0.98, ≥2,000
+    trials/cell, Wilson 95% CIs — replaces the single "99.22% at n=30" figure this
+    README used to publish as if it applied universally.
+  - **A real (not assumed) across-case CV**, measured zero-cost via a 36-case evalset
+    run against local Ollama (`ollama_chat/qwen2.5:7b`) through the shipped capture
+    pipeline: CV=0.983, skewness=0.742 — landing at the high end of the swept grid
+    (two-sample power only 4-9% at that CV across n=30-100).
+  - **A real within-case CV** (the quantity that actually governs paired mode, the
+    shipped default — not the across-case CV above), measured by running the same
+    36 cases TWICE: CV=0.1566. Located directly on the paired-mode power grid at
+    n=30/36: **28.45%/32.25% power to detect a true 10% regression** — both far below
+    80%, and about 1/3 of the previously-published unqualified figure.
+  - **The above finding was independently reconciled against the originally-published
+    grid, not left as an unexplained contradiction**: the two figures describe two
+    different, both-legitimate noise regimes (fixed absolute dollar noise vs.
+    proportional CV), not a bug in either measurement. README now publishes BOTH
+    regimes' power tables side by side, labeled, with a one-sentence test for which
+    applies to a given evalset. See `docs/audit/Q1A_RECONCILIATION.md`.
+  - The runtime "achieved power" line (unchanged, already shipped) is correct under
+    either regime, since it is computed from the caller's own real observed data every
+    time, never from an assumed constant.
+- Local-model representativeness (does `qwen2.5:7b`'s output-length distribution
+  resemble a real hosted model's?) is flagged UNVERIFIED, with exact steps and a
+  sub-cent cost estimate for a small paid flash-tier validation run, not run —
+  see `docs/audit/AD2_REAL_CV_MEASUREMENT.md`.
+
+### Not changed
+- `DEFAULT_CONFIDENCE=0.98` and `MIN_N_DEFAULT=30` stay as shipped. Every finding above
+  is a measurement-and-transparency change, not a new tuning decision.
+
+Full investigation: `docs/audit/AC1_SKEW_SENSITIVITY.md`, `docs/audit/AD2_REAL_CV_MEASUREMENT.md`,
+`docs/audit/Q1_WITHIN_CASE_CV.md`, `docs/audit/Q1A_RECONCILIATION.md`.
+
 ## [0.4.1] — 2026-08-17
 
 ### Fixed (documentation only)
