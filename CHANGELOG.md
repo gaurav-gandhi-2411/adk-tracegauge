@@ -7,6 +7,22 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.5.1] — 2026-08-18
+
+### Fixed
+- **The published `0.5.0` PyPI page's README never mentioned exit code `4`
+  (`EXIT_UNDERPOWERED_PASS`)** — a real, breaking CI behavior change shipped in that
+  same release (see `[0.5.0]`'s own "Changed" entry below). The headline exit-code
+  summary only listed `0`/`1`/`3`, and "Known limitations" never mentioned the exit-code
+  consequence of the achieved-power WARNING it documents in detail. Docs-only release,
+  shipped promptly rather than bundled with the next functional change: a PyPI page
+  permanently missing documentation of a breaking CI-behavior change is exactly the
+  failure this project's own `RELEASING.md` incident note (the `0.11.0`/`tes cost` gap
+  in the sibling `tracegauge` package) warns against, and PyPI does not allow
+  re-uploading a version's metadata once published — the `0.5.0` page's gap is
+  permanent regardless of when this ships, so shipping it now rather than later closes
+  it for every user who installs from this point forward.
+
 ## [0.5.0] — 2026-08-18
 
 ### Changed — real exit-code behavior change, read this before upgrading in CI
