@@ -854,7 +854,9 @@ class RegressionCheckResult:
         semantics change (not a bug) -- see CHANGELOG for the minor-version
         rationale.
         """
-        return self.status == "pass" and self.method == "two_sample" and self.power_warning is not None
+        return (
+            self.status == "pass" and self.method == "two_sample" and self.power_warning is not None
+        )
 
     def _power_line(self) -> str:
         """The "achieved power" line -- printed on EVERY run (pass, fail,

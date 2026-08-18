@@ -810,7 +810,9 @@ def test_underpowered_pass_true_for_two_sample_pass_with_real_variance_and_tiny_
     baseline = [max(0.0001, rng.gauss(0.010, 0.006)) for _ in range(40)]
     current = list(baseline)
 
-    result = evaluate_regression(baseline, current, min_effect_usd=1e-9, min_effect_pct=1e-9, seed=42)
+    result = evaluate_regression(
+        baseline, current, min_effect_usd=1e-9, min_effect_pct=1e-9, seed=42
+    )
 
     assert result.status == "pass"
     assert result.method == "two_sample"
