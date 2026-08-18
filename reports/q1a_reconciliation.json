@@ -1,0 +1,91 @@
+{
+  "confidence": 0.98,
+  "n_boot": 1000,
+  "n_trials": 2000,
+  "original_implied_average_cv": 0.05714285714285714,
+  "measured_within_case_cv": 0.15664010949078117,
+  "results": {
+    "REPRODUCTION at original's own implied average CV": {
+      "cv": 0.05714285714285714,
+      "results": {
+        "30|10.0": {
+          "detections": 1938,
+          "n_trials": 2000,
+          "detection_rate": 0.969,
+          "wilson_95ci": [
+            0.9604592717918266,
+            0.9757425378583581
+          ]
+        },
+        "36|10.0": {
+          "detections": 1964,
+          "n_trials": 2000,
+          "detection_rate": 0.982,
+          "wilson_95ci": [
+            0.9751819578651544,
+            0.9869700085557177
+          ]
+        },
+        "30|25.0": {
+          "detections": 2000,
+          "n_trials": 2000,
+          "detection_rate": 1.0,
+          "wilson_95ci": [
+            0.9980829527187468,
+            0.9999999999999998
+          ]
+        },
+        "36|25.0": {
+          "detections": 2000,
+          "n_trials": 2000,
+          "detection_rate": 1.0,
+          "wilson_95ci": [
+            0.9980829527187468,
+            0.9999999999999998
+          ]
+        }
+      }
+    },
+    "MEASURED at Q1's real within-case CV": {
+      "cv": 0.15664010949078117,
+      "results": {
+        "30|10.0": {
+          "detections": 560,
+          "n_trials": 2000,
+          "detection_rate": 0.28,
+          "wilson_95ci": [
+            0.2607582154881814,
+            0.3000852853155699
+          ]
+        },
+        "36|10.0": {
+          "detections": 680,
+          "n_trials": 2000,
+          "detection_rate": 0.34,
+          "wilson_95ci": [
+            0.31956354816279,
+            0.36104990696721095
+          ]
+        },
+        "30|25.0": {
+          "detections": 1821,
+          "n_trials": 2000,
+          "detection_rate": 0.9105,
+          "wilson_95ci": [
+            0.897189514623585,
+            0.9222365895585062
+          ]
+        },
+        "36|25.0": {
+          "detections": 1909,
+          "n_trials": 2000,
+          "detection_rate": 0.9545,
+          "wilson_95ci": [
+            0.9444626753715426,
+            0.9627947286497984
+          ]
+        }
+      }
+    }
+  }
+}
