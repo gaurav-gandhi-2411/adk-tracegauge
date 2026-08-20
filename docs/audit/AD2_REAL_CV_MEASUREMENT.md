@@ -134,3 +134,62 @@ Exact steps for a small paid run, if wanted:
 
 Not run in this session. No paid API call has been made anywhere in this
 investigation.
+
+## 2.6 — Run, 2026-08-21: real hosted-model measurement (GG-authorized)
+
+**RUN**, with explicit sign-off (`scripts/measure_real_cv_gemini.py`,
+`reports/ad2_real_cv_measurement_gemini.json`). One deviation from the plan
+above, GG-confirmed before spending: `gemini-2.5-flash-lite` returned a 404
+("no longer available to new users"; Google's own error message names
+`gemini-3.5-flash-lite` as the replacement) — used that instead. Real
+priced entry already in the bundled table ($0.30/$2.50 per Mtok, vs.
+2.5-flash-lite's $0.10/$0.40). **Total real spend: $0.049805** (36/36 cases
+priced, 0 skipped) — above the original ≈$0.0065 estimate because of the
+model swap's higher per-token rate, not because of unexpectedly high token
+volume; still under a nickel.
+
+**Result: the doubt in 2.3 was real, and it ran in the OPPOSITE direction
+from the hypothesis stated there.** The hypothesis was that a smaller,
+less-tuned local model might show MORE output variance than a hosted
+model (which would mean Ollama's CV *overstates* real variance). Measured
+finding: the real hosted call showed **higher** CV and **higher** skewness
+than Ollama's `qwen2.5:7b` at every metric, not lower:
+
+| Metric | Ollama (`qwen2.5:7b`) | Gemini (`gemini-3.5-flash-lite`) | Delta |
+|---|---|---|---|
+| cost CV | 0.9831 | 1.2326 | +25.4% |
+| cost skewness | 0.7421 | 1.3853 | +86.7% |
+| tokens_input CV | 0.1642 | 0.1809 | +10.2% |
+| tokens_input skewness | 0.6313 | 0.6870 | +8.8% |
+| tokens_output CV | 1.0360 | 1.2572 | +21.3% |
+| tokens_output skewness | 0.7450 | 1.3896 | +86.5% |
+
+Input-token CV moved the least (+10.2%), consistent with 2.3's prediction
+that it's largely evalset-driven (fixed prompt lengths) rather than
+model-driven. Output-token CV and skewness moved the most, and in the
+direction that makes the tool's job HARDER, not easier: Ollama's
+across-case CV=0.98–1.04 was, if anything, an UNDERSTATEMENT of this real
+hosted model's actual variance on this evalset, not an overstatement.
+
+**This directly touches a shipped, published table.** README's Regime B
+(proportional-CV) two-sample power sweep stops at CV=1.0, where measured
+power is already 4.15%/4.50%/8.55% (n=30/50/100) — the real measured value
+here, 1.2326, sits BEYOND that table's highest row. The table's arithmetic
+is not wrong (it's a correct function of CV at each tested value), but its
+highest row was implicitly read as close to a practical ceiling, and this
+measurement shows real hosted-model data can exceed it. **The runtime
+"achieved power" mechanism is unaffected** — it computes from each run's
+own real observed variance, never from this table or an assumed CV, so it
+already handles a CV=1.23 workload honestly. What this finding affects is
+the STATIC reference table's implied range, not the tool's actual
+correctness. Flagged for GG's judgment on whether to extend the table's
+CV sweep or add an explicit "measured real-world CV values have exceeded
+this table's own top row" note — not changed unilaterally here, same
+escalation posture as the rest of this section.
+
+**Domain of validity, same caveats as 2.1/2.2, doubled:** one evalset (36
+hand-authored cases), one model pair (`qwen2.5:7b` vs.
+`gemini-3.5-flash-lite`, not the originally-planned
+`gemini-2.5-flash-lite`). Two real models now measured, still not a general
+claim about "real ADK cost variance" across models/workloads generally —
+see the module docstrings in both measurement scripts.
