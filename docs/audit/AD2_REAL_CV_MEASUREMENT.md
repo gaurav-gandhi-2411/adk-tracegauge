@@ -193,3 +193,72 @@ hand-authored cases), one model pair (`qwen2.5:7b` vs.
 `gemini-2.5-flash-lite`). Two real models now measured, still not a general
 claim about "real ADK cost variance" across models/workloads generally —
 see the module docstrings in both measurement scripts.
+
+## 2.7 — Run, same session: within-case CV (the shipped default's real governing quantity)
+
+**Why this run exists**: 2.6 measured ACROSS-case CV, which governs the
+two-sample fallback path only. `--mode auto` (the shipped default)
+prefers PAIRED comparison whenever a pairing key resolves, and paired
+mode's power depends on WITHIN-case CV (repeatability of the SAME eval
+case across independent runs), not across-case CV — Q1's own Ollama
+measurement (`scripts/measure_within_case_cv_ollama.py`,
+`reports/q1_within_case_cv.json`) already established this distinction
+for the local model; this run closes the same gap for the real hosted
+model.
+
+**RUN**: `scripts/measure_within_case_cv_gemini.py`, same evalset, same
+duplicate-measurement design as the Ollama Q1 script (36 cases x 2 passes,
+pooled repeatability estimator), model = `gemini-3.5-flash-lite` (same
+substitution as 2.6, `gemini-2.5-flash-lite` re-confirmed 404 at the start
+of this run). **Real infrastructure constraint hit and fixed before this
+result**: the free-tier key is rate-limited to 15 requests/minute for this
+model — the first attempt crashed on an unhandled 429 mid-run (17 calls
+in, ~$0.0237 estimated spend on that attempt, wasted since nothing had
+been persisted yet). Added proactive throttling (4.5s between calls) plus
+retry-with-backoff before re-running clean. **Total real spend this run:
+$0.100509** (72/72 calls succeeded, 36/36 cases matched). Combined with
+2.6's run and the wasted partial attempt: **~$0.174 total real spend
+across both AD2.3 validation sessions.**
+
+**Result:**
+
+| Quantity | Ollama (`qwen2.5:7b`) | Gemini (`gemini-3.5-flash-lite`) | Delta |
+|---|---|---|---|
+| within-case CV | 0.1566 | 0.1307 | **-16.6%** |
+| bias-check t-stat | -0.189 | -0.915 | both \|t\|<2, not significant either way |
+
+**This runs in the OPPOSITE direction from 2.6's across-case finding.**
+Across-case CV was higher for the real hosted model (+25.4%) — bad news
+for the two-sample fallback path. Within-case CV is LOWER for the real
+hosted model (-16.6%) — good news for the shipped paired-mode default:
+`gemini-3.5-flash-lite` is more consistent run-to-run on the SAME case
+than `qwen2.5:7b` was, even though it's more variable ACROSS different
+cases. Both bias-check t-stats stay well under significance (|t|<2),
+confirming runA/runB are exchangeable for both models — no systematic
+drift between passes in either measurement.
+
+**What this means for the published paired-mode power figures**: README
+states real (not assumed) paired-mode power at Ollama's own measured
+within-case CV=0.1566: 28.45% at n=30, 32.25% at n=36. Since the real
+Gemini within-case CV (0.1307) is LOWER, real-world paired-mode power on
+a workload shaped like this evalset is likely somewhat HIGHER than those
+published figures — the Regime B paired table's CV=0.1 row (58.35% at
+n=30) and the measured CV=0.1566 point (28.45%) bound the plausible
+range, but the exact power at CV=0.1307 was not separately simulated in
+this run (would need a dedicated grid point, same method as
+`measure_q1_within_case_power.py`) — reported as a bound, not a
+computed figure, rather than interpolated and presented as precise.
+
+**No contradiction of a published claim requiring a stop (AL2.6)**: unlike
+2.6's across-case finding, this result does not exceed any published
+table's range or contradict a stated figure — it's directionally
+reassuring for the shipped default, landing between two already-published
+reference points. The across-case finding in 2.6 remains the one flagged
+for GG's judgment on whether the README needs a table update; this one
+does not independently require the same flag, though both point the same
+direction on the larger question (is Ollama representative of a real
+hosted call): no, not exactly, and not always in the direction you'd
+guess from first principles.
+
+**Domain of validity**: identical to 2.6 plus Q1's own (one evalset, two
+repeats per case, within-case skewness not estimable from 2 repeats).
