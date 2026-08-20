@@ -1,0 +1,176 @@
+{
+  "part1_extended_regime_b": {
+    "confidence": 0.98,
+    "effect_pct": 10.0,
+    "n_boot": 1000,
+    "n_trials": 2000,
+    "extended_cv_grid": [
+      1.5,
+      2.0
+    ],
+    "n_grid": [
+      30,
+      50,
+      100
+    ],
+    "two_sample": {
+      "1.5|30": {
+        "detections": 50,
+        "n_trials": 2000,
+        "detection_rate": 0.025,
+        "wilson_95ci": [
+          0.019014423503992475,
+          0.032806771413197815
+        ]
+      },
+      "1.5|50": {
+        "detections": 91,
+        "n_trials": 2000,
+        "detection_rate": 0.0455,
+        "wilson_95ci": [
+          0.03720527135020145,
+          0.05553732462845745
+        ]
+      },
+      "1.5|100": {
+        "detections": 98,
+        "n_trials": 2000,
+        "detection_rate": 0.049,
+        "wilson_95ci": [
+          0.040373539950307256,
+          0.05935563669738288
+        ]
+      },
+      "2.0|30": {
+        "detections": 66,
+        "n_trials": 2000,
+        "detection_rate": 0.033,
+        "wilson_95ci": [
+          0.02602275270028968,
+          0.041767769460400554
+        ]
+      },
+      "2.0|50": {
+        "detections": 68,
+        "n_trials": 2000,
+        "detection_rate": 0.034,
+        "wilson_95ci": [
+          0.026908260159560583,
+          0.04287842790656715
+        ]
+      },
+      "2.0|100": {
+        "detections": 84,
+        "n_trials": 2000,
+        "detection_rate": 0.042,
+        "wilson_95ci": [
+          0.034051614742054696,
+          0.05170440056757298
+        ]
+      }
+    },
+    "paired": {
+      "1.5|30": {
+        "detections": 62,
+        "n_trials": 2000,
+        "detection_rate": 0.031,
+        "wilson_95ci": [
+          0.02425746214164182,
+          0.03954072820817342
+        ]
+      },
+      "1.5|50": {
+        "detections": 60,
+        "n_trials": 2000,
+        "detection_rate": 0.03,
+        "wilson_95ci": [
+          0.023377854712938247,
+          0.0384241697314395
+        ]
+      },
+      "1.5|100": {
+        "detections": 73,
+        "n_trials": 2000,
+        "detection_rate": 0.0365,
+        "wilson_95ci": [
+          0.02912975228047479,
+          0.045647350549246665
+        ]
+      },
+      "2.0|30": {
+        "detections": 62,
+        "n_trials": 2000,
+        "detection_rate": 0.031,
+        "wilson_95ci": [
+          0.02425746214164182,
+          0.03954072820817342
+        ]
+      },
+      "2.0|50": {
+        "detections": 46,
+        "n_trials": 2000,
+        "detection_rate": 0.023,
+        "wilson_95ci": [
+          0.017287655978080053,
+          0.030541207128235243
+        ]
+      },
+      "2.0|100": {
+        "detections": 78,
+        "n_trials": 2000,
+        "detection_rate": 0.039,
+        "wilson_95ci": [
+          0.03136143254939691,
+          0.04840608504391829
+        ]
+      }
+    },
+    "wall_clock_seconds": 330.6358902454376
+  },
+  "part2_measured_within_case_point": {
+    "measured_within_case_cv": 0.1307,
+    "model": "gemini-3.5-flash-lite",
+    "source": "reports/al2_within_case_cv_gemini.json",
+    "confidence": 0.98,
+    "n_trials": 2000,
+    "n_boot": 1000,
+    "results": {
+      "30|10.0": {
+        "detections": 757,
+        "n_trials": 2000,
+        "detection_rate": 0.3785,
+        "wilson_95ci": [
+          0.35749578063225035,
+          0.399970061857094
+        ]
+      },
+      "36|10.0": {
+        "detections": 870,
+        "n_trials": 2000,
+        "detection_rate": 0.435,
+        "wilson_95ci": [
+          0.4134179772264211,
+          0.4568312389201417
+        ]
+      },
+      "30|25.0": {
+        "detections": 1960,
+        "n_trials": 2000,
+        "detection_rate": 0.98,
+        "wilson_95ci": [
+          0.9728813608112625,
+          0.9852782737987344
+        ]
+      },
+      "36|25.0": {
+        "detections": 1987,
+        "n_trials": 2000,
+        "detection_rate": 0.9935,
+        "wilson_95ci": [
+          0.9889104708274775,
+          0.9961974035059259
+        ]
+      }
+    }
+  }
+}
