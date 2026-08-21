@@ -429,6 +429,62 @@ def test_cmd_check_end_to_end_underpowered_pass_two_sample(
     assert "exit code 4" in captured.out
 
 
+def test_cmd_check_end_to_end_underpowered_pass_paired(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    # AP1: mode-agnostic end-to-end check -- paired mode (the shipped
+    # `--mode auto` default whenever a pairing key resolves) must ALSO
+    # escalate to EXIT_UNDERPOWERED_PASS, not just two-sample. Real
+    # within-case variance (each matched case's current cost jitters
+    # around its own baseline cost, not identical -- a degenerate
+    # identical-cost pairing would give standard_error=0 and never trip
+    # the warning), 40 overlapping session_ids so paired mode is selected
+    # by --mode auto's own threshold, and a near-zero floor so it sits
+    # below the achievable MDE.
+    import random
+
+    # Same seed/construction as test_underpowered_pass_true_for_paired_mode_
+    # pass_with_real_variance_and_tiny_floor (test_regression.py), confirmed
+    # there to produce status="pass" with power_warning firing -- reused
+    # here rather than a fresh random draw, since a different seed can
+    # (and did, on a first attempt) land on a "regression" verdict instead
+    # by chance, which exercises a different code path than this test needs.
+    rng = random.Random(7)
+    baseline_ids = [f"case-{i}" for i in range(40)]
+    baseline_vals = [max(0.0001, rng.gauss(0.010, 0.006)) for _ in range(40)]
+    noise = [rng.gauss(0.0, 0.004) for _ in range(40)]
+    baseline_costs = dict(zip(baseline_ids, baseline_vals, strict=True))
+    current_costs = {
+        case_id: max(0.0001, b + eps)
+        for case_id, b, eps in zip(baseline_ids, baseline_vals, noise, strict=True)
+    }
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    _write_snapshot_with_session_ids(baseline_path, baseline_costs)
+    _write_snapshot_with_session_ids(current_path, current_costs)
+
+    exit_code = main(
+        [
+            "check",
+            "--baseline",
+            str(baseline_path),
+            "--current",
+            str(current_path),
+            "--min-effect-usd",
+            "0.000000001",
+            "--min-effect-pct",
+            "0.000000001",
+        ]
+    )
+
+    assert exit_code == EXIT_UNDERPOWERED_PASS
+    captured = capsys.readouterr()
+    assert "method=paired" in captured.out
+    assert "PASS" in captured.out
+    assert "UNDERPOWERED PASS" in captured.out
+    assert "exit code 4" in captured.out
+
+
 def test_cmd_check_end_to_end_pass_stays_exit_pass_with_low_variance_and_default_floor(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
@@ -446,6 +502,34 @@ def test_cmd_check_end_to_end_pass_stays_exit_pass_with_low_variance_and_default
 
     assert exit_code == EXIT_PASS
     captured = capsys.readouterr()
+    assert "UNDERPOWERED PASS" not in captured.out
+
+
+def test_cmd_check_end_to_end_paired_pass_stays_exit_pass_with_low_variance_and_default_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    # Paired-mode mirror of the two-sample regression guard above (AP1.4):
+    # confirms the mode-agnostic fix doesn't silently escalate every
+    # paired pass either -- low within-case variance clears the default
+    # floor, so EXIT_PASS stays EXIT_PASS.
+    import random
+
+    rng = random.Random(99)
+    baseline_costs = {f"case-{i}": max(0.0001, rng.gauss(0.010, 0.00005)) for i in range(40)}
+    current_costs = {
+        case_id: max(0.0001, cost + rng.gauss(0.0, 0.00002))
+        for case_id, cost in baseline_costs.items()
+    }
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    _write_snapshot_with_session_ids(baseline_path, baseline_costs)
+    _write_snapshot_with_session_ids(current_path, current_costs)
+
+    exit_code = main(["check", "--baseline", str(baseline_path), "--current", str(current_path)])
+
+    assert exit_code == EXIT_PASS
+    captured = capsys.readouterr()
+    assert "method=paired" in captured.out
     assert "UNDERPOWERED PASS" not in captured.out
 
 

@@ -854,10 +854,15 @@ def test_underpowered_pass_false_for_regression_status_even_with_power_warning()
     assert result.underpowered_pass is False
 
 
-def test_underpowered_pass_false_for_paired_mode_even_with_power_warning():
-    # Q2 scopes the exit-code escalation to two-sample only (see
-    # underpowered_pass's docstring) -- paired mode still gets the
-    # power_warning TEXT, but never underpowered_pass=True.
+def test_underpowered_pass_true_for_paired_mode_pass_with_real_variance_and_tiny_floor():
+    # AP1: mode-agnostic as of this fix -- was FALSE under Q2's original
+    # two-sample-only restriction (see git history for the prior version
+    # of this test, inverted here). Real hosted-model measurement found
+    # the shipped PAIRED default hits exactly this case at n=30 (37.85%
+    # power for a 10% regression at real measured within-case CV=0.1307 --
+    # docs/audit/AD2_REAL_CV_MEASUREMENT.md) -- the mechanism
+    # (power_warning) already fired identically for paired mode before
+    # this fix; only the exit-code escalation was being withheld.
     # Real per-pair DELTA variance (zero-mean noise added on top of
     # baseline, not current==baseline exactly -- a degenerate all-zero
     # delta set would give standard_error=0 and never trip the warning).
@@ -873,8 +878,46 @@ def test_underpowered_pass_false_for_paired_mode_even_with_power_warning():
     assert result.status == "pass"
     assert result.method == "paired"
     assert result.power_warning is not None
+    assert result.underpowered_pass is True
+    assert "UNDERPOWERED PASS" in result.report()
+    assert "exit code 4" in result.report()
+    assert "paired mode's power" in result.report()
+
+
+def test_underpowered_pass_false_for_paired_mode_when_variance_is_low_enough_for_the_default_floor():
+    # Mirrors test_underpowered_pass_false_when_variance_is_low_enough_
+    # for_the_default_floor's two-sample case -- the negative branch for
+    # paired mode, so both modes have both branches covered (AP1.4).
+    rng = random.Random(99)
+    baseline = [max(0.0001, rng.gauss(0.010, 0.00005)) for _ in range(40)]
+    noise = [rng.gauss(0.0, 0.00002) for _ in range(40)]
+    current = [b + eps for b, eps in zip(baseline, noise, strict=True)]
+
+    result = evaluate_regression_paired(baseline, current, seed=42)  # default floors
+
+    assert result.status == "pass"
+    assert result.method == "paired"
+    assert result.power_warning is None
     assert result.underpowered_pass is False
     assert "UNDERPOWERED PASS" not in result.report()
+
+
+def test_underpowered_pass_false_for_paired_regression_status_even_with_power_warning():
+    # Mirrors test_underpowered_pass_false_for_regression_status_even_
+    # with_power_warning's two-sample case -- a real, large injected
+    # per-pair effect can be both "regression" AND still trip
+    # power_warning; underpowered_pass must not fire on a non-"pass"
+    # status in paired mode either.
+    rng = random.Random(1234)
+    baseline = [max(0.0001, rng.gauss(0.010, 0.0015)) for _ in range(40)]
+    current = [max(0.0001, b * 1.20 + rng.gauss(0.0, 0.0003)) for b in baseline]
+
+    result = evaluate_regression_paired(baseline, current, seed=42)
+
+    assert result.status == "regression"
+    assert result.method == "paired"
+    assert result.power_warning is not None
+    assert result.underpowered_pass is False
 
 
 def test_evaluate_regression_paired_populates_achieved_power_fields():
