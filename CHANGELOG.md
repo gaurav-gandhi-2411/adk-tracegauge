@@ -7,7 +7,7 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
-## [Unreleased]
+## [0.6.0] — 2026-08-21
 
 ### Changed — BREAKING CI BEHAVIOR CHANGE, read before upgrading
 
@@ -34,6 +34,47 @@ see `CONTRIBUTING.md`).
   No fix is required if you're already treating exit code 4 as "pass with a
   caveat, read the log" per `0.5.0`'s original design — this is a widening
   of an existing, already-adopted convention, not a new one.
+
+### Added
+- **Real hosted-model CV/skew measurement**, closing the AD2.3 gap left open
+  when the package's power tables were only ever validated against local
+  Ollama (`docs/audit/AD2_REAL_CV_MEASUREMENT.md`, §2.6/2.7). Measured
+  against a real `gemini-3.5-flash-lite` call on the identical 36-case
+  evalset: across-case CV **1.2326** (+25.4% vs. Ollama's 0.9831 — worse for
+  the two-sample fallback path) and within-case CV **0.1307** (-16.6% vs.
+  Ollama's 0.1566 — better for the shipped paired default). The two moved in
+  *opposite* directions from Ollama, not uniformly one way.
+- **README's Regime B CV-sweep tables extended to CV ∈ {1.5, 2.0}** (both
+  two-sample and paired), since the real measured across-case CV (1.2326)
+  exceeded the table's original top row (1.0). Both modes collapse to
+  near-random-chance power (2–5%) at CV≥1.5 regardless of `n` — the
+  extension confirms there's no recoverable regime at high variance, not
+  that one exists.
+- **The `n` paired mode actually needs at real measured variance, published
+  plainly**: swept `n` ∈ {50,75,100,150,200} at CV=0.1307 — 10%-effect power
+  crosses 80% between `n=75` (74.75%) and `n=100` (87.20%); 25%-effect power
+  is ≥98% at every swept `n`, including the shipped `min_n=30`. `min_n=30`
+  re-examined again against this and kept unchanged — raising it would
+  refuse every real 30–99-invocation eval set outright; the runtime
+  achieved-power signal (now firing in both modes, this release) carries
+  that burden instead.
+- **README's power section reframed to lead with what the gate reliably
+  catches** (98.00% detection of a 25% regression at `n=30`, the class of
+  regression that actually happens — a model swap, a new tool call) before
+  the 10%-effect limitation, and states once, plainly, that no competitor
+  publishes a power number for its own gate at all.
+- **Model retirement tracking** for the bundled price table
+  (`src/adk_tracegauge/data/gemini_prices.json`). Two distinct classes, not
+  one: full removal (`gemini-2.0-flash`, confirmed absent from Gemini's free
+  `models.list()` catalog — a new automated check,
+  `scripts/check_model_retirement_gemini.py`, catches this class for free,
+  wired into the weekly `price-freshness.yml` workflow behind a
+  `GOOGLE_API_KEY` secret that does not exist yet, so it currently SKIPS
+  with a visible `::warning::` annotation rather than passing silently) and
+  account-eligibility gating (`gemini-2.5-flash-lite`'s "no longer available
+  to new users" 404 — genuinely not free-verifiable; documented via a new
+  `new_user_availability_warning` field instead of a blanket `retired: true`,
+  since an existing key predating the cutoff may still work).
 
 ## [0.5.1] — 2026-08-18
 
