@@ -115,7 +115,9 @@ async def _run_evalset(cases: list[dict]) -> UsageStore:
 def main() -> int:
     evalset = json.loads(EVALSET_PATH.read_text(encoding="utf-8"))
     cases = evalset["cases"]
-    print(f"Running {len(cases)} real cases against {GEMINI_MODEL} (REAL hosted call, costs money)...")
+    print(
+        f"Running {len(cases)} real cases against {GEMINI_MODEL} (REAL hosted call, costs money)..."
+    )
 
     store = asyncio.run(_run_evalset(cases))
 
@@ -165,7 +167,9 @@ def main() -> int:
         f"tokens_output:                         mean={mean_tok_out:.1f}  sd={sd_tok_out:.1f}  CV={cv_tok_out:.4f}  skew={skew_tok_out:.4f}"
     )
 
-    out_path = Path(__file__).resolve().parent.parent / "reports" / "ad2_real_cv_measurement_gemini.json"
+    out_path = (
+        Path(__file__).resolve().parent.parent / "reports" / "ad2_real_cv_measurement_gemini.json"
+    )
     out_path.write_text(
         json.dumps(
             {

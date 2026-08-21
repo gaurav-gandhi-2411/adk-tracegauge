@@ -49,7 +49,9 @@ POINT_EFFECT_GRID = [10.0, 25.0]
 
 
 def _print_grid(grid: dict, cv_grid: list[float], n_grid: list[int], label: str) -> None:
-    print(f"\n=== {label} (power to detect true {EFFECT_PCT:.0f}% regression, confidence={CONFIDENCE}) ===")
+    print(
+        f"\n=== {label} (power to detect true {EFFECT_PCT:.0f}% regression, confidence={CONFIDENCE}) ==="
+    )
     header = "CV\\n".ljust(8) + "".join(f"{n:>24}" for n in n_grid)
     print(header)
     for cv in cv_grid:
@@ -65,26 +67,42 @@ def _print_grid(grid: dict, cv_grid: list[float], n_grid: list[int], label: str)
 
 def main() -> int:
     print(f"=== PART 1 (AN2.2): extending Regime B grids to CV={EXTENDED_CV_GRID} ===")
-    print(f"{len(EXTENDED_CV_GRID)}x{len(N_GRID)} cells/mode, {N_TRIALS} trials/cell, n_boot={N_BOOT}, effect={EFFECT_PCT}%, confidence={CONFIDENCE}")
+    print(
+        f"{len(EXTENDED_CV_GRID)}x{len(N_GRID)} cells/mode, {N_TRIALS} trials/cell, n_boot={N_BOOT}, effect={EFFECT_PCT}%, confidence={CONFIDENCE}"
+    )
 
     t0 = time.time()
     two_sample_ext = compute_two_sample_cv_grid(
-        cv_grid=EXTENDED_CV_GRID, n_grid=N_GRID, effect_pct=EFFECT_PCT, n_trials=N_TRIALS, n_boot=N_BOOT, confidence=CONFIDENCE
+        cv_grid=EXTENDED_CV_GRID,
+        n_grid=N_GRID,
+        effect_pct=EFFECT_PCT,
+        n_trials=N_TRIALS,
+        n_boot=N_BOOT,
+        confidence=CONFIDENCE,
     )
     two_sample_elapsed = time.time() - t0
     print(f"two-sample extension done in {two_sample_elapsed:.1f}s")
 
     t1 = time.time()
     paired_ext = compute_paired_cv_grid(
-        cv_grid=EXTENDED_CV_GRID, n_grid=N_GRID, effect_pct=EFFECT_PCT, n_trials=N_TRIALS, n_boot=N_BOOT, confidence=CONFIDENCE
+        cv_grid=EXTENDED_CV_GRID,
+        n_grid=N_GRID,
+        effect_pct=EFFECT_PCT,
+        n_trials=N_TRIALS,
+        n_boot=N_BOOT,
+        confidence=CONFIDENCE,
     )
     paired_elapsed = time.time() - t1
     print(f"paired extension done in {paired_elapsed:.1f}s")
 
-    _print_grid(two_sample_ext, EXTENDED_CV_GRID, N_GRID, "TWO-SAMPLE power, EXTENDED [Wilson 95% CI]")
+    _print_grid(
+        two_sample_ext, EXTENDED_CV_GRID, N_GRID, "TWO-SAMPLE power, EXTENDED [Wilson 95% CI]"
+    )
     _print_grid(paired_ext, EXTENDED_CV_GRID, N_GRID, "PAIRED power, EXTENDED [Wilson 95% CI]")
 
-    print(f"\n=== PART 2 (AN1.4/AN2.3): paired power at MEASURED within-case CV={MEASURED_WITHIN_CASE_CV_GEMINI} (gemini-3.5-flash-lite) ===")
+    print(
+        f"\n=== PART 2 (AN1.4/AN2.3): paired power at MEASURED within-case CV={MEASURED_WITHIN_CASE_CV_GEMINI} (gemini-3.5-flash-lite) ==="
+    )
     point_results = {}
     for e in POINT_EFFECT_GRID:
         grid = compute_paired_cv_grid(

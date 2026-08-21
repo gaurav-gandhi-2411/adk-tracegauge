@@ -58,7 +58,6 @@ from adk_tracegauge._plugin import TraceGaugeUsagePlugin  # noqa: E402
 from adk_tracegauge._store import UsageStore  # noqa: E402
 from adk_tracegauge.snapshot import read_snapshot, write_snapshot  # noqa: E402
 
-
 _last_call_ts: float = 0.0
 
 
@@ -90,7 +89,10 @@ async def _run_case(runner: InMemoryRunner, app_name: str, session_id: str, prom
             msg = str(e)
             if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
                 backoff = 60.0 * (attempt + 1)
-                print(f"    429 rate-limited on {session_id}, attempt {attempt + 1}/{MAX_RETRIES}, sleeping {backoff:.0f}s...", flush=True)
+                print(
+                    f"    429 rate-limited on {session_id}, attempt {attempt + 1}/{MAX_RETRIES}, sleeping {backoff:.0f}s...",
+                    flush=True,
+                )
                 if is_last:
                     raise
                 await asyncio.sleep(backoff)
@@ -131,7 +133,9 @@ def _costs_by_case(store: UsageStore, pass_label: str) -> tuple[dict[str, float]
 def main() -> int:
     evalset = json.loads(EVALSET_PATH.read_text(encoding="utf-8"))
     cases = evalset["cases"]
-    print(f"Running {len(cases)} cases TWICE (runA, runB) against {GEMINI_MODEL} (REAL hosted call, costs money)...")
+    print(
+        f"Running {len(cases)} cases TWICE (runA, runB) against {GEMINI_MODEL} (REAL hosted call, costs money)..."
+    )
 
     store_a = asyncio.run(_run_pass(cases, "runA"))
     costs_a, skipped_a = _costs_by_case(store_a, "runA")
