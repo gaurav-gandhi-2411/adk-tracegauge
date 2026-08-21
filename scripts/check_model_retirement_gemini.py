@@ -70,8 +70,7 @@ def main() -> int:
         from google import genai
     except ImportError:
         print(
-            "SKIPPED: google-genai not importable in this environment. "
-            "Not a failure (exit 0).",
+            "SKIPPED: google-genai not importable in this environment. Not a failure (exit 0).",
         )
         return 0
 
@@ -79,7 +78,10 @@ def main() -> int:
     try:
         live_names = {m.name.removeprefix("models/") for m in client.models.list()}
     except Exception as e:  # noqa: BLE001 -- report and fail closed, don't guess
-        print(f"FETCH FAILURE: could not list live Gemini models: {type(e).__name__}: {e}", file=sys.stderr)
+        print(
+            f"FETCH FAILURE: could not list live Gemini models: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
         print(
             "This means 'we don't know if our retirement flags are "
             "current', not 'they are current' -- failing the run rather "
@@ -135,7 +137,7 @@ def main() -> int:
         "\nThis is a candidate list for human review, not an automatic "
         "verdict -- a name mismatch from an undocumented rename would "
         "produce a false positive here. Confirm each candidate is genuinely "
-        "gone (not just renamed) before adding \"retired\": true and a "
+        'gone (not just renamed) before adding "retired": true and a '
         "retired_on date to src/adk_tracegauge/data/gemini_prices.json. "
         "This check does NOT catch account-eligibility gating (models that "
         "stay listed but 404 for some keys) -- see this script's own "
