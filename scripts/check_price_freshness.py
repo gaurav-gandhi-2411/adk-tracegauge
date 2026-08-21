@@ -2,10 +2,19 @@
 
 Two INDEPENDENT checks, either of which fails the run (exit 1):
 
-1. Staleness: any model entry in src/adk_tracegauge/data/gemini_prices.json
-   whose ``fetched_on`` date is older than
-   adk_tracegauge._pricing.STALE_THRESHOLD_DAYS, measured against the date
-   this script actually runs.
+1. Staleness: any NON-RETIRED model entry in
+   src/adk_tracegauge/data/gemini_prices.json whose ``fetched_on`` date is
+   older than adk_tracegauge._pricing.STALE_THRESHOLD_DAYS, measured
+   against the date this script actually runs. An entry with ``"retired":
+   true`` is exempt (AN3 fix): the vendor no longer changes pricing for a
+   model that can't be resolved by anyone, so staleness doesn't apply --
+   ported from tracegauge's sibling script, which already had this
+   exemption when this repo's copy did not. That gap is exactly how
+   ``gemini-2.0-flash`` sat with a normal-looking ``fetched_on`` for weeks
+   after being fully removed from Google's own model catalog -- this check
+   would have stayed green the whole time, since date arithmetic alone
+   cannot tell "recently re-verified" from "recently re-verified against a
+   vendor page that no longer lists the model at all."
 2. Promo expiry (Phase 3 B2 2.4): any entry with a ``promo_until`` date that
    is within adk_tracegauge._pricing.PROMO_EXPIRY_WARNING_DAYS of "today", OR
    already past. Reported as two DISTINCT conditions ("expiring soon" vs.
@@ -47,6 +56,17 @@ def _check_staleness(
 ) -> list[tuple[str, str, int, str]]:
     stale: list[tuple[str, str, int, str]] = []
     for model_key, entry in models.items():
+        if entry.get("retired"):
+            # Retired entries are exempt by design: the vendor no longer
+            # changes pricing for a model that can't be resolved/priced by
+            # anyone, so "is this stale" doesn't apply -- the entry is kept
+            # only to price historical sessions recorded before retirement,
+            # at the last-published rate. Ported from tracegauge's sibling
+            # check_price_freshness.py, which already had this exemption;
+            # this repo's copy did not until this fix (AN3) -- the gap that
+            # let gemini-2.0-flash sit with a normal-looking fetched_on
+            # despite being fully removed from Google's own model catalog.
+            continue
         fetched_on = str(entry.get("fetched_on") or "")
         source_url = str(entry.get("source_url") or "<no source_url recorded>")
         try:
@@ -101,8 +121,9 @@ def main() -> int:
     expiring_soon, already_expired = _check_promo_expiry(models, today)
 
     if not stale and not expiring_soon and not already_expired:
+        checked = sum(1 for entry in models.values() if not entry.get("retired"))
         print(
-            f"OK: all {len(models)} price entries fetched within "
+            f"OK: all {checked} non-retired price entries fetched within "
             f"{STALE_THRESHOLD_DAYS} days of {today.isoformat()}, and no "
             f"promotional entry expires within {PROMO_EXPIRY_WARNING_DAYS} days."
         )

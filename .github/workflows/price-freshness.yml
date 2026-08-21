@@ -27,6 +27,19 @@ name: Price table freshness
 # failure or structural change fails this step loudly, distinctly from a
 # genuine price mismatch -- see scripts/check_price_table_vs_vendor.py's
 # own module docstring.
+#
+# AN3: a third, independent step checks for full-removal retirements (a
+# model completely absent from Gemini's free models.list() endpoint --
+# distinct from price DRIFT, which the two steps above already cover; this
+# catches a model that's gone entirely, like gemini-2.0-flash was before
+# this fix). Requires a GOOGLE_API_KEY repo secret to actually run; SKIPS
+# gracefully (exit 0) if that secret isn't configured, so this step is
+# inert-by-default and does NOT require anyone to add a key -- see
+# scripts/check_model_retirement_gemini.py's own module docstring for why
+# this specific retirement class is free-verifiable while the other class
+# discovered this session (account-eligibility gating, e.g.
+# gemini-2.5-flash-lite's "no longer available to new users" 404) is not,
+# and is handled by a documented field + manual review instead.
 
 on:
   schedule:
@@ -66,3 +79,8 @@ jobs:
 
       - name: Check price table against each vendor's own published page
         run: uv run python scripts/check_price_table_vs_vendor.py
+
+      - name: Check for fully-retired Gemini models (free, skips without a key)
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: uv run python scripts/check_model_retirement_gemini.py

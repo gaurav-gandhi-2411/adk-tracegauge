@@ -36,14 +36,18 @@
       "output_usd_per_mtok": 0.40,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
       "fetched_on": "2026-08-14",
-      "note": "Standard tier, text/image/video input. No context-length tiering published for this model. Audio input bills at $0.30/Mtok, not modeled here."
+      "note": "Standard tier, text/image/video input. No context-length tiering published for this model. Audio input bills at $0.30/Mtok, not modeled here.",
+      "new_user_availability_warning": "A real generateContent call against this model returned 404 for a NEW API key on 2026-08-21 ('This model models/gemini-2.5-flash-lite is no longer available to new users. Please update your code to use models/gemini-3.5-flash-lite.'). Deliberately NOT marked 'retired': the model still appears in the free models.list() endpoint with generateContent listed in its own supported_actions (verified live, same date) and Google's pricing page still lists it -- this is a narrower, account-eligibility-based gate, not a full retirement. 'retired' in this table means 'cannot be resolved/priced by anyone'; this model can still be resolved by existing API keys predating the cutoff, so that would overstate the block. NOT free-verifiable in general -- discovered only via a real paid call; see AN3 in docs/audit/ (adk-tracegauge PR referencing gemini-2.5-flash-lite retirement) for the full investigation. Existing users/keys: verify your own account before relying on this entry."
     },
     "gemini-2.0-flash": {
       "input_usd_per_mtok": 0.10,
       "output_usd_per_mtok": 0.40,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
       "fetched_on": "2026-08-14",
-      "note": "Deprecated by Google (shut down 2026-06-01). Kept for pricing historical eval sessions recorded before the shutdown; will not appear in new runs."
+      "note": "Deprecated by Google (shut down 2026-06-01). Kept for pricing historical eval sessions recorded before the shutdown; will not appear in new runs.",
+      "retired": true,
+      "retired_on": "2026-06-01",
+      "retired_source": "Confirmed fully absent from the free models.list() endpoint (verified live 2026-08-21, 50-model catalog, zero matches for any '2.0'-named model) -- also already hardcoded into check_price_table_vs_vendor.py's SKIP_ENTRIES before this field existed, for the same reason. This is the free-verifiable retirement class: full removal from the model catalog, not merely an account-eligibility gate (contrast gemini-2.5-flash-lite above)."
     },
     "gemini-3.5-flash": {
       "input_usd_per_mtok": 1.50,
