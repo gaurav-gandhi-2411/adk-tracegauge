@@ -55,22 +55,54 @@ if str(_SRC) not in sys.path:
 from adk_tracegauge._pricing import load_gemini_prices  # noqa: E402
 
 
+def _announce_skip(message: str) -> None:
+    """AP4.4: a step that exits 0 shows as a plain green checkmark in
+    GitHub's checks UI -- indistinguishable, without opening the log, from
+    a check that actually ran and found nothing wrong. A skipped check
+    that reads as coverage is worse than no check at all. Emits a
+    `::warning::` workflow command (renders as a yellow annotation on the
+    PR's checks summary, visible without opening any log) in addition to
+    the stdout message, plus a $GITHUB_STEP_SUMMARY entry (visible on the
+    workflow run's own summary page) when running in Actions. No-ops
+    outside Actions (e.g. a local `uv run` -- $GITHUB_STEP_SUMMARY unset)."""
+    print(message)
+    # GitHub Actions workflow command -- newlines must be escaped, this
+    # message has none, but guard anyway rather than assume future callers.
+    single_line = message.replace("\n", " ")
+    print(f"::warning::{single_line}")
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(f"### :warning: Model retirement check SKIPPED\n\n{message}\n")
+
+
 def main() -> int:
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print(
+        _announce_skip(
             "SKIPPED: no GOOGLE_API_KEY/GEMINI_API_KEY in environment -- "
             "this check requires a live models.list() call and cannot run "
-            "without one. Not a failure (exit 0): this is the expected, "
-            "graceful no-op for any environment without a stored key."
+            "without one. Not a failure (exit 0): this is the expected "
+            "no-op for any environment without a stored key -- but it also "
+            "means full-removal retirements (like gemini-2.0-flash before "
+            "this check existed) are NOT being caught right now. To "
+            "activate: add a repo secret named exactly GOOGLE_API_KEY "
+            "(Settings > Secrets and variables > Actions > New repository "
+            "secret), value = a free Gemini API key from "
+            "https://aistudio.google.com/apikey (models.list() is "
+            "metadata-only, no generation billing -- the free tier is "
+            "sufficient, no paid tier needed for this specific check)."
         )
         return 0
 
     try:
         from google import genai
     except ImportError:
-        print(
-            "SKIPPED: google-genai not importable in this environment. Not a failure (exit 0).",
+        _announce_skip(
+            "SKIPPED: google-genai not importable in this environment -- "
+            "this should not happen in adk-tracegauge's own CI (it's a "
+            "core dependency), only in an unusual manual invocation. Not a "
+            "failure (exit 0), but also not a real check having run."
         )
         return 0
 
