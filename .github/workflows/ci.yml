@@ -154,4 +154,22 @@ jobs:
       - name: One example end to end (examples/03_ci_regression_gate.py, as a real user would run it)
         working-directory: ${{ runner.temp }}/wheel-smoke-workdir
         run: |
+          # AS1: examples/03_ci_regression_gate.py now correctly propagates
+          # adk-tracegauge check's exit code as its own (fixed alongside
+          # this step -- it previously always exited 0 regardless of what
+          # the inner check found, so this step verified nothing about the
+          # actual gate behavior). The example's own fixture injects a
+          # real 20% regression, so this run is EXPECTED to exit 1 -- same
+          # explicit-exit-code-assertion pattern as the "hero path" step
+          # above, not a bare non-zero-fails-the-step default (which would
+          # be correct-by-accident here, but wrong if this example's
+          # fixture ever changes to a non-regressing case).
+          set +e
           "${{ runner.temp }}/wheel-smoke-venv/bin/python" 03_ci_regression_gate.py
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "expected exit code 1 (injected regression) from examples/03_ci_regression_gate.py, got $code"
+            exit 1
+          fi
+          echo "example OK: 03_ci_regression_gate.py correctly propagated exit code 1"

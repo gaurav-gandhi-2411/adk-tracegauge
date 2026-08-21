@@ -108,7 +108,7 @@ def build_current_store() -> UsageStore:
     return _build_store(seed=42, mean_output_tokens=20_000 * 1.20)
 
 
-def main() -> None:
+def main() -> int:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         baseline_json = tmp_path / "baseline.json"
@@ -148,7 +148,19 @@ def main() -> None:
             cwd=examples_dir,
         )
         print(f"adk-tracegauge check exit code: {result.returncode}")
+        return result.returncode
 
 
 if __name__ == "__main__":
-    main()
+    # AS1: main() previously returned None here -- this process's own exit
+    # code was always 0 regardless of what adk-tracegauge check actually
+    # found, directly contradicting this file's own docstring ("would fail
+    # the build in CI"). A user copy-pasting this example as a real CI
+    # step, or CI's own wheel-smoke-test job running this file directly
+    # (.github/workflows/ci.yml's "One example end to end" step -- updated
+    # in the same change to expect the now-real exit code 1 from the
+    # injected regression), would never have seen a build fail on a real
+    # regression. sys.exit propagates the real subprocess result as this
+    # script's own exit code, matching every other exit-code claim in this
+    # file's own docstring.
+    sys.exit(main())
