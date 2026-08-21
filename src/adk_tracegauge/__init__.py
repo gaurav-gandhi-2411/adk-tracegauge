@@ -55,7 +55,7 @@ DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
 # this package breaks.
 _install_agent_evaluator_marker()
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 __all__ = [
     "CostEfficiencyEvaluator",
