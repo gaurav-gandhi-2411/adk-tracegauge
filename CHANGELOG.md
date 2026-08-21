@@ -7,6 +7,34 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Changed — BREAKING CI BEHAVIOR CHANGE, read before upgrading
+
+- **`EXIT_UNDERPOWERED_PASS` (exit code 4) now fires for PAIRED mode too, not
+  only two-sample.** Real hosted-model measurement
+  (`docs/audit/AD2_REAL_CV_MEASUREMENT.md`, AN1) found the shipped `--mode
+  auto` DEFAULT — paired mode — returns a clean `status="pass"` at only
+  **37.85% power** to detect a true 10% cost regression at `n=30` (real
+  measured within-case CV=0.1307 on a real `gemini-3.5-flash-lite` call, not
+  a synthetic worst case), far below the 80%-power bar this exact exit code
+  already existed to flag for two-sample mode since `0.5.0`. The
+  `power_warning`/`min_detectable_effect_usd` mechanism was already computed
+  identically for both modes (`evaluate_regression`/`evaluate_regression_paired`
+  share `_below_floor_warning`) — only `RegressionCheckResult.underpowered_pass`
+  restricted the exit-code escalation to `method == "two_sample"`, silently
+  withholding this signal from the mode most users actually run.
+  **If your CI treats `exit code == 0` as "safe, no regression" for a
+  `check` run in paired mode (the default whenever a pairing key resolves),
+  a run that previously exited `0` under low-power conditions will now exit
+  `4`.** This is intentional — see `EXIT_UNDERPOWERED_PASS`'s and
+  `underpowered_pass`'s docstrings (`_cli.py`/`_regression.py`) for the full
+  reasoning, and `README.md`'s power section for what `n` paired mode
+  actually needs at realistic hosted-model variance to clear 80% power.
+  No fix is required if you're already treating exit code 4 as "pass with a
+  caveat, read the log" per `0.5.0`'s original design — this is a widening
+  of an existing, already-adopted convention, not a new one.
+
 ## [0.5.1] — 2026-08-18
 
 ### Fixed

@@ -88,14 +88,20 @@ conflated):
     1 -- regression detected (statistically AND practically significant)
     3 -- insufficient data (either group has fewer than --min-n invocations
          -- refuses to emit a statistically meaningless verdict)
-    4 -- Phase 9 Q2: TWO-SAMPLE MODE ONLY -- "pass" was reported, but this
-         run's own observed variance/n could NOT reliably (80% power)
-         detect your configured floor (the same condition the "achieved
-         power" WARNING line already reports in text, now also visible to
-         a CI job checking only the exit code). Real, honest signal, not
-         insufficient data -- the bootstrap CI is statistically valid, it
-         just cannot resolve an effect as small as what you configured.
-         See RegressionCheckResult.underpowered_pass's docstring
+    4 -- AP1 (was Phase 9 Q2, two-sample-only until this fix): EITHER MODE
+         -- "pass" was reported, but this run's own observed variance/n
+         could NOT reliably (80% power) detect your configured floor (the
+         same condition the "achieved power" WARNING line already reports
+         in text, now also visible to a CI job checking only the exit
+         code). Real, honest signal, not insufficient data -- the
+         bootstrap CI is statistically valid, it just cannot resolve an
+         effect as small as what you configured. Real hosted-model
+         measurement found the shipped PAIRED default hits exactly this
+         case at n=30 (37.85% power for a 10% regression at real measured
+         within-case CV -- docs/audit/AD2_REAL_CV_MEASUREMENT.md) -- the
+         two-sample-only restriction was silently withholding this signal
+         from the mode most users actually run. See
+         RegressionCheckResult.underpowered_pass's docstring
          (_regression.py) for the full reasoning and how to respond.
 
 (argparse itself uses exit code 2 for malformed CLI invocations -- e.g. a
@@ -135,17 +141,22 @@ EXIT_PASS = 0
 EXIT_REGRESSION = 1
 EXIT_INSUFFICIENT_DATA = 3
 EXIT_UNDERPOWERED_PASS = 4
-"""Phase 9 Q2: a distinct, non-zero exit code for `status="pass"` under
-TWO-SAMPLE mode specifically, when this run's own observed variance/n
-means the configured practical-significance floor could not be reliably
-(80% power) detected -- see RegressionCheckResult.underpowered_pass's
-docstring for the full reasoning. Deliberately NOT the same value argparse
-itself uses for a CLI usage error (2) -- kept distinguishable from an
-invocation mistake. This is a REAL exit-code semantics change: existing CI
-configs that treat `exit code == 0` as "safe, no regression" will now see
-a non-zero code on an underpowered two-sample pass they previously saw as
-a clean 0 -- intentional, not a regression in this package itself. See
-CHANGELOG for the version this shipped in."""
+"""AP1 (was Phase 9 Q2, restricted to two-sample mode until this fix): a
+distinct, non-zero exit code for `status="pass"` in EITHER mode, when this
+run's own observed variance/n means the configured practical-significance
+floor could not be reliably (80% power) detected -- see
+RegressionCheckResult.underpowered_pass's docstring for the full
+reasoning. Deliberately NOT the same value argparse itself uses for a CLI
+usage error (2) -- kept distinguishable from an invocation mistake. This is
+a REAL exit-code semantics change (again, on top of Q2's original one):
+existing CI configs that treat `exit code == 0` as "safe, no regression"
+will now see a non-zero code on an underpowered pass in EITHER mode
+(previously two-sample only) that they previously saw as a clean 0 --
+intentional, not a regression in this package itself. This specifically
+includes PAIRED-mode passes, the shipped default -- a config relying on
+that mode's exit code staying 0 will see this change even if nothing
+about its own regression logic changed. See CHANGELOG for the version
+this shipped in."""
 
 
 def _resolve_entrypoint(spec: str) -> UsageStore:

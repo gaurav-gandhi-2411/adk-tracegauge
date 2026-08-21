@@ -1,0 +1,114 @@
+{
+  "measured_within_case_cv": 0.1307,
+  "model": "gemini-3.5-flash-lite",
+  "confidence": 0.98,
+  "n_trials": 2000,
+  "n_boot": 1000,
+  "n_sweep": [
+    50,
+    75,
+    100,
+    150,
+    200
+  ],
+  "effect_grid": [
+    10.0,
+    25.0
+  ],
+  "results": {
+    "10.0|50": {
+      "detections": 1170,
+      "n_trials": 2000,
+      "detection_rate": 0.585,
+      "wilson_95ci": [
+        0.5632630456485423,
+        0.6064110563136446
+      ]
+    },
+    "10.0|75": {
+      "detections": 1495,
+      "n_trials": 2000,
+      "detection_rate": 0.7475,
+      "wilson_95ci": [
+        0.7279977665094945,
+        0.7660532950862854
+      ]
+    },
+    "10.0|100": {
+      "detections": 1744,
+      "n_trials": 2000,
+      "detection_rate": 0.872,
+      "wilson_95ci": [
+        0.8566416639684941,
+        0.8859320528542537
+      ]
+    },
+    "10.0|150": {
+      "detections": 1940,
+      "n_trials": 2000,
+      "detection_rate": 0.97,
+      "wilson_95ci": [
+        0.9615758302685604,
+        0.9766221452870617
+      ]
+    },
+    "10.0|200": {
+      "detections": 1985,
+      "n_trials": 2000,
+      "detection_rate": 0.9925,
+      "wilson_95ci": [
+        0.9876620858637751,
+        0.9954496225641908
+      ]
+    },
+    "25.0|50": {
+      "detections": 1998,
+      "n_trials": 2000,
+      "detection_rate": 0.999,
+      "wilson_95ci": [
+        0.9963610657309616,
+        0.999725721082348
+      ]
+    },
+    "25.0|75": {
+      "detections": 2000,
+      "n_trials": 2000,
+      "detection_rate": 1.0,
+      "wilson_95ci": [
+        0.9980829527187468,
+        0.9999999999999998
+      ]
+    },
+    "25.0|100": {
+      "detections": 2000,
+      "n_trials": 2000,
+      "detection_rate": 1.0,
+      "wilson_95ci": [
+        0.9980829527187468,
+        0.9999999999999998
+      ]
+    },
+    "25.0|150": {
+      "detections": 2000,
+      "n_trials": 2000,
+      "detection_rate": 1.0,
+      "wilson_95ci": [
+        0.9980829527187468,
+        0.9999999999999998
+      ]
+    },
+    "25.0|200": {
+      "detections": 2000,
+      "n_trials": 2000,
+      "detection_rate": 1.0,
+      "wilson_95ci": [
+        0.9980829527187468,
+        0.9999999999999998
+      ]
+    }
+  },
+  "first_n_clearing_80pct_power": {
+    "10.0": 100,
+    "25.0": 50
+  }
+}

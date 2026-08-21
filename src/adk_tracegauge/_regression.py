@@ -829,34 +829,38 @@ class RegressionCheckResult:
 
     @property
     def underpowered_pass(self) -> bool:
-        """Phase 9 Q2: True when this run reported ``status="pass"`` under
-        TWO-SAMPLE mode specifically, AND ``power_warning`` fired (the
-        configured practical-significance floor sits below what this run's
-        own observed variance/n could reliably detect at
+        """AP1 (was Phase 9 Q2, two-sample-only): True when this run
+        reported ``status="pass"``, in EITHER mode, AND ``power_warning``
+        fired (the configured practical-significance floor sits below what
+        this run's own observed variance/n could reliably detect at
         ``power_target``==80%).
 
-        Why two-sample only (Q2's own scope): AD2's real measurement found
-        two-sample power can be as low as 4-9% at realistic per-invocation
-        cost variance (``docs/audit/AD2_REAL_CV_MEASUREMENT.md``) -- a
-        "pass" at that power is barely more informative than a coin flip,
-        and reads as clean/confident to a CI system checking only the exit
-        code, not the log text. Paired mode is not flagged here even though
-        the same ``power_warning`` mechanism applies to it too (Q1 found
-        paired power can also be poor at high within-case CV) -- Q2 scoped
-        this specifically to two-sample; a future item could extend the
-        same treatment to paired if warranted.
+        Mode-agnostic as of AP1 -- previously restricted to
+        ``method == "two_sample"`` (Phase 9 Q2's original scope). That
+        restriction was itself the gap AP1 closed: AD2.3/AN1's real
+        hosted-model measurement found PAIRED mode -- the shipped
+        DEFAULT -- returns a clean "pass" at only 37.85% power for a 10%
+        regression at n=30 (real measured within-case CV=0.1307, not a
+        synthetic worst case), well below the 80% bar this same field
+        already flags for two-sample. A CI that greps `$? == 0` on a
+        paired-mode run got no signal for exactly the low-resolution
+        "pass" this exit code exists to distinguish from a fully-powered
+        one -- the mechanism (``power_warning``,
+        ``min_detectable_effect_usd``) was already computed identically
+        for both modes (``evaluate_regression``/``evaluate_regression_paired``
+        both call the same ``_below_floor_warning``); only this property's
+        mode filter was withholding the signal from callers running paired.
 
         ``_cmd_check`` (``_cli.py``) uses this to select
         ``EXIT_UNDERPOWERED_PASS`` instead of ``EXIT_PASS`` -- a distinct,
         non-zero exit code specifically for this case, so a CI job that
         greps `$? == 0` cannot silently treat an underpowered clean result
-        as a fully-powered one. This is a REAL, INTENTIONAL exit-code
-        semantics change (not a bug) -- see CHANGELOG for the minor-version
-        rationale.
+        as a fully-powered one, in EITHER mode. This is a REAL, INTENTIONAL
+        exit-code semantics change (not a bug) -- see CHANGELOG for the
+        minor-version rationale, both at Phase 9 Q2's original introduction
+        and again at AP1's mode-agnostic extension.
         """
-        return (
-            self.status == "pass" and self.method == "two_sample" and self.power_warning is not None
-        )
+        return self.status == "pass" and self.power_warning is not None
 
     def _power_line(self) -> str:
         """The "achieved power" line -- printed on EVERY run (pass, fail,
@@ -924,16 +928,25 @@ class RegressionCheckResult:
         if self.underpowered_pass:
             banner = "  " + "=" * 70
             lines.append(banner)
-            lines.append(
-                "  UNDERPOWERED PASS (exit code 4, not 0) -- two-sample mode's power to "
-                "detect your configured floor, given THIS run's own observed cost "
-                "variance, is below 80% (see the WARNING and achieved-power lines "
-                "above). This 'no regression found' result is real but low-resolution "
-                "-- it is not strong evidence the regression you configured for isn't "
-                "there. Fix: use --mode paired if a pairing key is available (usually "
-                "far more powerful at the same n -- see README 'Shipped default'), "
-                "increase your eval-set size, or explicitly treat exit code 4 as "
+            fix_suggestion = (
+                "increase your eval-set size (see README's real-hosted-model power "
+                "table for roughly how large), or explicitly treat exit code 4 as "
                 "passing in your CI config if you understand and accept this risk."
+                if self.method == "paired"
+                else (
+                    "use --mode paired if a pairing key is available (usually far more "
+                    "powerful at the same n -- see README 'Shipped default'), increase "
+                    "your eval-set size, or explicitly treat exit code 4 as passing in "
+                    "your CI config if you understand and accept this risk."
+                )
+            )
+            lines.append(
+                f"  UNDERPOWERED PASS (exit code 4, not 0) -- {self.method.replace('_', '-')} "
+                "mode's power to detect your configured floor, given THIS run's own "
+                "observed cost variance, is below 80% (see the WARNING and "
+                "achieved-power lines above). This 'no regression found' result is "
+                "real but low-resolution -- it is not strong evidence the regression "
+                f"you configured for isn't there. Fix: {fix_suggestion}"
             )
             lines.append(banner)
         return "\n".join(lines)
