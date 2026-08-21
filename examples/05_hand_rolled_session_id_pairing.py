@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -169,7 +170,7 @@ async def _run_variant(app_name: str, regression_bump: int, store: UsageStore) -
             pass  # draining the async generator is what actually drives the run
 
 
-def main() -> None:
+def main() -> int:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         baseline_store = UsageStore()
@@ -191,7 +192,10 @@ def main() -> None:
             ["check", "--baseline", str(baseline_path), "--current", str(current_path)]
         )
         print(f"\nadk-tracegauge check exit code: {exit_code}")
+        return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    # BD3: same bug 03 had -- main() never called sys.exit(), so this
+    # process always exited 0 regardless of the real check result.
+    sys.exit(main())

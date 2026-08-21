@@ -55,6 +55,15 @@ This document describes the actual flow, written after running it twice for real
    - Verify the *published* README (`curl -s https://pypi.org/pypi/<pkg>/<version>/json`,
      string-search the `description` field) contains the new command/flag names — not just
      that the local `README.md` file does; a build/publish step could in principle diverge.
+   - **Every example under `examples/` actually runs, and its real process exit code (not
+     just its printed output) matches what its own docstring/README section claims.** Real
+     incident: `examples/03_ci_regression_gate.py` shipped never propagating its subprocess's
+     exit code (always exited 0 regardless of the real result) despite its own docstring
+     claiming otherwise — found and fixed, but `04_paired_mode_via_adk_eval_cli.py` and
+     `05_hand_rolled_session_id_pairing.py` had the identical bug and were never checked at
+     the same time, discovered separately in a later audit pass. `echo $?` after running each
+     example directly (not just reading its printed "exit code: N" line) is the actual check —
+     the printed line and the real process exit code are two different things and can diverge.
 3. **Commit and open a PR.** CI (`ci.yml`) runs the full test suite (including the version
    guard test above), ruff, and mypy strict against the version-bumped code.
 

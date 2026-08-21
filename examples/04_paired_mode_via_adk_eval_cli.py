@@ -69,6 +69,7 @@ HOW TO RUN
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -255,7 +256,7 @@ def _session_ids_by_eval_id(history_path: Path) -> dict[str, str]:
     return {case["eval_id"]: case["session_id"] for case in raw["eval_case_results"]}
 
 
-def main() -> None:
+def main() -> int:
     from adk_tracegauge._cli import main as tracegauge_main
     from adk_tracegauge._compat import load_eval_case_ids_by_session_id
     from adk_tracegauge._store import DEFAULT_USAGE_STORE
@@ -335,7 +336,10 @@ def main() -> None:
             ]
         )
         print(f"\nadk-tracegauge check exit code: {exit_code}")
+        return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    # BD3: same bug 03 had -- main() never called sys.exit(), so this
+    # process always exited 0 regardless of the real check result.
+    sys.exit(main())
