@@ -28,7 +28,37 @@ uv run ruff format --check .
 uv run mypy src/
 ```
 
-All four must pass clean before a PR is reviewable. The test suite is
+All four must pass clean before a PR is reviewable.
+
+**Set up the pre-commit hook once, so `ruff` findings surface before you
+commit, not after CI runs them.** CI's `lint-and-test` matrix runs the
+exact `ruff` version locked in `uv.lock` — three separate PRs this
+project shipped got a red Python-3.11 leg from `ruff check`/`ruff format`
+findings a local run never caught, because nothing ran `ruff` locally
+before the commit landed. One-time setup:
+
+```bash
+uv run pre-commit install
+```
+
+After that, every `git commit` runs `ruff check --fix` and `ruff format`
+automatically, via `uv run ruff` (`language: system` in
+`.pre-commit-config.yaml`, deliberately not the `astral-sh/ruff-pre-commit`
+mirror repo — that mirror pins its own `ruff` version separately from
+`uv.lock`, a second source of truth that can silently drift; `uv run ruff`
+always resolves to the exact version this repo has locked, no separate
+pin to keep in sync). If a file needs reformatting, the hook fixes it in
+place and the commit is aborted so you can review the diff and re-commit
+— it will not silently commit a reformatted file you haven't seen.
+
+**Windows note**: if `pre-commit install`/`pre-commit run` fails with a
+traceback mentioning `pip._vendor.rich.markup` or similar during "Installing
+environment," that's a corrupted `virtualenv` seed-wheel cache, not a
+problem with this repo's config — clear
+`%LOCALAPPDATA%\pypa\virtualenv\Cache` and `%USERPROFILE%\.cache\pre-commit`
+and retry.
+
+The test suite is
 substantively behavioral (real objects, real ADK `Runner`/`Event`
 machinery in the `*_e2e_runner.py`/`*_agent_evaluator_integration.py`
 files — not `MagicMock`-through paths) — a new feature needs a real test
