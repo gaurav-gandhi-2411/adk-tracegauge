@@ -1,0 +1,36 @@
+repos:
+  - repo: local
+    # `language: system` shelling out to `uv run ruff`, not the
+    # astral-sh/ruff-pre-commit mirror -- deliberately, not by default.
+    # That mirror pins its OWN ruff version via its `rev:` tag, a second
+    # source of truth that can silently drift from uv.lock's own pin over
+    # time (exactly the class of gap AQ3 exists to close: CI failing on
+    # findings a local run never saw). `uv run ruff` always resolves to
+    # the EXACT version locked in uv.lock -- one source of truth, not two
+    # kept in sync by hand. (Also worked around a real, unrelated
+    # environment issue found while testing the mirror-repo approach: its
+    # isolated venv bootstrap failed with a broken vendored-pip/rich
+    # import on this machine -- `language: system` sidesteps that
+    # entirely by reusing the project's own already-working venv instead
+    # of pre-commit creating a new one.)
+    hooks:
+      - id: ruff-check
+        name: ruff check (uv-locked version)
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format (uv-locked version)
+        entry: uv run ruff format
+        language: system
+        types: [python]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: check-added-large-files
