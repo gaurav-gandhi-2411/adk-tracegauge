@@ -19,12 +19,18 @@ updates:
     labels:
       - dependencies
 
-  # GitHub Actions — keep action versions current
+  # GitHub Actions — keep action versions current.
+  # daily, not weekly: a newly-merged workflow job can introduce pins that are
+  # already stale relative to what dependabot bumped everywhere else in the same
+  # file days earlier (real incident on the sibling agentgauge repo: a new CI job
+  # shipped actions/checkout@v4 + setup-python@v5 while the rest of ci.yml was
+  # already on @v7 -- not a scoping bug, this entry already covers the whole
+  # file; the job was just merged after that cycle's scan). Daily shrinks that
+  # drift window from ~a week to ~a day without meaningfully raising PR volume.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: daily
       time: "06:00"
       timezone: UTC
     open-pull-requests-limit: 5
