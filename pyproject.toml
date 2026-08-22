@@ -51,7 +51,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ruff>=0.15,<1",
-    "mypy>=1.14,<2",
+    "mypy>=1.14,<3",
     # >=9.0.3: GHSA (pytest vulnerable tmpdir handling), fixed in 9.0.3.
     "pytest>=9.0.3,<10",
     # >=1: pytest-asyncio<1 caps pytest<9 transitively -- bumped alongside the pytest fix.
