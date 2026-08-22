@@ -26,7 +26,7 @@ jobs:
           # drift to a branch checkout if the trigger config ever changes.
           ref: ${{ github.ref }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
