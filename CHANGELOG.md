@@ -7,6 +7,24 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.6.1] — 2026-08-22
+
+### Fixed
+
+- **`_cost.py`'s model-resolution fallback silently priced an unresolved model at a guessed
+  default rate instead of failing closed.** This code was ported from `tracegauge==0.10.0`
+  and kept that version's pre-fix behavior even after `tracegauge` itself fixed the identical
+  overcharge/undercharge bug upstream in `0.10.2`. **Not reachable via this package's own
+  production path** — `_adapter.build_session_digest` already refuses to build a `TurnDigest`
+  for any model `_pricing.resolve_model_for_call` can't resolve, so no real ADK-plugin
+  invocation could ever trigger the buggy branch — **but `compute_turn_cost` and
+  `_resolve_model_key` are both exported (`__all__`) and directly importable**, and this
+  repo's own test suite exercised the buggy path exactly that way. Anyone who imported
+  `adk_tracegauge._cost.compute_turn_cost` directly and called it with an unresolved model
+  string got back a confidently-priced, wrong dollar figure. Fixed to return an honest
+  `$0.00`/flagged result instead, matching `tracegauge`'s current behavior. Added a
+  property-test guard so this can't regress silently. (#36)
+
 ## [0.6.0] — 2026-08-21
 
 ### Changed — BREAKING CI BEHAVIOR CHANGE, read before upgrading
