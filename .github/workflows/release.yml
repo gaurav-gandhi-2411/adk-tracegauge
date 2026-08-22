@@ -18,7 +18,7 @@ jobs:
       contents: write # required for `gh release create` below (upgraded from read -- W6)
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Explicit: build from the tag that triggered this workflow, never a
           # branch head. For a `push: tags:` event, github.ref IS the tag ref
