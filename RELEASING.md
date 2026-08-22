@@ -64,6 +64,11 @@ This document describes the actual flow, written after running it twice for real
      the same time, discovered separately in a later audit pass. `echo $?` after running each
      example directly (not just reading its printed "exit code: N" line) is the actual check —
      the printed line and the real process exit code are two different things and can diverge.
+   - **Every version pin of this package (or a sibling package) anywhere in this repo's docs is
+     re-checked against what's actually current before tagging.** Real cross-repo incident
+     (BL2): `agentgauge`'s two academic papers cited `agentgauge-harness==0.5.2` in their
+     reproduction instructions a full release after `0.5.3` shipped — the same failure mode
+     this repo's own README/quick-start pins are equally exposed to.
 3. **Commit and open a PR.** CI (`ci.yml`) runs the full test suite (including the version
    guard test above), ruff, and mypy strict against the version-bumped code.
 
