@@ -56,7 +56,7 @@ dev = [
     "pytest>=9.0.3,<10",
     # >=1: pytest-asyncio<1 caps pytest<9 transitively -- bumped alongside the pytest fix.
     "pytest-asyncio>=1,<2",
-    "pytest-cov>=6.0,<7",
+    "pytest-cov>=6.0,<8",
     "pytest-mock>=3.14,<4",
 ]
 
