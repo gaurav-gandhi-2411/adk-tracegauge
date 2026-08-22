@@ -183,49 +183,56 @@ def test_compute_session_cost_sums_multiple_turns_and_skips_non_ai_role():
     assert result.approximate_reasons == []
 
 
-def test_compute_turn_cost_unknown_model_falls_back_to_default_and_flags_approximate():
-    """The ported fallback-to-default-model behavior (tes.cost._resolve_model's
-    original semantics) -- provably unreachable via _adapter.build_session_digest's
-    own real call path (it pre-resolves or refuses closed before a TurnDigest
-    is ever built -- see _pricing.resolve_model_for_call), but kept for
-    behavior-identical parity with the ported function and as a defensive
-    fallback for any future direct caller of compute_turn_cost. Exercised
-    directly here since nothing else in this suite ever triggers it."""
+def test_compute_turn_cost_unknown_model_fails_closed_not_priced_at_default():
+    """BI1/BJ3.1: _resolve_model_key/compute_turn_cost now fail closed for an
+    unresolved model, matching tracegauge's CURRENT (post-0.10.2) behavior --
+    was silently priced at prices["default_model"]'s rate until this fix
+    (the exact overcharge/undercharge bug class tracegauge's own 0.10.2 S1
+    fix closed upstream; this port had kept the pre-fix behavior). Reachable
+    directly here (bypassing _adapter.py's own upstream guard,
+    _pricing.resolve_model_for_call) is exactly the risk BI1.2's caller audit
+    confirmed: compute_turn_cost is exported and callable directly."""
     turn = TurnDigest(
         turn_index=0,
         role="ai",
         token_count_input=1_000_000,
-        token_count_output=0,
-        cache_read=0,
+        token_count_output=500_000,
+        cache_read=200_000,
         model="totally-unknown-model",
     )
 
     result = compute_turn_cost(turn, _PRICES)
 
-    assert result.model_key == "test-model"  # default_model
+    assert result.model_key == "totally-unknown-model"  # never the default_model
     assert result.is_approximate is True
+    assert result.total_usd == 0.0
+    assert result.fresh_cost == 0.0
+    assert result.cache_read_cost == 0.0
+    assert result.output_cost == 0.0
     assert "totally-unknown-model" in result.approximate_reason
-    assert "defaulted to test-model" in result.approximate_reason
+    assert "not priced at a guessed/default rate" in result.approximate_reason
 
 
-def test_compute_turn_cost_empty_model_string_falls_back_to_default():
-    """Same ported, provably-unreachable-via-_adapter.py fallback as the
-    unknown-model test above, exercising the OTHER early-return branch in
-    _resolve_model_key (an empty/whitespace-only model string)."""
+def test_compute_turn_cost_empty_model_string_fails_closed_not_priced_at_default():
+    """Same fail-closed fix as the unknown-model test above, exercising the
+    OTHER early-return branch in _resolve_model_key (an empty/whitespace-only
+    model string)."""
     turn = TurnDigest(
         turn_index=0,
         role="ai",
         token_count_input=1_000_000,
-        token_count_output=0,
-        cache_read=0,
+        token_count_output=500_000,
+        cache_read=200_000,
         model="   ",
     )
 
     result = compute_turn_cost(turn, _PRICES)
 
-    assert result.model_key == "test-model"  # default_model
+    assert result.model_key == "   "  # the original string, verbatim -- never the default_model
     assert result.is_approximate is True
+    assert result.total_usd == 0.0
     assert "empty model string" in result.approximate_reason
+    assert "not priced at a guessed/default rate" in result.approximate_reason
 
 
 def test_compute_turn_cost_matches_via_model_patterns_prefix():
@@ -540,3 +547,71 @@ def test_long_context_tiering_boundary_resolves_correctly_adk_tracegauge_only():
             f"{base_model} at {threshold + 1} tokens (one past the threshold) must resolve "
             f"to {long_context_model}."
         )
+
+
+# ---------------------------------------------------------------------------
+# BI1/BJ3.1 guard: no code path in _cost.py may return a confidently-priced
+# (total_usd > 0 from a real rate) TurnCost/SessionCost for a model absent
+# from the price table. Mirrors tracegauge's own tests/test_cost_unpriced.py
+# guard (property test over a sweep of garbage strings, not one example) and
+# adk-tracegauge's own tests/test_pricing.py pattern at the same rigor --
+# closes the exact gap BI1.2's caller audit found: compute_turn_cost is
+# exported and directly callable, bypassing _pricing.resolve_model_for_call's
+# upstream guard entirely if a caller does so.
+# ---------------------------------------------------------------------------
+
+_UNRESOLVABLE_MODEL_STRINGS = [
+    "",
+    "   ",
+    "totally-made-up-model-xyz",
+    "gemini-1.0-pro",  # a real historical Gemini model, but not in _PRICES
+    "tst-model-x",  # near-miss of a real key -- must not fuzzy-match (NOT the "test-mo" prefix)
+    "TEST-MODEL",  # case mismatch -- resolution is case-sensitive by design
+    "bedrock/test-model",  # provider-prefixed -- not stripped by this resolver
+]
+
+
+@pytest.mark.parametrize("model_str", _UNRESOLVABLE_MODEL_STRINGS)
+def test_compute_turn_cost_never_confidently_prices_an_unresolved_model(model_str: str):
+    turn = TurnDigest(
+        turn_index=0,
+        role="ai",
+        token_count_input=1_000_000,
+        token_count_output=500_000,
+        cache_read=200_000,
+        model=model_str,
+    )
+
+    result = compute_turn_cost(turn, _PRICES)
+
+    assert result.total_usd == 0.0
+    assert result.fresh_cost == 0.0
+    assert result.cache_read_cost == 0.0
+    assert result.cache_creation_cost == 0.0
+    assert result.output_cost == 0.0
+    assert result.is_approximate is True
+    assert result.model_key != "test-model", (
+        f"{model_str!r} resolved to the default_model's key -- guessed-rate fallback regressed"
+    )
+    assert "not priced at a guessed/default rate" in result.approximate_reason
+
+
+def test_session_of_only_unresolved_models_totals_zero_never_a_guess():
+    turns = [
+        TurnDigest(
+            turn_index=i,
+            role="ai",
+            token_count_input=1_000_000,
+            token_count_output=500_000,
+            cache_read=0,
+            model=model_str,
+        )
+        for i, model_str in enumerate(_UNRESOLVABLE_MODEL_STRINGS)
+    ]
+    digest = SessionDigest(session_id="unresolved-guard-test", turns=turns)
+
+    result = compute_session_cost(digest, _PRICES)
+
+    assert result.total_usd == 0.0
+    assert result.approximate is True
+    assert all(tc.total_usd == 0.0 for tc in result.turn_costs)

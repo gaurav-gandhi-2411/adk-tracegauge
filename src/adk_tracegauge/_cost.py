@@ -51,22 +51,43 @@ differentiators, all Claude-Code-session-specific) were ever touched. The
 ``tracegauge`` PyPI dependency was removed from ``pyproject.toml`` entirely
 as a result (Phase 4 R5).
 
-**This file is a behavior-preserving PORT, not a rewrite.** ``compute_turn_cost``/
-``compute_session_cost``'s arithmetic and the private model-resolution
-fallback (``_resolve_model_key``, was ``tes.cost._resolve_model``) are kept
-byte-identical to ``tracegauge==0.10.0``'s actual implementation (confirmed,
-Phase 4 R5 5.4, line-for-line identical modulo line endings to the current
-upstream HEAD, which carries the license header this port's own header below
-cites) -- diffed directly against the installed package before this port was
-written, and proven behavior-identical after via the full existing test
-suite plus hand-computed spot checks (``PLAN.md``, Phase 4 R5 5.3). One
-deliberate, documented behavior CHANGE: ``compute_session_cost`` below has no
-``prices=None`` default (tracegauge's own defaulted to ``None`` and silently
-loaded ITS bundled Claude table) -- removed at the source rather than merely
-guarded around, since nothing in this codebase has ever called it without an
-explicit ``prices=`` argument (the sole call site, ``_adapter.price_digest``,
-already required it with no default of its own) and the historical fallback
-bug this exact default caused is the whole reason that requirement exists.
+**This file WAS a byte-identical, behavior-preserving PORT of
+``tracegauge==0.10.0`` at write time (Phase 4 R5 5.4, diffed directly
+against the installed package, line-for-line identical modulo line
+endings) -- it no longer is, as of the fail-closed hardening below.**
+``compute_turn_cost``'s arithmetic is still unchanged. Its model-resolution
+fallback (``_resolve_model_key``) is NOT: ``tracegauge==0.10.0``'s
+``_resolve_model`` silently defaulted an unresolved model to
+``prices["default_model"]``'s rate, a real overcharge/undercharge bug
+tracegauge itself fixed in ``0.10.2`` (its ``_resolve_model`` now returns
+``None`` and ``compute_turn_cost`` returns an unpriced ``$0.00`` result
+instead of ever guessing). This port kept the OLD, pre-fix behavior for a
+long time after that upstream fix landed, reasoning it was safe because
+``_pricing.resolve_model_for_call`` (this package's own, separate,
+already-fail-closed guard) always pre-resolves or refuses closed BEFORE a
+``TurnDigest`` is ever built (``_adapter.build_session_digest``) -- true
+for every call reachable through this package's own real call path, but
+NOT true for ``compute_turn_cost``/``_resolve_model_key`` themselves:
+both are exported (``__all__`` below) and callable directly, bypassing
+that upstream guard entirely, and the module's own test suite exercised
+exactly that direct path. An exhaustive caller audit (every call site in
+``src/``, ``tests/``, ``examples/``, and this package's public re-exports)
+found no OTHER caller bypasses the guard today, but "unreachable via the
+one caller we have" is a property of the current call graph, not a
+guarantee -- so ``_resolve_model_key``/``compute_turn_cost`` are now
+independently hardened to fail closed, matching tracegauge's CURRENT
+(post-``0.10.2``) behavior rather than staying pinned to its ``0.10.0``
+snapshot. See each function's own docstring below for the exact behavior.
+
+One further deliberate, documented behavior CHANGE from the original
+``0.10.0`` port, unrelated to the above: ``compute_session_cost`` below has
+no ``prices=None`` default (tracegauge's own defaulted to ``None`` and
+silently loaded ITS bundled Claude table) -- removed at the source rather
+than merely guarded around, since nothing in this codebase has ever called
+it without an explicit ``prices=`` argument (the sole call site,
+``_adapter.price_digest``, already required it with no default of its own)
+and the historical fallback bug this exact default caused is the whole
+reason that requirement exists.
 
 ``TurnDigest``/``SessionDigest`` below are trimmed from ``tes._digest``'s
 original 10-field/11-field shape down to only the fields adk-tracegauge's
@@ -152,8 +173,15 @@ class SessionDigest:
 @dataclass
 class TurnCost:
     """Dollar-cost breakdown for a single priced turn. Field-identical to
-    tracegauge's tes.cost.TurnCost -- see module docstring for why this one
-    isn't trimmed."""
+    tracegauge==0.10.0's tes.cost.TurnCost at port time -- see module
+    docstring for why this one isn't trimmed. No longer field-identical to
+    CURRENT tracegauge, which later gained a ``priced: bool`` field plus a
+    ``server_tool_warning: str`` field (a Claude-specific server-side-tool
+    billing gap this package has no equivalent of) -- not backported here,
+    since ``is_approximate``/``approximate_reason`` already carry the same
+    signal this trimmed shape needs (see ``_resolve_model_key`` and
+    ``compute_turn_cost`` below for the fail-closed behavior this dataclass
+    now supports without a dedicated ``priced`` field)."""
 
     turn_index: int
     model_key: str
@@ -181,16 +209,19 @@ class SessionCost:
     ai_turn_count: int
 
 
-def _resolve_model_key(model_str: str, prices: dict[str, Any]) -> tuple[str, bool, str]:
+def _resolve_model_key(model_str: str, prices: dict[str, Any]) -> tuple[str | None, bool, str]:
     """Resolve a raw model string to a price-table key.
 
-    Ported verbatim from tes.cost._resolve_model (see module docstring).
-    Returns ``(resolved_key, is_approximate, approximate_reason)``.
-    ``is_approximate`` is True when the model defaulted (unknown string) --
-    provably unreachable via _adapter.py's own real call path (see
-    _DATE_SUFFIX_RE's docstring above), kept for behavior-identical parity
-    with the ported function and as a defensive fallback for any future
-    direct caller.
+    FAILS CLOSED as of BI1/BJ3.1 -- was "ported verbatim from
+    tes.cost._resolve_model" at tracegauge==0.10.0, which silently
+    defaulted an unresolved model to ``prices["default_model"]``'s rate
+    (see module docstring for why that's a real overcharge/undercharge bug,
+    fixed upstream in tracegauge 0.10.2 and now matched here). Returns
+    ``(resolved_key, is_approximate, approximate_reason)`` where
+    ``resolved_key`` is ``None`` -- never a guessed default -- when the
+    model could not be resolved against the price table. Callers
+    (``compute_turn_cost``) MUST NOT substitute a default/guessed rate in
+    that case.
     """
     cleaned = _DATE_SUFFIX_RE.sub("", model_str.strip())
 
@@ -198,7 +229,7 @@ def _resolve_model_key(model_str: str, prices: dict[str, Any]) -> tuple[str, boo
     default_key: str = prices["default_model"]
 
     if not cleaned:
-        return default_key, True, f"empty model string — defaulted to {default_key}"
+        return None, True, "empty model string — cost unknown, not priced at a guessed/default rate"
 
     if cleaned in models:
         return cleaned, False, ""
@@ -207,8 +238,13 @@ def _resolve_model_key(model_str: str, prices: dict[str, Any]) -> tuple[str, boo
         if cleaned.startswith(pattern["prefix"]):
             return pattern["model_key"], False, ""
 
-    reason = f"unknown model '{model_str}' — defaulted to {default_key}"
-    return default_key, True, reason
+    known = ", ".join(sorted(models))
+    reason = (
+        f"unknown model '{model_str}' — cost unknown, not priced at a guessed/default rate "
+        f"(known models: {known}; default_model={default_key} is never substituted). Register "
+        "it via the ADK_TRACEGAUGE_PRICE_TABLE env var override."
+    )
+    return None, True, reason
 
 
 def compute_turn_cost(
@@ -216,17 +252,39 @@ def compute_turn_cost(
 ) -> TurnCost:
     """Compute the dollar cost for a single AI turn.
 
-    Ported verbatim (arithmetic unchanged) from tes.cost.compute_turn_cost
-    -- see module docstring. ``cache_duration`` controls which cache-creation
-    multiplier is used: ``"5min"`` (default) or ``"1hr"`` -- always ``"5min"``
-    in practice today, since every TurnDigest _adapter.py builds sets
-    cache_creation=0 (ADK's plugin path never surfaces a separate cache-write
-    token count for any provider -- see _adapter.py's module docstring),
-    making cache_creation_cost always 0 regardless of this parameter. Kept
-    for behavior-identical parity and in case a future provider surfaces a
-    real cache-write count.
+    Arithmetic below is still the tracegauge==0.10.0 port, unchanged. Model
+    resolution now FAILS CLOSED (BI1/BJ3.1): when ``turn.model`` does not
+    resolve against ``prices`` (see ``_resolve_model_key``), this returns a
+    ``TurnCost`` with every cost field at ``0.0`` and ``approximate_reason``
+    naming the model and the remedy -- NEVER a dollar figure computed at a
+    guessed/default rate, matching tracegauge's own current (post-0.10.2)
+    behavior rather than the pre-fix behavior this port originally carried.
+    ``cache_duration`` controls which cache-creation multiplier is used:
+    ``"5min"`` (default) or ``"1hr"`` -- always ``"5min"`` in practice today,
+    since every TurnDigest _adapter.py builds sets cache_creation=0 (ADK's
+    plugin path never surfaces a separate cache-write token count for any
+    provider -- see _adapter.py's module docstring), making
+    cache_creation_cost always 0 regardless of this parameter. Kept for
+    behavior-identical parity and in case a future provider surfaces a real
+    cache-write count.
     """
     model_key, is_approximate, approximate_reason = _resolve_model_key(turn.model, prices)
+
+    if model_key is None:
+        # Cost genuinely unknown for this turn -- never substitute the
+        # default model's rate. See _resolve_model_key's docstring.
+        return TurnCost(
+            turn_index=turn.turn_index,
+            model_key=turn.model or "(empty)",
+            is_approximate=is_approximate,
+            approximate_reason=approximate_reason,
+            fresh_tokens=0,
+            fresh_cost=0.0,
+            cache_read_cost=0.0,
+            cache_creation_cost=0.0,
+            output_cost=0.0,
+            total_usd=0.0,
+        )
 
     input_rate: float = prices["models"][model_key]["input_usd_per_mtok"]
     output_rate: float = prices["models"][model_key]["output_usd_per_mtok"]
