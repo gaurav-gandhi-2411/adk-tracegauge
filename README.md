@@ -160,6 +160,148 @@ No competitor found in this project's Phase 1 competitive research reports stati
 
 This honest framing — stating where the gate is weak, in numbers, rather than only where it's strong — **is the actual value proposition**: a cost gate that silently pass/fails with no power information gives you false confidence exactly where this one tells you, on every run (the "achieved power" line above), that it can't reliably see what you configured it to catch.
 
+## Sample completeness: is `n` what you actually asked for?
+
+**This is not a bug-detection feature.** It is a validity precondition on this
+package's own statistical output. `adk-tracegauge check`'s "achieved power" line
+(above) is a real, honest statement about what the gate could reliably detect
+— but only over the sample it actually ran. Until this feature, nothing in
+this package could tell a genuinely complete `n` apart from one silently
+shortened somewhere upstream: a dropped eval case looks, from `adk-tracegauge`'s
+own vantage point, exactly like an eval set that legitimately has fewer
+cases. `adk-tracegauge snapshot --eval-set-file <path>` (used alongside
+`--eval-history`, required together — see below) closes that specific gap: it
+checks the captured sample against the eval set's own definition, before you
+ever get to `check`.
+
+```bash
+adk-tracegauge snapshot \
+  --entrypoint my_eval_suite:run_and_return_store \
+  --output current.json \
+  --eval-history <path-to-adk-eval's-.evalset_result.json> \
+  --eval-set-file <path-to-the-original-.evalset.json> \
+  [--requested-cases case_1,case_2] [--num-runs N]
+```
+
+**Real, end-to-end, verbatim output — not a synthetic example.** This
+reproduces [#6951](https://github.com/google/adk-python/issues/6951)'s own
+confirmed, still-unfixed mechanism (`evaluate_eval_set(..., num_runs=0)` on a
+non-empty eval set — the exact trigger from the filed issue, not a paraphrase)
+against pinned `google/adk-python` `origin/main` `c506ddf3` (confirmed
+`google.adk.__version__ == 2.8.0` from this exact checkout, and `assert not
+failures` still present, unguarded, at `agent_evaluator.py`), with
+`TraceGaugeUsagePlugin` wired in for real via `after_model_callback` — this
+package's own documented quickstart path, not a special test-only hook:
+
+```
+=== Calling AgentEvaluator.evaluate_eval_set(num_runs=0) ===
+(This is #6951's own confirmed, second trigger: num_runs=0 on a
+ non-empty eval set -- verbatim mechanism, not synthetic.)
+
+RESULT: evaluate_eval_set(num_runs=0) returned normally, no AssertionError -- VACUOUS PASS CONFIRMED (matches #6951's documented, unfixed mechanism).
+
+DEFAULT_USAGE_STORE.invocation_ids(): []
+```
+
+`num_runs=0` means no real `Runner.run_async` call ever happens for `case_1`
+— `after_model_callback` never fires, so `adk-tracegauge` captures literally
+nothing for it. Nothing about that, on its own, distinguishes a dropped case
+from a genuinely empty eval set. Two runs of `adk-tracegauge snapshot` against
+the identical (empty) captured data, side by side:
+
+```
+=== WITH --eval-set-file (tracegauge's new completeness check) ===
+adk-tracegauge snapshot: wrote 0 record(s) to snap_with_completeness.json, 0/0 record(s) resolved to a real eval_case_id via --eval-history task2_eval_set.evalset_result.json
+adk-tracegauge completeness: INCOMPLETE_CAPTURE -- 0/1 expected invocation(s) captured across 0/1 expected eval case(s). Missing entirely: case_1. This snapshot's sample is shorter than the eval set defines -- any regression gate run against it has less statistical power than its achieved-power figure would otherwise reflect, computed over an incomplete n with no signal that it's incomplete unless this check is run. This is not a claim about why the sample is short -- only that it is.
+
+exit_code: 5
+```
+
+```
+=== WITHOUT --eval-set-file (current behavior, no completeness check) ===
+adk-tracegauge snapshot: wrote 0 record(s) to snap_without_completeness.json, 0/0 record(s) resolved to a real eval_case_id via --eval-history task2_eval_set.evalset_result.json
+
+exit_code: 0
+```
+
+Same underlying data, same run, both invocations against the identical
+snapshot: **without `--eval-set-file`, this is a silent, shorter `n` — exit
+`0`, no warning, nothing to distinguish it from an intentionally small eval
+set.** With it, `case_1` — the correct, specific ID — is named, and the
+process exits non-zero (`5`, `incomplete_capture`).
+
+**Why `--eval-history` is required alongside `--eval-set-file`, not optional:**
+an expected case ID from the eval-set file can only be matched against an
+observed captured record/skip via the same `session_id` join `--eval-history`
+already performs to resolve `eval_case_id` (see "What this actually is,"
+above). Without it, `adk-tracegauge snapshot --eval-set-file <path>` refuses
+outright with `SystemExit`, rather than degrade into a check where every
+expected case looks unmatched regardless of whether the run was actually
+complete — that would be indistinguishable from a real dropped case for a
+reason that has nothing to do with the data.
+
+**A second, distinct failure mode, and why it's a separate status/exit code:**
+`--eval-set-file` introduces a failure mode `--eval-history` alone doesn't
+have — pointing it at the wrong file (or a stale one from a different eval
+set) yields confident nonsense: every real case looks "missing," even though
+the run itself was fine. `evaluate_completeness` checks for this explicitly —
+if **zero** expected case IDs match **any** observed record or skip, despite
+real data having been captured, that's reported as `wrong_eval_set` (exit
+code `6`), never `incomplete_capture` (exit code `5`). Conflating the two
+would make a file mistake indistinguishable from a real dropped case; an
+empty snapshot (nothing captured at all, as in the repro above) does NOT
+trigger `wrong_eval_set` — with no observed data at all, there is no basis to
+conclude the file is wrong rather than the run having genuinely produced
+nothing, so that case correctly falls through to `incomplete_capture`
+instead.
+
+**Why the original eval-set file, and not ADK's own `.evalset_result.json`,
+is the source of "expected"** — the most defensible part of this design, worth
+stating plainly: `.evalset_result.json` (what `--eval-history` already reads,
+for `eval_case_id` pairing) is *produced by the same pipeline this check
+exists to verify*. A case silently dropped before producing any result is,
+by construction, also absent from that file — treating it as ground truth
+for "how many cases were expected" would be circular: it would agree with a
+run that dropped a case just as readily as one that didn't, because it only
+ever reflects what the pipeline *claims* it ran, never what it was *asked*
+to run. The eval-set file is authored before any run happens and isn't
+produced by anything this mechanism checks — it's the one independent source
+of truth available.
+
+**Scope, stated honestly against [`eval-defect-bench`](https://github.com/gaurav-gandhi-2411/eval-defect-bench)**,
+the benchmark this workspace built from real, historical `google/adk-python`
+bug-fix commits in this same subsystem: its `SILENT_ACCUMULATION_LOSS` shape
+(`TAXONOMY.md`, n=6) covers exactly this class — "something that should have
+contributed to the final verdict silently didn't, and nothing in the return
+value signals that anything is missing." Completeness reconciliation covers
+**2 of those 6** (`#3`, `#5` — the empty-collection-guard-non-execution
+sub-mechanism in `AgentEvaluator.evaluate_eval_set`, the exact mechanism
+reproduced above and the one `#6951` itself was filed against), not the
+other 4, for two distinct reasons — not rounded up to "most of the shape":
+
+- **`#18`, `#20`, `#27`** (the zip-truncation/`num_samples=0` sub-mechanism in
+  `LlmAsJudge.evaluate_invocations`) are **structurally out of reach at this
+  package's integration point.** Every registered `Evaluator` — including
+  `adk-tracegauge`'s own `CostEfficiencyEvaluator` — receives the *same* full
+  `actual_invocations` list from `LocalEvalService` for a given eval case.
+  When a *sibling* metric silently drops an invocation from its own
+  per-invocation results internally, `adk-tracegauge`'s own invocation count
+  for that case is completely unaffected — it still receives, captures, and
+  prices every real invocation normally. There is no API surface exposing
+  another registered metric's own result count to this one; catching this
+  sub-mechanism would need `LocalEvalService`-level introspection ADK doesn't
+  expose, not a runtime signal reachable from a plugin/evaluator's own
+  position in the pipeline.
+- **`#23`** (unconditional overwrite in
+  `EvaluationGenerator.convert_events_to_eval_invocations`, `user_content =
+  event.content` silently discarding a valid earlier value) is out of reach
+  for a *different* reason: it doesn't reduce invocation or case **count** at
+  all. The invocation still exists, still reaches every registered
+  evaluator, still gets counted correctly by this check — it just carries
+  wrong *content*. A pure count/ID reconciliation, by construction, has
+  nothing to say about per-invocation content correctness, regardless of
+  integration point.
+
 ## Also: a real PASS/FAIL cost metric inside `adk eval`
 
 Register the metric with a threshold, wire the plugin into your agent, and `adk eval` itself prints a real dollar score and PASSED/FAILED verdict per invocation — useful for inline cost visibility while iterating on an eval set, complementary to (not a replacement for) the CI gate above.
