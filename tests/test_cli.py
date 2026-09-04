@@ -12,10 +12,12 @@ from pathlib import Path
 import pytest
 
 from adk_tracegauge._cli import (
+    EXIT_INCOMPLETE_CAPTURE,
     EXIT_INSUFFICIENT_DATA,
     EXIT_PASS,
     EXIT_REGRESSION,
     EXIT_UNDERPOWERED_PASS,
+    EXIT_WRONG_EVAL_SET,
     _paired_mode_viable,
     _resolve_entrypoint,
     build_parser,
@@ -331,6 +333,323 @@ def test_cmd_snapshot_without_eval_history_leaves_eval_case_id_unpopulated(
     assert raw["records"][0]["eval_case_id"] is None
     captured = capsys.readouterr()
     assert "resolved to a real eval_case_id" not in captured.out
+
+
+# --- end-to-end: snapshot subcommand --eval-set-file (completeness check) --
+#
+# This is a validity precondition on adk-tracegauge check's own statistical
+# output (its achieved-power figures are only meaningful over a complete
+# sample), not a bug-detection feature -- these tests assert exit codes and
+# report text accordingly, not claims about ADK defects.
+
+
+def _write_eval_set_file(path: Path, case_ids: list[str]) -> None:
+    """Writes a minimal, valid .evalset.json -- one Invocation (one turn)
+    per case, matching the single-invocation-per-session fixtures below."""
+    from google.adk.evaluation.eval_case import EvalCase, Invocation
+    from google.adk.evaluation.eval_set import EvalSet
+    from google.genai import types as genai_types
+
+    eval_set = EvalSet(
+        eval_set_id="my_eval_set",
+        eval_cases=[
+            EvalCase(
+                eval_id=case_id,
+                conversation=[
+                    Invocation(
+                        user_content=genai_types.Content(
+                            parts=[genai_types.Part(text="hi")], role="user"
+                        )
+                    )
+                ],
+            )
+            for case_id in case_ids
+        ],
+    )
+    path.write_text(eval_set.model_dump_json(indent=2), encoding="utf-8")
+
+
+def _fixture_returns_store_two_sessions_both_captured() -> UsageStore:
+    store = UsageStore()
+    store.record("inv-1", _call())
+    store.record_session("inv-1", "sess-a")
+    store.record("inv-2", _call())
+    store.record_session("inv-2", "sess-b")
+    return store
+
+
+def _fixture_returns_store_one_of_two_sessions_captured() -> UsageStore:
+    store = UsageStore()
+    store.record("inv-1", _call())
+    store.record_session("inv-1", "sess-a")
+    return store
+
+
+def _fixture_returns_store_skipped_invocation_one_session() -> UsageStore:
+    store = UsageStore()
+    store.record("inv-1", _call(model="totally-unknown-model-xyz"))
+    store.record_session("inv-1", "sess-a")
+    return store
+
+
+def _write_eval_history_for(tmp_path: Path, case_session_pairs: list[tuple[str, str]]) -> Path:
+    history_path = tmp_path / "app_my_eval_set_123.evalset_result.json"
+    _write_eval_history_file(history_path, case_session_pairs)
+    return history_path
+
+
+def test_cmd_snapshot_eval_set_file_requires_eval_history(tmp_path: Path):
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    _write_eval_set_file(eval_set_path, ["case_1"])
+
+    with pytest.raises(SystemExit, match="requires --eval-history"):
+        main(
+            [
+                "snapshot",
+                "--entrypoint",
+                "test_cli:_fixture_returns_store_with_session_id",
+                "--output",
+                str(out_path),
+                "--eval-set-file",
+                str(eval_set_path),
+            ]
+        )
+
+
+def test_cmd_snapshot_complete_capture_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    _write_eval_set_file(eval_set_path, ["case_1", "case_2"])
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-a"), ("case_2", "sess-b")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_two_sessions_both_captured",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "2/2 expected eval case(s) accounted for" in captured.out
+    assert "sample is complete" in captured.out
+
+
+def test_cmd_snapshot_dropped_case_flags_incomplete_with_correct_ids(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    _write_eval_set_file(eval_set_path, ["case_1", "case_2"])
+    # case_2 never ran -- its session is absent from eval-history entirely,
+    # mirroring a real crashed-inference/silently-dropped case (#6951's own
+    # mechanism, see Task 2): nothing in this run ever produced it.
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-a")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_one_of_two_sessions_captured",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+        ]
+    )
+
+    assert exit_code == EXIT_INCOMPLETE_CAPTURE
+    captured = capsys.readouterr()
+    assert "INCOMPLETE_CAPTURE" in captured.out
+    assert "1/2 expected eval case(s)" in captured.out
+    assert "Missing entirely: case_2" in captured.out
+    assert "case_1" not in captured.out.split("Missing entirely:")[1]
+
+
+def test_cmd_snapshot_legitimate_subset_run_does_not_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    # The full eval-set file has THREE cases -- case_3 is never captured
+    # and never requested. A subset run (`adk eval ...:case_1,case_2`) must
+    # not be flagged against the full file's case count.
+    _write_eval_set_file(eval_set_path, ["case_1", "case_2", "case_3"])
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-a"), ("case_2", "sess-b")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_two_sessions_both_captured",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+            "--requested-cases",
+            "case_1,case_2",
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "2/2 expected eval case(s) accounted for" in captured.out
+    assert "case_3" not in captured.out
+
+
+def test_cmd_snapshot_skipped_but_accounted_entry_does_not_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    _write_eval_set_file(eval_set_path, ["case_1"])
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-a")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_skipped_invocation_one_session",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+        ]
+    )
+
+    # The captured invocation is unpriceable (unresolved model) and lands in
+    # `skipped`, not `records` -- but it IS accounted for, so this must not
+    # read as a dropped case.
+    assert exit_code == 0
+    raw = json.loads(out_path.read_text(encoding="utf-8"))
+    assert raw["records"] == []
+    assert len(raw["skipped"]) == 1
+    assert raw["skipped"][0]["eval_case_id"] == "case_1"
+    assert raw["missing"] == []
+    captured = capsys.readouterr()
+    assert "sample is complete" in captured.out
+
+
+def test_cmd_snapshot_wrong_eval_set_file_raises_wrong_eval_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "unrelated_evals.evalset.json"
+    # A real, correctly-captured run -- but pointed at an eval-set file that
+    # describes a COMPLETELY different eval set (wrong/stale file, not a
+    # dropped case).
+    _write_eval_set_file(eval_set_path, ["totally_different_case_a", "totally_different_case_b"])
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-a"), ("case_2", "sess-b")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_two_sessions_both_captured",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+        ]
+    )
+
+    assert exit_code == EXIT_WRONG_EVAL_SET
+    captured = capsys.readouterr()
+    assert "WRONG_EVAL_SET" in captured.out
+    assert "does not describe the run" in captured.out
+    assert "INCOMPLETE_CAPTURE" not in captured.out
+
+
+def test_cmd_snapshot_eval_history_resolves_zero_records_still_reports_wrong_eval_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Task 2: the exact state examples/06's early draft hit -- --eval-history
+    resolves ZERO of the captured records to a real eval_case_id, even though
+    --eval-set-file correctly names the real case IDs. This happens when the
+    eval-history file's own session_ids don't overlap the STORE's captured
+    session_ids at all (a stale/mismatched --eval-history file -- a distinct
+    root cause from test_cmd_snapshot_wrong_eval_set_file_raises_wrong_eval_set
+    above, which mismatches --eval-set-file instead; both produce the same
+    observable "0 resolved, real data captured" shape and must both resolve
+    to wrong_eval_set, not a false incomplete_capture claiming every case was
+    dropped). See CLAUDE.md Task 2 for why --eval-history stays required
+    rather than degrading to a count-only check in this state.
+    """
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    # --eval-set-file correctly names the cases that actually ran (case_1,
+    # case_2) -- this is NOT a wrong/stale eval-set-file.
+    _write_eval_set_file(eval_set_path, ["case_1", "case_2"])
+    # --eval-history maps case_1/case_2 to session_ids the store never
+    # produced (sess-x/sess-y, not sess-a/sess-b) -- a stale/mismatched
+    # eval-history file, independent of the eval-set-file being correct.
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-x"), ("case_2", "sess-y")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_two_sessions_both_captured",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+        ]
+    )
+
+    assert exit_code == EXIT_WRONG_EVAL_SET
+    captured = capsys.readouterr()
+    assert "0/2 record(s) resolved to a real eval_case_id via --eval-history" in captured.out
+    assert "WRONG_EVAL_SET" in captured.out
+    assert "INCOMPLETE_CAPTURE" not in captured.out
+
+
+def test_cmd_snapshot_partial_id_match_reports_match_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    _write_eval_set_file(eval_set_path, ["case_1", "case_2", "case_3"])
+    # Only case_1 actually ran; case_2/case_3 never produced a session at all.
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-a")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_one_of_two_sessions_captured",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+        ]
+    )
+
+    assert exit_code == EXIT_INCOMPLETE_CAPTURE
+    captured = capsys.readouterr()
+    # The match count itself -- 1 of 3 expected cases matched -- must be
+    # named, not just the fact that something is missing.
+    assert "1/3 expected eval case(s)" in captured.out
 
 
 # --- end-to-end: check subcommand exit codes -----------------------------

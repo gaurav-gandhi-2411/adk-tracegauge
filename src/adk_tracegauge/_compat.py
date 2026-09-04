@@ -242,4 +242,64 @@ def load_eval_case_ids_by_session_id(path: str | Path) -> dict[str, str]:
     }
 
 
-__all__ = ["convert_events_to_eval_invocations", "load_eval_case_ids_by_session_id"]
+def load_expected_case_sizes(path: str | Path) -> dict[str, int]:
+    """Reads the ORIGINAL eval-set definition file (the ``.evalset.json`` a
+    caller authors and passes to ``adk eval``/``AgentEvaluator.evaluate()``
+    -- NOT the ``.evalset_result.json`` ``load_eval_case_ids_by_session_id``
+    reads above) and returns ``{eval_id: len(conversation)}`` for every case
+    in the file -- the number of ``Invocation`` entries (turns) that case's
+    own scripted conversation defines.
+
+    **Why not the eval-history/result file, deliberately:** this exists so a
+    caller can state, independently of any given run, how many invocations
+    a case *should* have produced. ``.evalset_result.json`` is written BY
+    the same pipeline this whole mechanism exists to sanity-check (a case
+    silently dropped before producing any result is, by construction, also
+    absent from that file) -- treating it as ground truth would be circular:
+    it would agree with a run that dropped the case just as readily as one
+    that didn't, since it only ever reflects what the pipeline claims it
+    ran, not what it was asked to run. The eval-SET file is authored before
+    any run happens and is not produced by anything this mechanism checks.
+
+    Same guarded-import risk as ``load_eval_case_ids_by_session_id`` above
+    (``EvalSet``/``EvalCase``, ``google.adk.evaluation.eval_set``/
+    ``eval_case``, are not exported from ``google.adk.evaluation``'s own
+    ``__init__.py`` -- confirmed by inspection, same non-public-internal
+    category) -- guarded the same way: an actionable ``RuntimeError`` naming
+    the installed version on an outright missing module/class, and on
+    malformed/foreign JSON, rather than a silent empty mapping.
+    """
+    installed = getattr(_google_adk, "__version__", "unknown")
+
+    try:
+        from google.adk.evaluation.eval_set import EvalSet
+    except ImportError as e:
+        raise RuntimeError(
+            "adk_tracegauge: could not import "
+            "google.adk.evaluation.eval_set.EvalSet -- this is a non-public "
+            f"ADK internal (installed google-adk=={installed}) and it looks "
+            "like it has moved or been removed in this release. This only "
+            "affects `adk-tracegauge snapshot --eval-set-file`-based "
+            "completeness checking; every other feature is unaffected. Open "
+            "an issue at https://github.com/gaurav-gandhi-2411/adk-tracegauge/issues."
+        ) from e
+
+    raw = Path(path).read_text(encoding="utf-8")
+    try:
+        eval_set = EvalSet.model_validate_json(raw)
+    except Exception as e:
+        raise RuntimeError(
+            f"adk_tracegauge: could not parse {path!s} as a google-adk "
+            "EvalSet (an authored `.evalset.json` eval-set definition file) "
+            f"-- is this really an eval-set file, not a result file? "
+            f"Underlying error: {e}"
+        ) from e
+
+    return {case.eval_id: len(case.conversation or []) for case in eval_set.eval_cases}
+
+
+__all__ = [
+    "convert_events_to_eval_invocations",
+    "load_eval_case_ids_by_session_id",
+    "load_expected_case_sizes",
+]
