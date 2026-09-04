@@ -123,7 +123,7 @@ import os
 import sys
 from pathlib import Path
 
-from ._compat import load_eval_case_ids_by_session_id
+from ._compat import load_eval_case_ids_by_session_id, load_expected_case_sizes
 from ._regression import (
     DEFAULT_CONFIDENCE,
     DEFAULT_MIN_EFFECT_PCT,
@@ -135,12 +135,40 @@ from ._regression import (
     evaluate_regression_paired,
 )
 from ._store import DEFAULT_USAGE_STORE, UsageStore
-from .snapshot import PairingKey, Snapshot, read_snapshot, resolve_pairing, write_snapshot
+from .snapshot import (
+    PairingKey,
+    Snapshot,
+    evaluate_completeness,
+    read_snapshot,
+    resolve_pairing,
+    write_snapshot,
+)
 
 EXIT_PASS = 0
 EXIT_REGRESSION = 1
 EXIT_INSUFFICIENT_DATA = 3
 EXIT_UNDERPOWERED_PASS = 4
+EXIT_INCOMPLETE_CAPTURE = 5
+"""`adk-tracegauge snapshot --eval-set-file ...`: this run's own captured
+sample is shorter than the eval set defines -- see
+``snapshot.evaluate_completeness``'s docstring. Distinct from every `check`
+exit code above (0/1/3/4) since this fires from `snapshot`, not `check`, and
+is a distinct claim from all four: not a regression verdict, not a
+statistical-power warning about a complete sample, a report that the sample
+itself is incomplete. Framing note (this is not a bug-detection feature):
+this is a validity precondition on this package's own statistical output --
+`check`'s achieved-power figures are only meaningful over a complete sample,
+and this is the one place that gets verified, not a claim about what
+happened upstream in ADK."""
+EXIT_WRONG_EVAL_SET = 6
+"""`adk-tracegauge snapshot --eval-set-file ...`: zero of the expected eval
+case IDs from --eval-set-file matched any captured record or skip, despite
+real data being captured -- see ``CompletenessResult.report``'s
+``wrong_eval_set`` branch. Kept distinct from EXIT_INCOMPLETE_CAPTURE on
+purpose: a wrong/stale --eval-set-file yields confident nonsense (every
+case looks dropped) rather than a real completeness signal, and conflating
+the two would make a file mistake indistinguishable from a real dropped
+case."""
 """AP1 (was Phase 9 Q2, restricted to two-sample mode until this fix): a
 distinct, non-zero exit code for `status="pass"` in EITHER mode, when this
 run's own observed variance/n means the configured practical-significance
@@ -206,11 +234,51 @@ def _resolve_entrypoint(spec: str) -> UsageStore:
 
 
 def _cmd_snapshot(args: argparse.Namespace) -> int:
+    if args.eval_set_file is not None and args.eval_history is None:
+        # Fail closed, not a degraded partial check: without --eval-history,
+        # nothing in a captured record/skip carries an eval_case_id at all
+        # (see snapshot.py's module docstring -- that resolution IS the
+        # --eval-history join), so there would be no way to attribute any
+        # observed invocation back to an expected case id. Attempting the
+        # check anyway would make EVERY expected case look unmatched --
+        # indistinguishable from a real WRONG_EVAL_SET, for a reason that
+        # has nothing to do with the eval-set file being wrong.
+        raise SystemExit(
+            "--eval-set-file requires --eval-history to also be given -- an "
+            "expected eval case id can only be matched against an observed "
+            "invocation via the same session_id join --eval-history provides "
+            "for eval_case_id resolution. Without it, every expected case "
+            "would look unmatched regardless of whether the run was actually "
+            "complete, which is not a meaningful completeness signal."
+        )
+
     store = _resolve_entrypoint(args.entrypoint)
     eval_case_ids_by_session: dict[str, str] | None = None
     if args.eval_history is not None:
         eval_case_ids_by_session = load_eval_case_ids_by_session_id(args.eval_history)
-    snapshot = write_snapshot(store, args.output, eval_case_ids_by_session=eval_case_ids_by_session)
+
+    expected_case_sizes: dict[str, int] | None = None
+    if args.eval_set_file is not None:
+        all_case_sizes = load_expected_case_sizes(args.eval_set_file)
+        if args.requested_cases is not None:
+            requested = [c.strip() for c in args.requested_cases.split(",") if c.strip()]
+            expected_case_sizes = {
+                case_id: all_case_sizes[case_id]
+                for case_id in requested
+                if case_id in all_case_sizes
+            }
+        else:
+            # No --requested-cases: the common case, the full eval-set file
+            # was run (mirrors `adk eval agent eval_set.json` with no
+            # `:case1,case2` suffix) -- every case in the file is expected.
+            expected_case_sizes = dict(all_case_sizes)
+
+    snapshot = write_snapshot(
+        store,
+        args.output,
+        eval_case_ids_by_session=eval_case_ids_by_session,
+        expected_case_sizes=expected_case_sizes,
+    )
     skip_note = f", {len(snapshot.skipped)} skipped (unpriceable)" if snapshot.skipped else ""
     resolved_note = ""
     if args.eval_history is not None:
@@ -223,6 +291,16 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
         f"adk-tracegauge snapshot: wrote {len(snapshot.records)} record(s) to "
         f"{args.output}{skip_note}{resolved_note}"
     )
+
+    if expected_case_sizes is None:
+        return 0
+
+    completeness = evaluate_completeness(snapshot, expected_case_sizes, num_runs=args.num_runs)
+    print(completeness.report())
+    if completeness.status == "wrong_eval_set":
+        return EXIT_WRONG_EVAL_SET
+    if completeness.status == "incomplete_capture":
+        return EXIT_INCOMPLETE_CAPTURE
     return 0
 
 
@@ -431,6 +509,47 @@ def build_parser() -> argparse.ArgumentParser:
             "never populated and paired mode falls back to session_id, then two-sample)."
         ),
     )
+    p_snapshot.add_argument(
+        "--eval-set-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the ORIGINAL authored eval-set definition file (the .evalset.json you "
+            "pass to `adk eval`/AgentEvaluator.evaluate() -- NOT the .evalset_result.json "
+            "--eval-history reads, which is produced by the same pipeline this check exists "
+            "to verify and cannot serve as its ground truth). When given (requires "
+            "--eval-history to also be given -- see error if omitted), this run's own captured "
+            "sample is checked for completeness against what the eval set defines: this is a "
+            "validity precondition on adk-tracegauge check's own statistical output (its "
+            "achieved-power figures are only meaningful over a complete sample), not a claim "
+            "about ADK behaving incorrectly. Exit code 5 (incomplete_capture) if the captured "
+            "sample is short of what was expected; exit code 6 (wrong_eval_set) if this file "
+            "appears to not describe the run at all (see snapshot.evaluate_completeness's "
+            "docstring for the distinction)."
+        ),
+    )
+    p_snapshot.add_argument(
+        "--requested-cases",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated eval_id list actually requested for this run (mirrors `adk eval "
+            "agent eval_set.json:case1,case2`'s subset syntax) -- scopes --eval-set-file's "
+            "expected cases to just this subset, so a legitimate subset run is not flagged "
+            "against the full file's case count. Only meaningful with --eval-set-file. Omit "
+            "for a full-file run (the common case) -- every case in --eval-set-file is then "
+            "treated as requested."
+        ),
+    )
+    p_snapshot.add_argument(
+        "--num-runs",
+        type=int,
+        default=1,
+        help=(
+            "Mirrors `adk eval`'s own --num_runs -- multiplies --eval-set-file's expected "
+            "invocation count per case. Only meaningful with --eval-set-file. Default 1."
+        ),
+    )
     p_snapshot.set_defaults(func=_cmd_snapshot)
 
     p_check = subparsers.add_parser(
@@ -549,10 +668,12 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "EXIT_INCOMPLETE_CAPTURE",
     "EXIT_INSUFFICIENT_DATA",
     "EXIT_PASS",
     "EXIT_REGRESSION",
     "EXIT_UNDERPOWERED_PASS",
+    "EXIT_WRONG_EVAL_SET",
     "build_parser",
     "main",
 ]
