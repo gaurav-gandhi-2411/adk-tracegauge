@@ -183,62 +183,106 @@ adk-tracegauge snapshot \
   [--requested-cases case_1,case_2] [--num-runs N]
 ```
 
-**Real, end-to-end, verbatim output — not a synthetic example.** This
-reproduces [#6951](https://github.com/google/adk-python/issues/6951)'s own
-confirmed, still-unfixed mechanism (`evaluate_eval_set(..., num_runs=0)` on a
-non-empty eval set — the exact trigger from the filed issue, not a paraphrase)
-against pinned `google/adk-python` `origin/main` `c506ddf3` (confirmed
-`google.adk.__version__ == 2.8.0` from this exact checkout, and `assert not
-failures` still present, unguarded, at `agent_evaluator.py`), with
-`TraceGaugeUsagePlugin` wired in for real via `after_model_callback` — this
-package's own documented quickstart path, not a special test-only hook:
+**Real, end-to-end, verbatim output — a PARTIAL drop, not a synthetic
+example.** A total capture failure (0 of 1 case) is one a user notices from
+an empty snapshot regardless of this feature — this check's real value is a
+*partial* drop that still produces a confident, nothing-looks-wrong
+regression verdict. `examples/06_partial_capture_completeness_demo.py` builds
+a real 10-case eval set (`case_0`..`case_9`) and runs it twice through the
+REAL `adk eval` CLI (`cli_eval`, in-process via `click.testing.CliRunner`,
+against `google-adk==2.6.3`): a `baseline` agent where all 10 cases succeed,
+and a `current` agent where `case_3` and `case_7` raise inside
+`generate_content_async` — a real crashed inference, caught exactly the way
+`LocalEvalService._perform_inference_single_eval_item` catches any exception
+per-case (`except Exception: inference_result.status =
+InferenceStatus.FAILURE`, confirmed by reading `local_eval_service.py`
+directly): the case still gets a `FAILED` entry in ADK's own
+`.evalset_result.json`, with the `session_id` that was allocated before
+inference ran — but `after_model_callback` never fires for it, so
+`adk-tracegauge` captures literally nothing. 8 of 10 cases capture normally,
+plus a real, deterministic +6,000-prompt-token regression baked into every
+surviving `current` case:
 
 ```
-=== Calling AgentEvaluator.evaluate_eval_set(num_runs=0) ===
-(This is #6951's own confirmed, second trigger: num_runs=0 on a
- non-empty eval set -- verbatim mechanism, not synthetic.)
+=== WITHOUT --eval-set-file (current behavior): `adk-tracegauge check` on the silently-shortened n=8 ===
+adk-tracegauge snapshot: wrote 8 record(s) to current_snapshot_no_completeness.json
+adk-tracegauge check: mode=paired (key=eval_case_id, 8 overlapping eval_case_ids matched between baseline and current)
+adk-tracegauge check [method=paired]: n_baseline=8 n_current=8 (min_n=8)
+  mean_baseline=$0.005011  mean_current=$0.006811
+  achieved power: minimum reliably-detectable effect at 80% power, given this run's observed variance/n, is ~$0.000000 (+0.00% of mean baseline) [normal approximation to the bootstrap CI -- see _regression.py module docstring for validated accuracy]
+  observed effect: +0.001800 USD (+35.92%), 98% CI [+0.001800, +0.001800] (n_boot=10000, seed=42)
+  statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+  REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
 
-RESULT: evaluate_eval_set(num_runs=0) returned normally, no AssertionError -- VACUOUS PASS CONFIRMED (matches #6951's documented, unfixed mechanism).
-
-DEFAULT_USAGE_STORE.invocation_ids(): []
+adk-tracegauge check exit code: 1
 ```
 
-`num_runs=0` means no real `Runner.run_async` call ever happens for `case_1`
-— `after_model_callback` never fires, so `adk-tracegauge` captures literally
-nothing for it. Nothing about that, on its own, distinguishes a dropped case
-from a genuinely empty eval set. Two runs of `adk-tracegauge snapshot` against
-the identical (empty) captured data, side by side:
-
 ```
-=== WITH --eval-set-file (tracegauge's new completeness check) ===
-adk-tracegauge snapshot: wrote 0 record(s) to snap_with_completeness.json, 0/0 record(s) resolved to a real eval_case_id via --eval-history task2_eval_set.evalset_result.json
-adk-tracegauge completeness: INCOMPLETE_CAPTURE -- 0/1 expected invocation(s) captured across 0/1 expected eval case(s). Missing entirely: case_1. This snapshot's sample is shorter than the eval set defines -- any regression gate run against it has less statistical power than its achieved-power figure would otherwise reflect, computed over an incomplete n with no signal that it's incomplete unless this check is run. This is not a claim about why the sample is short -- only that it is.
+=== WITH --eval-set-file (this feature): the SAME current-run capture, completeness-checked ===
+adk-tracegauge snapshot: wrote 8 record(s) to current_snapshot_with_completeness.json, 8/8 record(s) resolved to a real eval_case_id via --eval-history
+adk-tracegauge completeness: INCOMPLETE_CAPTURE -- 8/10 expected invocation(s) captured across 8/10 expected eval case(s); Missing entirely: case_3, case_7. Sample is shorter than the eval set defines, so any regression-gate result is computed on this incomplete n -- not a claim about why.
 
 exit_code: 5
 ```
 
-```
-=== WITHOUT --eval-set-file (current behavior, no completeness check) ===
-adk-tracegauge snapshot: wrote 0 record(s) to snap_without_completeness.json, 0/0 record(s) resolved to a real eval_case_id via --eval-history task2_eval_set.evalset_result.json
+**Same underlying capture, same run — the point this demonstrates:** without
+`--eval-set-file`, `adk-tracegauge check` runs to completion on the
+silently-shortened `n=8`, reports a real `REGRESSION` verdict, an achieved-power
+figure, and exits `1` — nothing anywhere in that output signals that the
+eval set actually defines 10 cases, not 8. It reads exactly like a genuinely
+complete 8-case run, because from `check`'s own vantage point it is one — the
+information that 2 cases silently dropped is only visible via
+`--eval-history`/`.evalset_result.json`'s bookkeeping, which `check` never
+sees. With `--eval-set-file`, the SAME captured data resolves `8/8` records to
+a real `eval_case_id`, correctly names `case_3` and `case_7` as missing, and
+exits `5` before the misleadingly-complete-looking regression verdict above is
+ever the only signal you get. (`achieved power ~$0.000000` above is a real,
+correctly-computed artifact of this fixture's determinism — the regression
+bump is a fixed constant added to every surviving case with zero injected
+noise, so the paired bootstrap has zero within-pair variance to resample; see
+"Power depends on your own cost variance" above for what a noisy real-world
+distribution's achieved-power figure looks like instead.)
 
-exit_code: 0
-```
+A total-capture example (`num_runs=0` on a 1-case eval set — a shorter, more
+obvious failure a user would notice from an empty snapshot even without this
+feature) previously served as this section's lead; it reproduced
+[#6951](https://github.com/google/adk-python/issues/6951)'s own confirmed
+`evaluate_eval_set(..., num_runs=0)` mechanism directly. It is not reproduced
+here — the partial-drop case above is the one this feature actually earns its
+keep on — but the mechanism itself is real and still applies: `num_runs=0`
+means no `Runner.run_async` call happens for any case at all, so
+`after_model_callback` never fires and `adk-tracegauge` captures nothing,
+indistinguishable (without this feature) from a genuinely empty eval set.
 
-Same underlying data, same run, both invocations against the identical
-snapshot: **without `--eval-set-file`, this is a silent, shorter `n` — exit
-`0`, no warning, nothing to distinguish it from an intentionally small eval
-set.** With it, `case_1` — the correct, specific ID — is named, and the
-process exits non-zero (`5`, `incomplete_capture`).
-
-**Why `--eval-history` is required alongside `--eval-set-file`, not optional:**
-an expected case ID from the eval-set file can only be matched against an
-observed captured record/skip via the same `session_id` join `--eval-history`
-already performs to resolve `eval_case_id` (see "What this actually is,"
-above). Without it, `adk-tracegauge snapshot --eval-set-file <path>` refuses
-outright with `SystemExit`, rather than degrade into a check where every
-expected case looks unmatched regardless of whether the run was actually
-complete — that would be indistinguishable from a real dropped case for a
-reason that has nothing to do with the data.
+**Why `--eval-history` is required alongside `--eval-set-file`, not optional
+— verified, not assumed, against the real mechanism above:** an expected case
+ID from the eval-set file can only be matched against an observed captured
+record/skip via the same `session_id` join `--eval-history` already performs
+to resolve `eval_case_id` (see "What this actually is," above); without that
+join, EVERY record's `eval_case_id` is `None`, and `evaluate_completeness` has
+no way to attribute an observed invocation back to an expected case ID at all.
+A weaker, decoupled design was considered — an aggregate `--eval-set-file`-only
+check comparing just total observed vs. total expected invocation counts,
+with no `--eval-history` and no per-case IDs — and rejected: it cannot
+distinguish a real dropped case from a wrong/stale `--eval-set-file` (the
+`wrong_eval_set` guard below fundamentally needs the same case-level join),
+so a caller pointed at the wrong file would get a plausible-looking but
+meaningless count mismatch instead of `wrong_eval_set`'s explicit refusal.
+`adk-tracegauge snapshot --eval-set-file <path>` therefore refuses outright
+with `SystemExit` when `--eval-history` is omitted, rather than degrade into
+either a check where every expected case looks unmatched regardless of
+whether the run was actually complete, or a strictly weaker count-only check
+that reintroduces the exact wrong-file ambiguity `wrong_eval_set` exists to
+close. **This coupling is not circular** — see "Why the original eval-set
+file..." below for the reason `--eval-history`'s role here (resolving *which*
+observed record belongs to *which* case) is a different, non-circular use
+than treating it as ground truth for *how many* cases were expected (which
+this package never does). A dedicated test
+(`test_cmd_snapshot_eval_history_resolves_zero_records_still_reports_wrong_eval_set`,
+`tests/test_cli.py`) proves the check still degrades correctly — to
+`wrong_eval_set`, not a false `incomplete_capture` claiming every case
+dropped — even when `--eval-history` itself resolves zero records against
+real captured data (a stale/mismatched history file, not a dropped case).
 
 **A second, distinct failure mode, and why it's a separate status/exit code:**
 `--eval-set-file` introduces a failure mode `--eval-history` alone doesn't
@@ -249,11 +293,13 @@ if **zero** expected case IDs match **any** observed record or skip, despite
 real data having been captured, that's reported as `wrong_eval_set` (exit
 code `6`), never `incomplete_capture` (exit code `5`). Conflating the two
 would make a file mistake indistinguishable from a real dropped case; an
-empty snapshot (nothing captured at all, as in the repro above) does NOT
-trigger `wrong_eval_set` — with no observed data at all, there is no basis to
-conclude the file is wrong rather than the run having genuinely produced
-nothing, so that case correctly falls through to `incomplete_capture`
-instead.
+empty snapshot (nothing captured at all — e.g. the `num_runs=0` total-capture
+mechanism above) does NOT trigger `wrong_eval_set` — with no observed data at
+all, there is no basis to conclude the file is wrong rather than the run
+having genuinely produced nothing, so that case correctly falls through to
+`incomplete_capture` instead (see
+`test_evaluate_completeness_empty_snapshot_is_incomplete_not_wrong_file`,
+`tests/test_snapshot.py`).
 
 **Why the original eval-set file, and not ADK's own `.evalset_result.json`,
 is the source of "expected"** — the most defensible part of this design, worth

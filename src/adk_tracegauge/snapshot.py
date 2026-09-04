@@ -570,18 +570,14 @@ class CompletenessResult:
                 "status or any regression gate built on it."
             )
         # incomplete_capture
-        missing_note = f" Missing entirely: {', '.join(self.missing)}." if self.missing else ""
+        missing_note = f"; Missing entirely: {', '.join(self.missing)}" if self.missing else ""
         return (
             f"adk-tracegauge completeness: INCOMPLETE_CAPTURE -- "
             f"{self.observed_invocation_count}/{self.expected_invocation_count} expected "
             f"invocation(s) captured across {self.matched_case_count}/"
-            f"{self.expected_case_count} expected eval case(s).{missing_note} This "
-            "snapshot's sample is shorter than the eval set defines -- any "
-            "regression gate run against it has less statistical power than "
-            "its achieved-power figure would otherwise reflect, computed over "
-            "an incomplete n with no signal that it's incomplete unless this "
-            "check is run. This is not a claim about why the sample is short "
-            "-- only that it is."
+            f"{self.expected_case_count} expected eval case(s){missing_note}. "
+            "Sample is shorter than the eval set defines, so any regression-gate "
+            "result is computed on this incomplete n -- not a claim about why."
         )
 
 

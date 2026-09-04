@@ -576,6 +576,52 @@ def test_cmd_snapshot_wrong_eval_set_file_raises_wrong_eval_set(
     assert "INCOMPLETE_CAPTURE" not in captured.out
 
 
+def test_cmd_snapshot_eval_history_resolves_zero_records_still_reports_wrong_eval_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """Task 2: the exact state examples/06's early draft hit -- --eval-history
+    resolves ZERO of the captured records to a real eval_case_id, even though
+    --eval-set-file correctly names the real case IDs. This happens when the
+    eval-history file's own session_ids don't overlap the STORE's captured
+    session_ids at all (a stale/mismatched --eval-history file -- a distinct
+    root cause from test_cmd_snapshot_wrong_eval_set_file_raises_wrong_eval_set
+    above, which mismatches --eval-set-file instead; both produce the same
+    observable "0 resolved, real data captured" shape and must both resolve
+    to wrong_eval_set, not a false incomplete_capture claiming every case was
+    dropped). See CLAUDE.md Task 2 for why --eval-history stays required
+    rather than degrading to a count-only check in this state.
+    """
+    out_path = tmp_path / "snap.json"
+    eval_set_path = tmp_path / "my_evals.evalset.json"
+    # --eval-set-file correctly names the cases that actually ran (case_1,
+    # case_2) -- this is NOT a wrong/stale eval-set-file.
+    _write_eval_set_file(eval_set_path, ["case_1", "case_2"])
+    # --eval-history maps case_1/case_2 to session_ids the store never
+    # produced (sess-x/sess-y, not sess-a/sess-b) -- a stale/mismatched
+    # eval-history file, independent of the eval-set-file being correct.
+    history_path = _write_eval_history_for(tmp_path, [("case_1", "sess-x"), ("case_2", "sess-y")])
+
+    exit_code = main(
+        [
+            "snapshot",
+            "--entrypoint",
+            "test_cli:_fixture_returns_store_two_sessions_both_captured",
+            "--output",
+            str(out_path),
+            "--eval-history",
+            str(history_path),
+            "--eval-set-file",
+            str(eval_set_path),
+        ]
+    )
+
+    assert exit_code == EXIT_WRONG_EVAL_SET
+    captured = capsys.readouterr()
+    assert "0/2 record(s) resolved to a real eval_case_id via --eval-history" in captured.out
+    assert "WRONG_EVAL_SET" in captured.out
+    assert "INCOMPLETE_CAPTURE" not in captured.out
+
+
 def test_cmd_snapshot_partial_id_match_reports_match_count(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
