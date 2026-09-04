@@ -21,12 +21,20 @@ WHAT THIS SCRIPT ACTUALLY DOES (all real, nothing simulated)
        None, and `_evaluate_single_inference_result` still writes an
        EvalCaseResult with `final_eval_status=FAILED` and the session_id
        that was allocated before inference ran -- confirmed by reading
-       `local_eval_service.py` directly, both in the pinned checkout and in
-       this venv's installed google-adk==2.6.3). Both agents also carry a
-       deterministic case-level cost plus a fixed regression bump on
-       "current" (same generator shape as examples/04), so the check below
-       has a genuine, non-synthetic regression to detect -- not a fixture
-       built to only exercise the completeness path.
+       `local_eval_service.py` directly, and verified to run byte-identically
+       (same mean costs, achieved power, CI bounds, missing case IDs) against
+       BOTH this repo's own pinned dependency range (google-adk==2.6.3, PyPI)
+       and a dedicated venv built from a pinned `google/adk-python`
+       `origin/main` checkout (`c506ddf3`, `__version__ == 2.8.0`). Both
+       agents also carry a deterministic case-level cost, real per-case
+       Gaussian noise (std=350 tokens, independently seeded per agent variant
+       -- see NOISE_STD_TOKENS/BASELINE_VARIANT_SEED/CURRENT_VARIANT_SEED
+       below for why this matters: a fixed constant bump alone gives every
+       paired delta the same value, collapsing the bootstrap's achieved-power
+       figure to a degenerate ~$0), plus a fixed regression bump on "current"
+       (same generator shape as examples/04), so the check below has a
+       genuine, non-synthetic regression to detect -- not a fixture built to
+       only exercise the completeness path.
     3. Runs the REAL `adk eval` CLI command (`cli_eval`, via
        click.testing.CliRunner, in-process so this script's own
        DEFAULT_USAGE_STORE captures real usage) once per agent, against the
@@ -59,9 +67,21 @@ CASE_LEVEL_STRIDE = 4_723  # arbitrary deterministic spread -- NOT hash(), which
 # non-reproducible run to run (same rationale as examples/04).
 CASE_LEVEL_MOD = 25_000
 REGRESSION_BUMP_PROMPT_TOKENS = 6_000  # "current" agent's uniform per-case regression
+NOISE_STD_TOKENS = 350  # real within-pair variance -- see "Why real noise" in the
+# module docstring: a fixed constant bump alone gives every paired delta the exact
+# same value, making the bootstrap's minimum-detectable-effect collapse to ~$0 --
+# statistically correct for that degenerate input, but not representative of a real
+# eval set, and the first thing a reader who understands power analysis would flag.
+BASELINE_VARIANT_SEED = 1  # arbitrary, distinct integers -- NOT hash(), for the same
+CURRENT_VARIANT_SEED = 2  # reason as CASE_LEVEL_STRIDE above. Distinct seeds per
+# variant mean baseline's and current's per-case noise draws are INDEPENDENT (not
+# perfectly correlated), which is what gives each of the 8 paired deltas its own,
+# non-constant value -- the actual source of the "real within-pair variance" this
+# fixture needs, not just noise for noise's sake.
 MIN_N = 8  # both baseline (n=10) and current (n=8, post-drop) clear this bar
 
 _AGENT_MODULE_TEMPLATE = '''
+import random
 import re
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -74,19 +94,37 @@ from adk_tracegauge import TraceGaugeUsagePlugin
 
 _CASE_RE = re.compile(r"case (\\d+)")
 _CRASH_CASE_INDICES = {crash_indices!r}
+_VARIANT_SEED = {variant_seed}
+_NOISE_STD_TOKENS = {noise_std}
 
 
 def _case_level_prompt_tokens(case_idx: int) -> int:
     return {case_level_base} + (case_idx * {case_level_stride}) % {case_level_mod}
 
 
+def _case_level_noise_tokens(case_idx: int) -> int:
+    """Deterministic (given fixed integer inputs -- NOT Python's hash(), which
+    is PYTHONHASHSEED-randomized per process) but genuinely per-case, per-agent-
+    variant noise: seeding random.Random directly with an int is unaffected by
+    PYTHONHASHSEED, so this reproduces byte-identically run to run, while still
+    giving baseline and current INDEPENDENT draws for the same case_idx (see
+    BASELINE_VARIANT_SEED/CURRENT_VARIANT_SEED's docstring in the driver
+    script) -- the source of this fixture's real within-pair variance.
+    """
+    rng = random.Random(_VARIANT_SEED * 10_007 + case_idx)
+    return round(rng.gauss(0, _NOISE_STD_TOKENS))
+
+
 class _PartialCrashFakeLlm(BaseLlm):
     """A fake model that raises for {{_CRASH_CASE_INDICES}} -- a real crashed
     inference, caught by google-adk's own
     LocalEvalService._perform_inference_single_eval_item, not a mock of that
-    catch. Every other case returns deterministic, case-dependent token
-    usage plus this agent variant's own fixed regression bump ({regression_bump}
-    tokens)."""
+    catch. Every other case returns case-dependent token usage (base level
+    plus this agent variant's own fixed regression bump, {regression_bump}
+    tokens, plus real per-case Gaussian noise, std={noise_std} tokens) --
+    deterministic given the fixed seeds above, but non-degenerate: baseline
+    and current draw INDEPENDENT noise for the same case, so the 8 surviving
+    paired deltas are 8 different values, not one repeated constant."""
 
     model: str = "case-dependent-fake-model"
 
@@ -104,7 +142,12 @@ class _PartialCrashFakeLlm(BaseLlm):
         case_idx = int(match.group(1)) if match else 0
         if case_idx in _CRASH_CASE_INDICES:
             raise RuntimeError(f"simulated crashed inference for case {{case_idx}}")
-        prompt_tokens = _case_level_prompt_tokens(case_idx) + {regression_bump}
+        prompt_tokens = max(
+            1,
+            _case_level_prompt_tokens(case_idx)
+            + {regression_bump}
+            + _case_level_noise_tokens(case_idx),
+        )
         yield LlmResponse(
             model_version="gemini-2.5-flash",
             content=genai_types.Content(
@@ -131,7 +174,11 @@ root_agent = LlmAgent(
 
 
 def _write_agent_package(
-    tmp_path: Path, package_name: str, regression_bump: int, crash_indices: set[int]
+    tmp_path: Path,
+    package_name: str,
+    regression_bump: int,
+    crash_indices: set[int],
+    variant_seed: int,
 ) -> Path:
     pkg_dir = tmp_path / package_name
     pkg_dir.mkdir()
@@ -144,6 +191,8 @@ def _write_agent_package(
             regression_bump=regression_bump,
             agent_name=package_name,
             crash_indices=crash_indices,
+            variant_seed=variant_seed,
+            noise_std=NOISE_STD_TOKENS,
         ),
         encoding="utf-8",
     )
@@ -238,7 +287,9 @@ def main() -> int:
             f"=== Running REAL `adk eval` CLI: baseline_agent_pkg (n={N_CASES} cases, crash=none) ==="
         )
         DEFAULT_USAGE_STORE.clear()
-        baseline_pkg_dir = _write_agent_package(tmp_path, "baseline_agent_pkg", 0, set())
+        baseline_pkg_dir = _write_agent_package(
+            tmp_path, "baseline_agent_pkg", 0, set(), BASELINE_VARIANT_SEED
+        )
         b_exit, b_output = _run_real_adk_eval_cli(baseline_pkg_dir, eval_set_path, config_path)
         print(
             f"(adk eval exit_code={b_exit}, {len(b_output.splitlines())} output lines, "
@@ -260,7 +311,11 @@ def main() -> int:
         )
         DEFAULT_USAGE_STORE.clear()
         current_pkg_dir = _write_agent_package(
-            tmp_path, "current_agent_pkg", REGRESSION_BUMP_PROMPT_TOKENS, CRASH_CASE_INDICES
+            tmp_path,
+            "current_agent_pkg",
+            REGRESSION_BUMP_PROMPT_TOKENS,
+            CRASH_CASE_INDICES,
+            CURRENT_VARIANT_SEED,
         )
         c_exit, c_output = _run_real_adk_eval_cli(current_pkg_dir, eval_set_path, config_path)
         n_captured = len(DEFAULT_USAGE_STORE.invocation_ids())

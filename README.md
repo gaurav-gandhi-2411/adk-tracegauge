@@ -189,8 +189,14 @@ an empty snapshot regardless of this feature — this check's real value is a
 *partial* drop that still produces a confident, nothing-looks-wrong
 regression verdict. `examples/06_partial_capture_completeness_demo.py` builds
 a real 10-case eval set (`case_0`..`case_9`) and runs it twice through the
-REAL `adk eval` CLI (`cli_eval`, in-process via `click.testing.CliRunner`,
-against `google-adk==2.6.3`): a `baseline` agent where all 10 cases succeed,
+REAL `adk eval` CLI (`cli_eval`, in-process via `click.testing.CliRunner`) —
+verified against BOTH this repo's own pinned dependency range
+(`google-adk==2.6.3`, PyPI) and, separately, a dedicated venv built directly
+from a pinned `google/adk-python` `origin/main` checkout (`c506ddf3`,
+`google.adk.__version__ == 2.8.0` — same checkout used elsewhere in this
+project's own verification work), with byte-for-byte identical numeric
+output (mean costs, achieved power, CI bounds, missing case IDs) on both:
+a `baseline` agent where all 10 cases succeed,
 and a `current` agent where `case_3` and `case_7` raise inside
 `generate_content_async` — a real crashed inference, caught exactly the way
 `LocalEvalService._perform_inference_single_eval_item` catches any exception
@@ -208,10 +214,11 @@ surviving `current` case:
 adk-tracegauge snapshot: wrote 8 record(s) to current_snapshot_no_completeness.json
 adk-tracegauge check: mode=paired (key=eval_case_id, 8 overlapping eval_case_ids matched between baseline and current)
 adk-tracegauge check [method=paired]: n_baseline=8 n_current=8 (min_n=8)
-  mean_baseline=$0.005011  mean_current=$0.006811
-  achieved power: minimum reliably-detectable effect at 80% power, given this run's observed variance/n, is ~$0.000000 (+0.00% of mean baseline) [normal approximation to the bootstrap CI -- see _regression.py module docstring for validated accuracy]
-  observed effect: +0.001800 USD (+35.92%), 98% CI [+0.001800, +0.001800] (n_boot=10000, seed=42)
+  mean_baseline=$0.005001  mean_current=$0.006808
+  achieved power: minimum reliably-detectable effect at 80% power, given this run's observed variance/n, is ~$0.000113 (+2.26% of mean baseline) [normal approximation to the bootstrap CI -- see _regression.py module docstring for validated accuracy]
+  observed effect: +0.001807 USD (+36.13%), 98% CI [+0.001732, +0.001885] (n_boot=10000, seed=42)
   statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+  WARNING: the configured practical-significance floor (effectively $0.000100, from min_effect_usd=$0.000100 OR min_effect_pct=5.00%) is BELOW this run's minimum reliably-detectable effect at 80% power (~$0.000113, given the observed variance and n) -- the statistical test cannot reliably catch a real regression as small as your configured floor at this sample size. A clean/passing result here should NOT be read as strong evidence of no regression at your configured floor -- consider a larger eval set, a lower-variance cost metric, or an explicitly higher floor.
   REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
 
 adk-tracegauge check exit code: 1
@@ -227,21 +234,21 @@ exit_code: 5
 
 **Same underlying capture, same run — the point this demonstrates:** without
 `--eval-set-file`, `adk-tracegauge check` runs to completion on the
-silently-shortened `n=8`, reports a real `REGRESSION` verdict, an achieved-power
-figure, and exits `1` — nothing anywhere in that output signals that the
-eval set actually defines 10 cases, not 8. It reads exactly like a genuinely
-complete 8-case run, because from `check`'s own vantage point it is one — the
-information that 2 cases silently dropped is only visible via
+silently-shortened `n=8`, reports a real `REGRESSION` verdict, a non-degenerate
+achieved-power figure (~$0.000113, a real minimum-detectable-effect estimate
+from actual bootstrap resampling of 8 non-identical paired deltas — this
+fixture adds real per-case Gaussian noise, std=350 tokens, independently drawn
+for baseline and current, specifically so this number isn't a degenerate
+zero-variance artifact), and a CI with real, non-zero width
+(`[+0.001732, +0.001885]`), then exits `1` — nothing anywhere in that output
+signals that the eval set actually defines 10 cases, not 8. It reads exactly
+like a genuinely complete 8-case run, because from `check`'s own vantage point
+it is one — the information that 2 cases silently dropped is only visible via
 `--eval-history`/`.evalset_result.json`'s bookkeeping, which `check` never
 sees. With `--eval-set-file`, the SAME captured data resolves `8/8` records to
 a real `eval_case_id`, correctly names `case_3` and `case_7` as missing, and
 exits `5` before the misleadingly-complete-looking regression verdict above is
-ever the only signal you get. (`achieved power ~$0.000000` above is a real,
-correctly-computed artifact of this fixture's determinism — the regression
-bump is a fixed constant added to every surviving case with zero injected
-noise, so the paired bootstrap has zero within-pair variance to resample; see
-"Power depends on your own cost variance" above for what a noisy real-world
-distribution's achieved-power figure looks like instead.)
+ever the only signal you get.
 
 A total-capture example (`num_runs=0` on a 1-case eval set — a shorter, more
 obvious failure a user would notice from an empty snapshot even without this
