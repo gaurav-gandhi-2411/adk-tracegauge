@@ -9,7 +9,9 @@ from adk_tracegauge.snapshot import (
     SNAPSHOT_SCHEMA_VERSION,
     Snapshot,
     SnapshotRecord,
+    SnapshotSkip,
     build_snapshot,
+    evaluate_completeness,
     pair_costs_by_eval_case_id,
     pair_costs_by_session_id,
     read_snapshot,
@@ -525,3 +527,198 @@ def test_resolve_pairing_returns_none_when_neither_key_was_ever_captured():
     baseline_costs, current_costs, matched, resolved_key = resolve_pairing(baseline, current)
 
     assert (baseline_costs, current_costs, matched, resolved_key) == ([], [], [], "none")
+
+
+# --- build_snapshot: eval_case_id resolution on skips (new) --------------
+
+
+def test_build_snapshot_resolves_eval_case_id_on_a_skipped_invocation():
+    store = UsageStore()
+    store.record("inv-1", _call(model="totally-unknown-model-xyz"))
+    store.record_session("inv-1", "sess-a")
+
+    snapshot = build_snapshot(store, eval_case_ids_by_session={"sess-a": "case_1"})
+
+    assert snapshot.records == []
+    assert len(snapshot.skipped) == 1
+    assert snapshot.skipped[0].eval_case_id == "case_1"
+
+
+def test_build_snapshot_missing_empty_without_expected_case_sizes():
+    store = UsageStore()
+    store.record("inv-1", _call())
+    store.record_session("inv-1", "sess-a")
+
+    snapshot = build_snapshot(store, eval_case_ids_by_session={"sess-a": "case_1"})
+
+    assert snapshot.missing == []
+
+
+def test_build_snapshot_missing_names_a_case_with_zero_observed_invocations():
+    store = UsageStore()
+    store.record("inv-1", _call())
+    store.record_session("inv-1", "sess-a")
+
+    snapshot = build_snapshot(
+        store,
+        eval_case_ids_by_session={"sess-a": "case_1"},
+        expected_case_sizes={"case_1": 1, "case_2": 1},
+    )
+
+    assert snapshot.missing == ["case_2"]
+
+
+def test_build_snapshot_missing_is_sorted_and_deterministic():
+    store = UsageStore()
+    store.record("inv-1", _call())
+    store.record_session("inv-1", "sess-a")
+
+    snapshot = build_snapshot(
+        store,
+        eval_case_ids_by_session={"sess-a": "case_1"},
+        expected_case_sizes={"case_z": 1, "case_a": 1, "case_1": 1},
+    )
+
+    assert snapshot.missing == ["case_a", "case_z"]
+
+
+def test_read_write_snapshot_round_trips_missing(tmp_path: Path):
+    store = UsageStore()
+    store.record("inv-1", _call())
+    store.record_session("inv-1", "sess-a")
+    out_path = tmp_path / "snap.json"
+
+    write_snapshot(
+        store,
+        out_path,
+        eval_case_ids_by_session={"sess-a": "case_1"},
+        expected_case_sizes={"case_1": 1, "case_2": 1},
+    )
+    round_tripped = read_snapshot(out_path)
+
+    assert round_tripped.missing == ["case_2"]
+
+
+def test_read_snapshot_defaults_missing_for_a_pre_completeness_check_file(tmp_path: Path):
+    out_path = tmp_path / "old.json"
+    out_path.write_text(
+        '{"schema_version": 2, "created_at": "x", "records": [], "skipped": []}',
+        encoding="utf-8",
+    )
+
+    snapshot = read_snapshot(out_path)
+
+    assert snapshot.missing == []
+
+
+# --- evaluate_completeness ------------------------------------------------
+#
+# This is a validity precondition on adk-tracegauge check's own statistical
+# output, not a bug-detection feature -- see evaluate_completeness's
+# docstring. Assertions below are on status/counts, never on claims about
+# ADK behaving incorrectly.
+
+
+def _snapshot(records=(), skipped=(), missing=()):
+    return Snapshot(
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        created_at="x",
+        records=list(records),
+        skipped=list(skipped),
+        missing=list(missing),
+    )
+
+
+def _record(eval_case_id: str, invocation_id: str = "inv") -> SnapshotRecord:
+    return SnapshotRecord(
+        invocation_id=invocation_id,
+        cost_usd=0.01,
+        tokens_input=1,
+        tokens_output=1,
+        tokens_cache_read=0,
+        models=["gemini-2.5-flash"],
+        call_count=1,
+        eval_case_id=eval_case_id,
+    )
+
+
+def test_evaluate_completeness_complete_sample():
+    snapshot = _snapshot(records=[_record("case_1"), _record("case_2")], missing=[])
+
+    result = evaluate_completeness(snapshot, {"case_1": 1, "case_2": 1})
+
+    assert result.status == "complete"
+    assert result.expected_case_count == 2
+    assert result.matched_case_count == 2
+    assert result.expected_invocation_count == 2
+    assert result.observed_invocation_count == 2
+    assert result.missing == []
+
+
+def test_evaluate_completeness_dropped_case_is_incomplete_capture():
+    snapshot = _snapshot(records=[_record("case_1")], missing=["case_2"])
+
+    result = evaluate_completeness(snapshot, {"case_1": 1, "case_2": 1})
+
+    assert result.status == "incomplete_capture"
+    assert result.missing == ["case_2"]
+    assert "case_2" in result.report()
+    assert "INCOMPLETE_CAPTURE" in result.report()
+
+
+def test_evaluate_completeness_skipped_but_accounted_is_complete():
+    skip = SnapshotSkip(invocation_id="inv-1", reason="unresolved model", eval_case_id="case_1")
+    snapshot = _snapshot(records=[], skipped=[skip], missing=[])
+
+    result = evaluate_completeness(snapshot, {"case_1": 1})
+
+    assert result.status == "complete"
+    assert result.observed_invocation_count == 1  # counted via skipped, not records
+
+
+def test_evaluate_completeness_zero_overlap_with_real_data_is_wrong_eval_set():
+    # Real data captured (records exist), but none of it matches ANY
+    # expected case id -- the wrong-file signal, not a dropped case.
+    snapshot = _snapshot(records=[_record("unrelated_case")], missing=["case_1", "case_2"])
+
+    result = evaluate_completeness(snapshot, {"case_1": 1, "case_2": 1})
+
+    assert result.status == "wrong_eval_set"
+    assert "WRONG_EVAL_SET" in result.report()
+    assert "INCOMPLETE_CAPTURE" not in result.report()
+
+
+def test_evaluate_completeness_empty_snapshot_is_incomplete_not_wrong_file():
+    # Nothing captured at all -- no basis to conclude the FILE is wrong
+    # rather than the run having genuinely produced nothing.
+    snapshot = _snapshot(records=[], skipped=[], missing=["case_1"])
+
+    result = evaluate_completeness(snapshot, {"case_1": 1})
+
+    assert result.status == "incomplete_capture"
+
+
+def test_evaluate_completeness_num_runs_multiplies_expected_count():
+    snapshot = _snapshot(records=[_record("case_1"), _record("case_1", "inv-2")], missing=[])
+
+    result = evaluate_completeness(snapshot, {"case_1": 1}, num_runs=2)
+
+    assert result.expected_invocation_count == 2
+    assert result.status == "complete"
+
+
+def test_evaluate_completeness_rejects_empty_expected_case_sizes():
+    snapshot = _snapshot(records=[_record("case_1")])
+
+    with pytest.raises(ValueError, match="at least one expected eval case"):
+        evaluate_completeness(snapshot, {})
+
+
+def test_evaluate_completeness_partial_match_reports_match_count():
+    snapshot = _snapshot(records=[_record("case_1")], missing=["case_2", "case_3"])
+
+    result = evaluate_completeness(snapshot, {"case_1": 1, "case_2": 1, "case_3": 1})
+
+    assert result.matched_case_count == 1
+    assert result.expected_case_count == 3
+    assert "1/3 expected eval case(s)" in result.report()
