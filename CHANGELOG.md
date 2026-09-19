@@ -38,6 +38,16 @@ see `CONTRIBUTING.md`).
   figure could not be reproduced and its origin is unverified. Also notes the Windows
   `MAX_PATH` install failure. Raw logs: `reports/quickstart_wall_clock_2026-09-20/`. (#57)
 
+### Fixed
+
+- **`adk-tracegauge quickstart` (and `examples/05`) printed exactly 2x the true dollar cost.**
+  The demo wired the plugin twice (agent-level `after_model_callback` *and* `plugins=[...]`),
+  and both paths capture every model call, so each call was recorded twice: the 0.6.1
+  quickstart printed `mean_baseline=$0.010611` for calls whose true mean is `$0.005306`. The
+  regression verdict was unaffected (both runs doubled equally), and the test suite pinned the
+  doubled figure, so nothing failed. **If you copied the demo's wiring, wire the plugin exactly
+  once** -- the plugin itself does not yet guard against double registration. (#62)
+
 ### Tests
 
 - `python -m adk_tracegauge` (`__main__.py`, the README-recommended PATH-independent fallback)
