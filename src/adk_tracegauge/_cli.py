@@ -119,9 +119,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from ._compat import load_eval_case_ids_by_session_id, load_expected_case_sizes
 from ._regression import (
@@ -185,6 +188,43 @@ includes PAIRED-mode passes, the shipped default -- a config relying on
 that mode's exit code staying 0 will see this change even if nothing
 about its own regression logic changed. See CHANGELOG for the version
 this shipped in."""
+
+
+_T = TypeVar("_T")
+
+
+def _load_input_or_exit(
+    flag: str, path: str | Path, loader: Callable[[str | Path], _T], *, missing_hint: str = ""
+) -> _T:
+    """Runs ``loader(path)`` and turns every way reading a user-supplied input file can fail
+    into a single-line ``SystemExit`` message naming the flag and the file, instead of the
+    raw 13-line traceback a cold user's first real run (a mistyped path, a snapshot that was
+    never written, a truncated file) would otherwise get. Library callers of
+    ``read_snapshot`` and friends are unaffected -- they still see the typed exception; only
+    the CLI boundary converts.
+
+    ``RuntimeError`` is included deliberately: ``_compat``'s two loaders already raise it with
+    an actionable message (unparseable eval-set/eval-history JSON, or a moved ADK internal),
+    which was previously printed as a traceback around an already-good sentence.
+    """
+    try:
+        return loader(path)
+    except FileNotFoundError:
+        raise SystemExit(
+            f"{flag}: file not found: {str(path)!r} (relative paths are resolved from the "
+            f"current directory, {os.getcwd()!r}){missing_hint}"
+        ) from None
+    except OSError as e:
+        raise SystemExit(f"{flag}: could not read {str(path)!r}: {e.strerror or e}") from e
+    except json.JSONDecodeError as e:
+        raise SystemExit(
+            f"{flag}: {str(path)!r} is not valid JSON ({e.msg}, line {e.lineno} column "
+            f"{e.colno}) -- a truncated or partially-written file?"
+        ) from e
+    except (ValueError, RuntimeError) as e:
+        # Collapse whitespace: pydantic's own validation errors (embedded in _compat's
+        # messages) span several lines, and a one-line error is the point of this helper.
+        raise SystemExit(f"{flag}: {' '.join(str(e).split())}") from e
 
 
 def _resolve_entrypoint(spec: str) -> UsageStore:
@@ -255,11 +295,15 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
     store = _resolve_entrypoint(args.entrypoint)
     eval_case_ids_by_session: dict[str, str] | None = None
     if args.eval_history is not None:
-        eval_case_ids_by_session = load_eval_case_ids_by_session_id(args.eval_history)
+        eval_case_ids_by_session = _load_input_or_exit(
+            "--eval-history", args.eval_history, load_eval_case_ids_by_session_id
+        )
 
     expected_case_sizes: dict[str, int] | None = None
     if args.eval_set_file is not None:
-        all_case_sizes = load_expected_case_sizes(args.eval_set_file)
+        all_case_sizes = _load_input_or_exit(
+            "--eval-set-file", args.eval_set_file, load_expected_case_sizes
+        )
         if args.requested_cases is not None:
             requested = [c.strip() for c in args.requested_cases.split(",") if c.strip()]
             expected_case_sizes = {
@@ -273,12 +317,15 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
             # `:case1,case2` suffix) -- every case in the file is expected.
             expected_case_sizes = dict(all_case_sizes)
 
-    snapshot = write_snapshot(
-        store,
-        args.output,
-        eval_case_ids_by_session=eval_case_ids_by_session,
-        expected_case_sizes=expected_case_sizes,
-    )
+    try:
+        snapshot = write_snapshot(
+            store,
+            args.output,
+            eval_case_ids_by_session=eval_case_ids_by_session,
+            expected_case_sizes=expected_case_sizes,
+        )
+    except OSError as e:
+        raise SystemExit(f"--output: could not write {args.output!r}: {e.strerror or e}") from e
     skip_note = f", {len(snapshot.skipped)} skipped (unpriceable)" if snapshot.skipped else ""
     resolved_note = ""
     if args.eval_history is not None:
@@ -383,8 +430,9 @@ def _resolve_check_mode(
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    baseline = read_snapshot(args.baseline)
-    current = read_snapshot(args.current)
+    hint = " -- create it first with `adk-tracegauge snapshot --entrypoint MODULE:CALLABLE --output FILE`"
+    baseline = _load_input_or_exit("--baseline", args.baseline, read_snapshot, missing_hint=hint)
+    current = _load_input_or_exit("--current", args.current, read_snapshot, missing_hint=hint)
     agent: str | None = getattr(args, "agent", None)
     agent_note = f" [agent={agent}]" if agent is not None else ""
 

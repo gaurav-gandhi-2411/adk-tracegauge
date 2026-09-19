@@ -16,7 +16,7 @@ pip install adk-tracegauge
 adk-tracegauge quickstart
 ```
 
-Two commands, no files to create. This runs a deterministic, in-memory demo agent (bundled with the package — nothing is read from your machine) through a real `InMemoryRunner`, twice, with a deliberate cost regression injected into the second run, then fires the real `adk-tracegauge check` gate against it. **Measured live, not estimated: 78.2s wall-clock from a genuine fresh `pip install --user` on Windows** (the install mode that hits the PATH issue below) **to the printed regression verdict.** Same exact output every run — see `examples/` for the full script this reuses.
+Two commands, no files to create. This runs a deterministic, in-memory demo agent (bundled with the package — nothing is read from your machine) through a real `InMemoryRunner`, twice, with a deliberate cost regression injected into the second run, then fires the real `adk-tracegauge check` gate against it. **Measured, not estimated — and slower than an earlier version of this README claimed (78.2s, which could not be reproduced): median 438.5s (7.3 min) from an empty virtualenv to the printed regression verdict** (3 runs: 468.7s, 438.5s, 372.0s; Windows 11, Ryzen 7 6800H, Python 3.13.5, cold pip cache, home network, `google-adk==2.7.1`). **About 88% of that is pip installing `google-adk[eval]`'s 108-package dependency tree (329.4s of a 373.5s run); this package's own install is 5.5s and the demo itself ~30s.** Expect the same shape on your machine — roughly seven minutes on a cold cache, a fraction of that with a warm one (UNVERIFIED: not measured). Same exact output every run — see `examples/` for the full script this reuses. Raw logs and harness: [`reports/quickstart_wall_clock_2026-09-20/`](reports/quickstart_wall_clock_2026-09-20/SUMMARY.md).
 
 ## Quickstart: the CI cost-regression gate
 
@@ -32,6 +32,8 @@ adk-tracegauge check --baseline baseline.json --current current.json
 2. Add the script directory Windows already installed to (printed as a `WARNING` during `pip install`, typically `%APPDATA%\Python\PythonXYZ\Scripts` on Windows) to your PATH.
 
 Installing into a virtual environment (`python -m venv`/`uv venv` + activate, then `pip install adk-tracegauge`) avoids this entirely, since an activated venv's `Scripts`/`bin` directory is already on PATH.
+
+**Windows only: install into a short path.** `google-adk`'s dependency tree ships very deeply nested files (the reproduced case was `litellm`'s packaged assets), and an environment created under a long directory can exceed Windows' 260-character `MAX_PATH` — the install fails even though nothing is wrong with the package. Reproduced at a 280-character environment path; succeeded at 152. Create the venv somewhere short, e.g. `python -m venv C:	g-env`.
 
 `my_eval_suite:run_and_return_store` is a zero-argument callable you already have (it runs your ADK eval — `AgentEvaluator.evaluate()` or your own `Runner` harness — with `TraceGaugeUsagePlugin` wired in; see "What this actually is" below). `adk-tracegauge check` runs a percentile bootstrap on the difference in mean cost and exits with a **real, distinguishable exit code**: `0` pass, `1` regression, `3` insufficient data, `4` pass but underpowered (either mode — see "Known limitations" below; a real, non-zero exit code your CI should distinguish from a hard failure if it treats any non-zero exit as build-failing). Real output, from a genuine +20%-mean injected regression measured fresh this session (`examples/03_ci_regression_gate.py`, both `snapshot` calls plus `check` itself run as real subprocesses, `google-adk==2.6.3`):
 
@@ -523,7 +525,7 @@ Every entry carries its own `source_url` and `fetched_on` date, re-verified 2026
 
 ## Compatibility risk
 
-Registration uses `google.adk.evaluation.metric_evaluator_registry`, which google-adk marks `@experimental`. This package pins `google-adk[eval]>=2.6.0,<2.8.0` accordingly, re-validated on each bump — see `CHANGELOG.md`. If the registry API breaks in a future release, registration happens at import time as a side effect, so the failure mode is a loud, immediate error on `import adk_tracegauge`, not a silent no-op.
+Registration uses `google.adk.evaluation.metric_evaluator_registry`, which google-adk marks `@experimental`. This package pins `google-adk[eval]>=2.6.0,<2.10.0` accordingly, re-validated on each bump — see `CHANGELOG.md`. If the registry API breaks in a future release, registration happens at import time as a side effect, so the failure mode is a loud, immediate error on `import adk_tracegauge`, not a silent no-op.
 
 **Python 3.14 is supported and verified, not just admitted by an open-ended `requires-python`.** `requires-python = ">=3.10"` carries no upper bound, so nothing stops a 3.14 install by accident — this package explicitly tested that case rather than leaving it untested-but-technically-allowed: the full test suite and all `examples/` scripts pass clean on Python 3.14.4 in an isolated venv, no code changes required. `Programming Language :: Python :: 3.14` is a real classifier, in CI's test matrix, not aspirational.
 
@@ -535,7 +537,7 @@ A scheduled CI job (`.github/workflows/pypi-canary.yml`) installs the *latest* `
 
 Real, live-triggered errors and their fixes — see [`docs/troubleshooting.md`](docs/troubleshooting.md) for the full text and context:
 
-- **Wrong `google-adk` version installed** (outside the `>=2.6.0,<2.8.0` pin) → a loud `ModuleNotFoundError`/`RuntimeError` at import time, not a silent wrong answer.
+- **Wrong `google-adk` version installed** (outside the `>=2.6.0,<2.10.0` pin) → a loud `ModuleNotFoundError`/`RuntimeError` at import time, not a silent wrong answer.
 - **Unknown/unresolvable model** → `score=None` plus an actionable warning naming every model this package can price.
 - **Missing threshold** → a `ValueError` at construction time; this package never falls back to a permissive always-PASSED default.
 - **A local model (Ollama/vLLM) reports `NOT_EVALUATED` instead of `$0.00`** (Phase 3 B1) → expected, fail-closed behavior since Ollama Cloud (paid) shares the same prefix as local Ollama — set `ADK_TRACEGAUGE_ASSUME_LOCAL` to opt in.
