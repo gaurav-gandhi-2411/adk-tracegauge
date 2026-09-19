@@ -29,6 +29,16 @@ def _short_id(invocation_id: str, width: int = 14) -> str:
     return invocation_id if len(invocation_id) <= width else invocation_id[:width]
 
 
+def _describe_reason(reason: str) -> str:
+    """``SnapshotSkip.reason`` is either a bare model id (``AdaptResult.unresolved_model``) or an
+    already-worded sentence (streaming anomaly / unpriced token category). A bare id on its own
+    reads as noise in a cost table, so say what it means; sentences pass through untouched. The
+    "no whitespace" test is the discriminator because a model id never contains any."""
+    if reason and not any(ch.isspace() for ch in reason):
+        return f"model {reason!r} is not in the price table (see README, 'Pricing')"
+    return reason
+
+
 def priced_total_usd(snapshot: Snapshot) -> float:
     return sum(r.cost_usd for r in snapshot.records)
 
@@ -113,7 +123,7 @@ def render_text(snapshot: Snapshot, source: str) -> str:
             row.append("-")
         row.append("unknown")
         rows.append(row)
-        unknown_notes.append(f"  unknown {_short_id(s.invocation_id)}: {s.reason}")
+        unknown_notes.append(f"  {_short_id(s.invocation_id)}: {_describe_reason(s.reason)}")
 
     widths = [max(len(header[i]), *(len(row[i]) for row in rows)) for i in range(len(header))]
     # Left-align the text columns, right-align the numeric ones.

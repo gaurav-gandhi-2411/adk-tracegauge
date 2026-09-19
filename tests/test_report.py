@@ -81,11 +81,15 @@ def test_report_shows_unpriceable_invocation_as_unknown_never_omitted(
     assert exit_code == EXIT_PASS
     assert "2 invocation(s) (1 priced, 1 unknown)" in out
     # The unknown invocation is a row of its own, not dropped from the table...
-    table_rows = [line for line in out.splitlines() if line.startswith("  e-inv-")]
+    table_rows = [
+        line
+        for line in out.splitlines()
+        if line.startswith("  e-inv-") and "price table" not in line  # not the reason note
+    ]
     assert len(table_rows) == 2
     assert any("UNKNOWN" in row and row.rstrip().endswith("unknown") for row in table_rows)
     # ...its reason names the model that could not be priced (no guessed rate)...
-    assert "totally-unknown-model-xyz" in out
+    assert "model 'totally-unknown-model-xyz' is not in the price table" in out
     assert "NOT priced (no guessed rate is ever used)" in out
     # ...and the total is labelled as excluding it, at exactly the one priced call's $0.000800.
     assert "priced total: $0.000800 across 1 invocation(s) -- EXCLUDES 1 unknown" in out
