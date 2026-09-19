@@ -7,6 +7,52 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.7.0] — 2026-09-20
+
+### Added
+
+- **`adk-tracegauge snapshot --eval-set-file` sample-completeness check** (with
+  `--requested-cases` and `--num-runs`; requires `--eval-history`). Reconciles the captured
+  sample against the eval set's own definition and exits `5` (`incomplete_capture`) or `6`
+  (`wrong_eval_set`) instead of letting `check` report a confident verdict over a silently
+  shortened `n`. **This feature was documented in the README on `main` but absent from the
+  published `0.6.1` wheel — anyone following the docs got an argparse error.** `0.7.0` is the
+  release that actually ships it. See README, "Sample completeness", and
+  `examples/06_partial_capture_completeness_demo.py`. (#52–#56)
+
+### Changed
+
+- **`google-adk[eval]` pin widened from `>=2.6.0,<2.8.0` to `>=2.6.0,<2.10.0`.** Upstream was
+  at 2.9.2; four releases (2.8.0, 2.9.0, 2.9.1, 2.9.2) were unreachable. The full 470-test
+  suite passes on 2.6.3, 2.7.1, 2.8.0, 2.9.0, 2.9.1 and 2.9.2, no source change required. The
+  weekly `pypi-canary` had been red since 2026-08-17 (a `pythonpath` override that dropped the
+  repo root, plus wheel/tests version skew) and so had validated none of them; repaired.
+  (#60)
+- **CLI input errors are one actionable line, not a ~24-line traceback**: a missing or
+  truncated snapshot for `check --baseline/--current`, a missing/unparseable `--eval-history`
+  or `--eval-set-file`, an unwritable `--output`. Library callers of `read_snapshot` still get
+  the typed exceptions. (#58)
+- **README: the quickstart wall-clock claim was wrong and is corrected.** It said 78.2s from a
+  fresh install to the verdict; three clean-venv re-measurements gave 468.7s / 438.5s / 372.0s
+  (median 438.5s), ~88% of it pip resolving `google-adk[eval]`'s dependency tree. The old
+  figure could not be reproduced and its origin is unverified. Also notes the Windows
+  `MAX_PATH` install failure. Raw logs: `reports/quickstart_wall_clock_2026-09-20/`. (#57)
+
+### Fixed
+
+- **`adk-tracegauge quickstart` (and `examples/05`) printed exactly 2x the true dollar cost.**
+  The demo wired the plugin twice (agent-level `after_model_callback` *and* `plugins=[...]`),
+  and both paths capture every model call, so each call was recorded twice: the 0.6.1
+  quickstart printed `mean_baseline=$0.010611` for calls whose true mean is `$0.005306`. The
+  regression verdict was unaffected (both runs doubled equally), and the test suite pinned the
+  doubled figure, so nothing failed. **If you copied the demo's wiring, wire the plugin exactly
+  once** -- the plugin itself does not yet guard against double registration. (#62)
+
+### Tests
+
+- `python -m adk_tracegauge` (`__main__.py`, the README-recommended PATH-independent fallback)
+  had 0% coverage; now 100%, including a real-subprocess exit-status test. (#59)
+
 ## [0.6.1] — 2026-08-22
 
 ### Fixed
