@@ -56,8 +56,8 @@ if TYPE_CHECKING:
     from google.adk.events.event import Event
 
 _KNOWN_TESTED_MIN = (2, 6, 0)
-_KNOWN_TESTED_MAX_EXCLUSIVE = (2, 8, 0)
-"""Mirrors pyproject.toml's own google-adk[eval] pin (>=2.6.0,<2.8.0) --
+_KNOWN_TESTED_MAX_EXCLUSIVE = (2, 10, 0)
+"""Mirrors pyproject.toml's own google-adk[eval] pin (>=2.6.0,<2.10.0) --
 kept in sync manually, not imported from pyproject.toml, since this module
 must work from an installed wheel with no pyproject.toml on disk. If these
 two ever drift, the drift is harmless (this check is advisory -- see module
