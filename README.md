@@ -523,7 +523,7 @@ Every entry carries its own `source_url` and `fetched_on` date, re-verified 2026
 
 ## Compatibility risk
 
-Registration uses `google.adk.evaluation.metric_evaluator_registry`, which google-adk marks `@experimental`. This package pins `google-adk[eval]>=2.6.0,<2.8.0` accordingly, re-validated on each bump — see `CHANGELOG.md`. If the registry API breaks in a future release, registration happens at import time as a side effect, so the failure mode is a loud, immediate error on `import adk_tracegauge`, not a silent no-op.
+Registration uses `google.adk.evaluation.metric_evaluator_registry`, which google-adk marks `@experimental`. This package pins `google-adk[eval]>=2.6.0,<2.10.0` accordingly, re-validated on each bump — see `CHANGELOG.md`. If the registry API breaks in a future release, registration happens at import time as a side effect, so the failure mode is a loud, immediate error on `import adk_tracegauge`, not a silent no-op.
 
 **Python 3.14 is supported and verified, not just admitted by an open-ended `requires-python`.** `requires-python = ">=3.10"` carries no upper bound, so nothing stops a 3.14 install by accident — this package explicitly tested that case rather than leaving it untested-but-technically-allowed: the full test suite and all `examples/` scripts pass clean on Python 3.14.4 in an isolated venv, no code changes required. `Programming Language :: Python :: 3.14` is a real classifier, in CI's test matrix, not aspirational.
 
@@ -535,7 +535,7 @@ A scheduled CI job (`.github/workflows/pypi-canary.yml`) installs the *latest* `
 
 Real, live-triggered errors and their fixes — see [`docs/troubleshooting.md`](docs/troubleshooting.md) for the full text and context:
 
-- **Wrong `google-adk` version installed** (outside the `>=2.6.0,<2.8.0` pin) → a loud `ModuleNotFoundError`/`RuntimeError` at import time, not a silent wrong answer.
+- **Wrong `google-adk` version installed** (outside the `>=2.6.0,<2.10.0` pin) → a loud `ModuleNotFoundError`/`RuntimeError` at import time, not a silent wrong answer.
 - **Unknown/unresolvable model** → `score=None` plus an actionable warning naming every model this package can price.
 - **Missing threshold** → a `ValueError` at construction time; this package never falls back to a permissive always-PASSED default.
 - **A local model (Ollama/vLLM) reports `NOT_EVALUATED` instead of `$0.00`** (Phase 3 B1) → expected, fail-closed behavior since Ollama Cloud (paid) shares the same prefix as local Ollama — set `ADK_TRACEGAUGE_ASSUME_LOCAL` to opt in.
