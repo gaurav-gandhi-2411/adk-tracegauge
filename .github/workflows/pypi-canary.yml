@@ -1,6 +1,6 @@
 name: PyPI canary (latest google-adk)
 
-# adk-tracegauge pins google-adk[eval]>=2.6.0,<2.7.0 because it registers
+# adk-tracegauge pins google-adk[eval]>=2.6.0,<2.10.0 because it registers
 # against google-adk's @experimental MetricEvaluatorRegistry API, which
 # carries no SemVer guarantee. This workflow deliberately installs the
 # *latest* google-adk[eval] release, ignoring that pin, so a breaking
@@ -8,6 +8,12 @@ name: PyPI canary (latest google-adk)
 # import failing with no warning. A red run here does not mean this repo
 # is broken -- it means the current pin needs re-validating (and likely
 # bumping) against a new google-adk release.
+#
+# Known structural limit: this runs THIS checkout's tests against the PUBLISHED wheel, so it
+# is red whenever main has a tested feature that has not been released yet (a wheel/tests
+# version skew, not a google-adk break). It was red on every scheduled run from 2026-08-17
+# through 2026-09-14 for that reason plus the `scripts` import below -- read the failure
+# before treating red as "google-adk broke us".
 
 on:
   schedule:
@@ -39,7 +45,7 @@ jobs:
         # (the published PyPI wheel), not this checkout's local source via
         # `-e .`. `--upgrade` after the plain install lets google-adk[eval]'s
         # own extras resolve to the latest release, ignoring this repo's
-        # <2.8.0 pin, so a breaking change surfaces here instead of via a
+        # <2.10.0 pin, so a breaking change surfaces here instead of via a
         # user's own import failing with no warning.
         run: |
           uv pip install --system adk-tracegauge
@@ -57,9 +63,13 @@ jobs:
         # so local dev/CI runs work without an install step -- but that same
         # setting would shadow the real PyPI install just performed above with
         # this checkout's local src/, defeating the entire point of a canary.
-        # Override to drop "." and "src" (only "scripts" is still needed --
-        # test_regression_confidence_grid.py / test_regression_power.py import
-        # helper modules from there directly), so `import adk_tracegauge` in
-        # the test suite resolves to the real published wheel on sys.path via
-        # site-packages, not this checkout.
-        run: pytest tests/ -v --override-ini="pythonpath=scripts"
+        # Override to drop "src" only, so `import adk_tracegauge` in the test
+        # suite resolves to the real published wheel on sys.path via
+        # site-packages, not this checkout. "." must stay: it is the repo root,
+        # which has no adk_tracegauge package of its own (src layout, so no
+        # shadowing) but is what makes `import scripts.<...>` resolve --
+        # tests/test_check_price_table_vs_vendor.py failed collection with
+        # "No module named 'scripts'" on every canary run once "." was dropped.
+        # "scripts" itself is still needed for the helper modules
+        # test_regression_confidence_grid.py / test_regression_power.py import.
+        run: pytest tests/ -v --override-ini="pythonpath=. scripts"
