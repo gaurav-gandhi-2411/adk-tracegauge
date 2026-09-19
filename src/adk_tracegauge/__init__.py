@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 
-from ._plugin import TraceGaugeUsagePlugin
+from ._plugin import DoubleRegistrationError, TraceGaugeUsagePlugin
 from ._store import DEFAULT_USAGE_STORE, UsageStore
 from .evaluator import (
     _METRIC_INFO,
@@ -58,6 +58,7 @@ _install_agent_evaluator_marker()
 __version__ = "0.6.1"
 
 __all__ = [
+    "DoubleRegistrationError",
     "CostEfficiencyEvaluator",
     "CostThresholdCriterion",
     "TraceGaugeUsagePlugin",

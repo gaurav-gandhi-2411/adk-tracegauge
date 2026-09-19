@@ -75,6 +75,27 @@ _ACTIVE_INVOCATIONS: contextvars.ContextVar[tuple[str, ...]] = contextvars.Conte
 )
 
 
+class DoubleRegistrationError(RuntimeError):
+    """The same model response reached ``TraceGaugeUsagePlugin`` twice.
+
+    Raised, not warned: this package's only product is correct dollar figures, and a warning
+    scrolls past while every number stays exactly 2x wrong (the shipped quickstart did precisely
+    this until #62 -- and a test then pinned the doubled value, so the suite agreed with the
+    error). Stopping a misconfigured run is safer than reporting wrong money.
+    """
+
+
+_DOUBLE_REGISTRATION_MESSAGE = (
+    "adk_tracegauge: TraceGaugeUsagePlugin received the same model response twice, so it is "
+    "registered on this agent more than once (typically BOTH `after_model_callback="
+    "plugin.after_model_callback` on the agent AND `plugins=[plugin]` on the Runner/App, or two "
+    "plugin instances sharing one store). Every call would be counted twice and every cost "
+    "reported at exactly 2x. Register it exactly once: `plugins=[...]` on the Runner/App, OR "
+    "`after_model_callback=` on the agent (the form `adk eval` needs) -- not both. Run stopped "
+    "rather than reporting wrong numbers; see README, 'See what your ADK agent costs'."
+)
+
+
 class TraceGaugeUsagePlugin(BasePlugin):
     """Captures token usage per invocation for CostEfficiencyEvaluator.
 
@@ -121,6 +142,11 @@ class TraceGaugeUsagePlugin(BasePlugin):
     async def after_model_callback(
         self, *, callback_context: CallbackContext, llm_response: LlmResponse
     ) -> LlmResponse | None:
+        # Refuse a second delivery of the same response BEFORE recording anything from it (the
+        # first delivery already recorded it once) -- see DoubleRegistrationError.
+        if not self._store.claim_delivery(llm_response):
+            raise DoubleRegistrationError(_DOUBLE_REGISTRATION_MESSAGE)
+
         # Phase 4 R2: also record session_id here, not only in
         # before_run_callback -- this is the ONE hook proven to fire during
         # `adk eval`/AgentEvaluator.evaluate() (the quickstart binds this
@@ -169,4 +195,4 @@ class TraceGaugeUsagePlugin(BasePlugin):
         return None
 
 
-__all__ = ["TraceGaugeUsagePlugin"]
+__all__ = ["DoubleRegistrationError", "TraceGaugeUsagePlugin"]

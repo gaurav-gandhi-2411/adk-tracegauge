@@ -14,7 +14,9 @@ so tests can use an isolated instance instead of the shared singleton.
 from __future__ import annotations
 
 import threading
+import weakref
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,7 @@ class UsageStore:
     _parents: dict[str, str] = field(default_factory=dict)
     _session_ids: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _delivered: dict[int, weakref.ref[Any]] = field(default_factory=dict, repr=False, compare=False)
 
     def record(self, invocation_id: str, call: CapturedCall) -> None:
         with self._lock:
@@ -168,11 +171,36 @@ class UsageStore:
         with self._lock:
             return list(self._calls.keys())
 
+    def claim_delivery(self, obj: object) -> bool:
+        """True the first time this store sees ``obj``; False if the *identical object* was
+        already claimed -- i.e. the same model response reached the plugin twice.
+
+        This is the detector behind ``DoubleRegistrationError``: ADK hands one ``LlmResponse``
+        object to the runner-level plugin path and then to an agent-level
+        ``after_model_callback`` (verified on google-adk 2.6.3, 2.7.1 and 2.9.2, streaming
+        included), so a plugin wired both ways sees each response twice and would record every
+        call twice. Keyed on ``id(obj)`` but only trusted while a weak reference to the very
+        same object is still alive (``ref() is obj``) -- a recycled id after garbage collection
+        is a different object and correctly claims. Weak references, so this never keeps a
+        response alive. No finalizer callbacks (they can fire while ``_lock`` is held on the
+        same thread and deadlock a non-reentrant lock); dead entries are pruned in bulk instead.
+        """
+        key = id(obj)
+        with self._lock:
+            existing = self._delivered.get(key)
+            if existing is not None and existing() is obj:
+                return False
+            if len(self._delivered) >= 4096:
+                self._delivered = {k: r for k, r in self._delivered.items() if r() is not None}
+            self._delivered[key] = weakref.ref(obj)
+            return True
+
     def clear(self) -> None:
         with self._lock:
             self._calls.clear()
             self._parents.clear()
             self._session_ids.clear()
+            self._delivered.clear()
 
 
 DEFAULT_USAGE_STORE = UsageStore()
