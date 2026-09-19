@@ -59,11 +59,11 @@ EXPECTED OUTPUT (real numbers -- reproduce exactly given the seeds/generator
 
     adk-tracegauge check: mode=paired (key=session_id, 32 overlapping session_ids matched between baseline and current)
     adk-tracegauge check [method=paired]: n_baseline=32 n_current=32 (min_n=30)
-      mean_baseline=$0.010611  mean_current=$0.014211
+      mean_baseline=$0.005306  mean_current=$0.007106
       achieved power: minimum reliably-detectable effect at 80% power, given this run's observed
       variance/n, is ~$0.000000 (+0.00% of mean baseline) [normal approximation to the bootstrap CI
       -- see _regression.py module docstring for validated accuracy]
-      observed effect: +0.003600 USD (+33.93%), 98% CI [+0.003600, +0.003600] (n_boot=10000, seed=42)
+      observed effect: +0.001800 USD (+33.93%), 98% CI [+0.001800, +0.001800] (n_boot=10000, seed=42)
       statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR
       min_effect_pct=5.00%)
       REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the
@@ -154,7 +154,9 @@ async def _run_variant(app_name: str, regression_bump: int, store: UsageStore) -
         instruction="Answer the question.",
         after_model_callback=plugin.after_model_callback,
     )
-    runner = InMemoryRunner(agent=agent, app_name=app_name, plugins=[plugin])
+    # Wire the plugin ONCE (the callback above). Also passing plugins=[plugin] here captured every
+    # call twice -- 2x the true cost in every printed dollar figure (see EXPECTED OUTPUT).
+    runner = InMemoryRunner(agent=agent, app_name=app_name)
     user_id = "u"
     for i in range(N_CASES):
         session_id = f"case-{i}"  # <-- pinned identically across baseline/current

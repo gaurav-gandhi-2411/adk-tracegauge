@@ -106,7 +106,12 @@ async def _run_variant(app_name: str, regression_bump: int, store: UsageStore) -
         # runtime bug.
         after_model_callback=plugin.after_model_callback,  # type: ignore[arg-type]
     )
-    runner = InMemoryRunner(agent=agent, app_name=app_name, plugins=[plugin])
+    # Deliberately NOT also `plugins=[plugin]`: the agent-level after_model_callback above and a
+    # runner-level plugin each fire this same method for every model call, so wiring both
+    # captured every call twice -- this demo printed mean_baseline=$0.010611 for calls whose
+    # true mean cost is $0.005306 (exactly 2x; the regression verdict was unaffected because both
+    # runs doubled equally, but the dollar figures were wrong). Wire it once.
+    runner = InMemoryRunner(agent=agent, app_name=app_name)
     user_id = "u"
     for i in range(N_CASES):
         session_id = f"case-{i}"  # pinned identically across baseline/current
