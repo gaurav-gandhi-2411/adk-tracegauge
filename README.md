@@ -15,25 +15,34 @@ See what your [Google ADK](https://github.com/google/adk-python) agent costs —
 pip install adk-tracegauge
 ```
 
-Add the plugin to the runner you already use (`App(..., plugins=[...])` works the same way), run your agent as usual, then read the priced invocations back:
+Wire the plugin into the runner you already use (`App(..., plugins=[...])` works the same way) and put your usual run in a zero-argument function:
 
 ```python
-from adk_tracegauge import DEFAULT_USAGE_STORE, TraceGaugeUsagePlugin
-from adk_tracegauge.snapshot import build_snapshot
+# my_run.py
+from adk_tracegauge import TraceGaugeUsagePlugin
 
 runner = InMemoryRunner(agent=root_agent, app_name="my_app", plugins=[TraceGaugeUsagePlugin()])
-# ... your usual `async for event in runner.run_async(...)` loop ...
 
-for r in build_snapshot(DEFAULT_USAGE_STORE).records:
-    print(f"${r.cost_usd:.6f}  {r.tokens_input} in / {r.tokens_output} out  {r.models}  {r.invocation_id}")
+def run() -> None:
+    ...  # your usual `async for event in runner.run_async(...)` loop, e.g. via asyncio.run(...)
+```
+
+```bash
+adk-tracegauge report --entrypoint my_run:run
 ```
 
 ```
-$0.005600  12000 in / 800 out  ['gemini-2.5-flash']  e-d8d7533a-62f0-40b2-895a-19333bc6c402
-$0.005600  12000 in / 800 out  ['gemini-2.5-flash']  e-9eb7ebb2-62c7-4bf1-8817-7a59eb0c5b62
+adk-tracegauge report: 2 invocation(s) (2 priced, 0 unknown) -- live run of my_run:run
+  invocation      model(s)          calls  tokens in  tokens out  cost (USD)
+  --------------  ----------------  -----  ---------  ----------  ----------
+  e-a4e8926d-a40  gemini-2.5-flash      1     12,000         800   $0.005600
+  e-ad9b8e20-220  gemini-2.5-flash      1     12,000         800   $0.005600
+
+  total: $0.011200 across 2 invocation(s)
+  tokens (priced invocations): 24,000 in / 1,600 out
 ```
 
-Real output from a deterministic fake model (no API key), hand-checked: 12,000 × $0.30/M + 800 × $2.50/M = $0.0056 at `gemini-2.5-flash` rates. **Wire the plugin exactly once** — `plugins=[...]` *or* `after_model_callback=`, not both: both captures every call twice (verified: `call_count=2`, exactly 2× the cost). `adk eval` doesn't honor `plugins=`; use the `after_model_callback` form in ["Also: a real PASS/FAIL cost metric inside `adk eval`"](#also-a-real-passfail-cost-metric-inside-adk-eval). Prices change without notice — see [Pricing](#pricing-gemini-claude-gpt-and-local-models) before trusting a number for a budget. Once you can see the cost, [gate it in CI](#quickstart-the-ci-cost-regression-gate).
+Real output from a deterministic fake model (no API key), hand-checked: 12,000 × $0.30/M + 800 × $2.50/M = $0.0056 per call at `gemini-2.5-flash` rates. A model the price table doesn't know is shown as `UNKNOWN` — never omitted, never guessed — and the total says it excludes it. Already have a snapshot file from CI? `adk-tracegauge report snapshot.json`; add `--json` for machines. **Register the plugin exactly once** — `plugins=[...]` *or* `after_model_callback=`, not both: both would count every call twice, so the plugin refuses with an error instead. `adk eval` doesn't honor `plugins=`; use the `after_model_callback` form in ["Also: a real PASS/FAIL cost metric inside `adk eval`"](#also-a-real-passfail-cost-metric-inside-adk-eval). Prices change without notice — see [Pricing](#pricing-gemini-claude-gpt-and-local-models) before trusting a number for a budget. Once you can see the cost, [gate it in CI](#quickstart-the-ci-cost-regression-gate).
 
 ## Also: a real PASS/FAIL cost metric inside `adk eval`
 
