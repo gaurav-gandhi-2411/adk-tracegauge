@@ -499,13 +499,21 @@ def read_snapshot(path: str | Path) -> Snapshot:
     """Reads a Snapshot previously written by ``write_snapshot``.
 
     Raises ``ValueError`` on a schema_version this version of adk-tracegauge
-    doesn't know how to read, rather than silently misinterpreting a future
-    (or malformed) file's fields. Accepts BOTH schema_version 1 and 2 (see
+    doesn't know how to read, on a file that isn't a JSON object or whose
+    record entries don't match this schema, rather than silently
+    misinterpreting a future (or malformed) file's fields. ``FileNotFoundError``
+    and ``json.JSONDecodeError`` (a ``ValueError``) propagate unchanged -- the CLI
+    (``_cli._load_input_or_exit``) is what turns them into one-line messages. Accepts BOTH schema_version 1 and 2 (see
     ``SNAPSHOT_SCHEMA_VERSION``'s docstring for why 1 remains fully readable
     -- it just never carries ``eval_case_id``, which correctly falls through
     to session_id/two-sample fallback in ``resolve_pairing``).
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{path}: not an adk-tracegauge snapshot (expected a JSON object at the top level, "
+            f"got {type(raw).__name__})"
+        )
     schema_version = raw.get("schema_version")
     if schema_version not in _READABLE_SCHEMA_VERSIONS:
         raise ValueError(
@@ -513,13 +521,19 @@ def read_snapshot(path: str | Path) -> Snapshot:
             f"(this version of adk-tracegauge reads schema_version(s) "
             f"{_READABLE_SCHEMA_VERSIONS} only)"
         )
-    return Snapshot(
-        schema_version=schema_version,
-        created_at=raw.get("created_at", "unknown"),
-        records=[SnapshotRecord(**r) for r in raw.get("records", [])],
-        skipped=[SnapshotSkip(**s) for s in raw.get("skipped", [])],
-        missing=list(raw.get("missing", [])),
-    )
+    try:
+        return Snapshot(
+            schema_version=schema_version,
+            created_at=raw.get("created_at", "unknown"),
+            records=[SnapshotRecord(**r) for r in raw.get("records", [])],
+            skipped=[SnapshotSkip(**s) for s in raw.get("skipped", [])],
+            missing=list(raw.get("missing", [])),
+        )
+    except (TypeError, AttributeError) as e:
+        # A hand-edited or foreign file that carries a valid schema_version but whose
+        # record/skip entries don't match the dataclass fields -- a ValueError naming the
+        # file, not a bare TypeError from inside a dataclass constructor.
+        raise ValueError(f"{path}: malformed snapshot content ({e})") from e
 
 
 CompletenessStatus = Literal["complete", "incomplete_capture", "wrong_eval_set"]
