@@ -18,7 +18,7 @@ than guess.
 
 ## 1. Wrong `google-adk` version installed
 
-This package pins `google-adk[eval]>=2.6.0,<2.8.0` (see `pyproject.toml`,
+This package pins `google-adk[eval]>=2.6.0,<2.10.0` (see `pyproject.toml`,
 "Compatibility risk" in the README). Installing a version well outside
 that range breaks registration loudly, at `import adk_tracegauge` time —
 never a silent no-op or a subtly wrong result.
@@ -70,11 +70,11 @@ clean environment, that's this same upstream gap, not a new problem — install
 `google-adk==1.0.0` at all outside of deliberately reproducing this doc entry;
 it predates this package's supported floor for unrelated reasons too.
 
-**Fix:** `pip install "google-adk[eval]>=2.6.0,<2.8.0"` (or let
+**Fix:** `pip install "google-adk[eval]>=2.6.0,<2.10.0"` (or let
 `adk-tracegauge`'s own dependency pin resolve it for you — this error only
 happens when something else in your environment force-installs an
 out-of-range version afterward, e.g. `pip install --upgrade google-adk`
-without re-checking the pin). If you've deliberately upgraded past `2.8.0`
+without re-checking the pin). If you've deliberately upgraded past `2.10.0`
 because a newer google-adk is out and you want to try it, check
 `.github/workflows/pypi-canary.yml`'s latest run first (it installs the
 *unpinned* latest `google-adk[eval]` weekly and runs the full test suite) —
