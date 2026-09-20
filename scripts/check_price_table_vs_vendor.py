@@ -53,7 +53,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -71,18 +71,15 @@ ANTHROPIC_MD_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 GOOGLE_HTML_URL = "https://ai.google.dev/gemini-api/docs/pricing"
 OPENAI_MD_URL = "https://developers.openai.com/api/docs/pricing.md"
 
-#: Deprecated/shut-down entries the vendor's current page no longer lists --
-#: cannot be verified against a live page, same reasoning the existing
-#: staleness guard already applies to "retired" entries in principle.
-SKIP_ENTRIES = frozenset({"gemini-2.0-flash", "__local_zero_cost__"})
+#: Entries that cannot be verified against a live page, each with the reason printed in its row.
+#: ``retired: true`` entries in the JSON are skipped the same way (reason read from the entry).
+SKIP_ENTRIES: dict[str, str] = {
+    "gemini-2.0-flash": "retired 2026-06-01, no longer on the vendor page",
+    "__local_zero_cost__": "synthetic entry (local models), no vendor price",
+}
 
-#: Google's `<h2 id="...">` slugs were verified live this session to match
-#: this repo's own model keys EXACTLY (dots, not hyphens -- e.g.
-#: `id="gemini-2.5-flash-lite"`, not a hyphenated transform of it). Listed
-#: explicitly anyway, one entry per Gemini model this table currently
-#: prices, rather than silently assuming every future model key will keep
-#: matching Google's id format -- adding a new Gemini model requires
-#: adding it here too, deliberately, not automatically.
+#: Google `<h2 id>` slugs, one per Gemini model. Explicit on purpose: adding a model to the table
+#: without adding it here makes this script report it UNVERIFIED (fail), never silently skip it.
 GOOGLE_MODEL_SLUGS: dict[str, str] = {
     "gemini-2.5-pro": "gemini-2.5-pro",
     "gemini-2.5-flash": "gemini-2.5-flash",
@@ -95,10 +92,12 @@ GOOGLE_MODEL_SLUGS: dict[str, str] = {
     "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
 }
 
-#: Anthropic's page displays "Claude Opus 5"; our table key is
-#: "claude-opus-5" -- mapped explicitly rather than algorithmically
-#: normalized, since e.g. "Claude Opus 4.8" -> "claude-opus-4-8" needs the
-#: dot-to-hyphen rule applied only in the version segment.
+#: Table keys that price the ``prompts > 200k tokens`` tier of a base model on Google's page.
+GOOGLE_LONG_CONTEXT_KEYS: dict[str, str] = {
+    "gemini-2.5-pro-long-context": "gemini-2.5-pro",
+    "gemini-3.1-pro-preview-long-context": "gemini-3.1-pro-preview",
+}
+
 ANTHROPIC_MODEL_NAMES: dict[str, str] = {
     "claude-opus-5": "Claude Opus 5",
     "claude-sonnet-5": "Claude Sonnet 5",
@@ -106,10 +105,14 @@ ANTHROPIC_MODEL_NAMES: dict[str, str] = {
     "claude-opus-4-8": "Claude Opus 4.8",
 }
 
+#: Vendor cached-rate ratio may differ from the table multiplier by this much (absolute) before it
+#: is a mismatch: vendors round cached prices to the cent-ish ($0.075 on $0.75 is exactly 0.1).
+CACHE_RATIO_TOLERANCE = 0.005
+_RATE_EPS = 1e-9
+
 
 class FetchError(Exception):
-    """A vendor page could not be fetched or parsed as expected -- see
-    module docstring's "TWO DISTINCT FAILURE MODES"."""
+    """A vendor page could not be fetched or parsed as expected."""
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,15 @@ class GoogleModel:
     promo_until: date | None = None  # standard rate is a promo through this date...
     after_promo: Rate | None = None  # ...and this rate applies afterwards
     storage_usd_per_mtok_hour: float | None = None  # explicit-cache storage; parsed, never priced
+
+
+@dataclass
+class AuditRow:
+    key: str
+    status: str  # VERIFIED | SKIPPED | MISMATCH | UNVERIFIED
+    ours: str
+    vendor: str
+    detail: list[str] = field(default_factory=list)
 
 
 def _fetch(url: str) -> str:
@@ -342,124 +354,198 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
     )
 
 
+def _fmt(rate: Rate | None) -> str:
+    if rate is None:
+        return "-"
+    cached = "n/a" if rate.cached is None else f"{rate.cached:g}"
+    return f"in ${rate.input:g} / out ${rate.output:g} / cached ${cached}"
+
+
+def _same(a: float, b: float) -> bool:
+    return abs(a - b) <= _RATE_EPS
+
+
+def _compare(
+    key: str, entry: dict[str, object], vendor: Rate, cache_mult: float, tier_note: str = ""
+) -> AuditRow:
+    ours = Rate(float(entry["input_usd_per_mtok"]), float(entry["output_usd_per_mtok"]))  # type: ignore[arg-type]
+    row = AuditRow(
+        key, "VERIFIED", _fmt(Rate(ours.input, ours.output, ours.input * cache_mult)), _fmt(vendor)
+    )
+    if not _same(ours.input, vendor.input):
+        row.detail.append(f"input: ours ${ours.input:g} vs vendor ${vendor.input:g}")
+    if not _same(ours.output, vendor.output):
+        row.detail.append(f"output: ours ${ours.output:g} vs vendor ${vendor.output:g}")
+    if row.detail:
+        row.status = "MISMATCH"
+    if vendor.cached is None:
+        row.detail.append(
+            "cached rate: vendor publishes none, so the table's cached multiplier "
+            "cannot be verified for this entry"
+        )
+        if row.status == "VERIFIED":
+            row.status = "UNVERIFIED"
+    elif vendor.input > 0:
+        ratio = vendor.cached / vendor.input
+        if abs(ratio - cache_mult) > CACHE_RATIO_TOLERANCE:
+            row.detail.append(
+                f"cached: vendor ${vendor.cached:g} = {ratio:.3f}x its input, table assumes "
+                f"{cache_mult:g}x"
+            )
+            row.status = "MISMATCH"
+    if tier_note and row.status == "VERIFIED":
+        row.detail.append(tier_note)
+    return row
+
+
+def audit(
+    prices: dict[str, object],
+    anthropic: dict[str, Rate] | None,
+    openai: dict[str, Rate] | None,
+    google_html: str | None,
+) -> list[AuditRow]:
+    """One AuditRow per table entry. ``None`` for a vendor means its page could not be fetched."""
+    models: dict[str, dict[str, object]] = prices["models"]  # type: ignore[assignment]
+    cache_mult = float(prices["cache_multipliers"]["read"])  # type: ignore[index]
+    rows: list[AuditRow] = []
+    for key, entry in models.items():
+        if key in SKIP_ENTRIES or entry.get("retired"):
+            reason = SKIP_ENTRIES.get(key) or f"retired {entry.get('retired_on', '')}".strip()
+            rows.append(AuditRow(key, "SKIPPED", "-", "-", [reason]))
+            continue
+        if not isinstance(entry.get("input_usd_per_mtok"), (int, float)):
+            rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["entry has no input rate"]))
+            continue
+
+        if key in ANTHROPIC_MODEL_NAMES:
+            if anthropic is None:
+                rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["Anthropic page not fetched"]))
+                continue
+            found = anthropic.get(ANTHROPIC_MODEL_NAMES[key])
+            if found is None:
+                rows.append(
+                    AuditRow(
+                        key,
+                        "UNVERIFIED",
+                        "-",
+                        "-",
+                        [f"'{ANTHROPIC_MODEL_NAMES[key]}' not found on Anthropic's page"],
+                    )
+                )
+                continue
+            rows.append(_compare(key, entry, found, cache_mult))
+        elif key in GOOGLE_MODEL_SLUGS or key in GOOGLE_LONG_CONTEXT_KEYS:
+            if google_html is None:
+                rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["Google page not fetched"]))
+                continue
+            slug = GOOGLE_MODEL_SLUGS.get(key) or GOOGLE_LONG_CONTEXT_KEYS[key]
+            model = parse_google_html(google_html, slug)
+            if model is None:
+                rows.append(
+                    AuditRow(
+                        key,
+                        "UNVERIFIED",
+                        "-",
+                        "-",
+                        [f"slug '{slug}' not found/parseable on Google's page"],
+                    )
+                )
+                continue
+            if key in GOOGLE_LONG_CONTEXT_KEYS:
+                if model.long_context is None:
+                    rows.append(
+                        AuditRow(
+                            key,
+                            "UNVERIFIED",
+                            "-",
+                            "-",
+                            [f"Google lists no '> 200k tokens' tier for '{slug}'"],
+                        )
+                    )
+                    continue
+                rows.append(_compare(key, entry, model.long_context, cache_mult))
+            else:
+                rows.append(_compare(key, entry, model.standard, cache_mult))
+        elif key.startswith("gpt-"):
+            if openai is None:
+                rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["OpenAI page not fetched"]))
+                continue
+            found = openai.get(key)
+            if found is None:
+                rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["not found on OpenAI's page"]))
+                continue
+            rows.append(_compare(key, entry, found, cache_mult))
+        else:
+            rows.append(
+                AuditRow(
+                    key,
+                    "UNVERIFIED",
+                    "-",
+                    "-",
+                    [
+                        "no vendor mapping -- add one to this script or mark the entry "
+                        "retired; an unmapped entry is refused, not skipped"
+                    ],
+                )
+            )
+    return rows
+
+
+def _print_table(rows: list[AuditRow]) -> None:
+    print(f"{'entry':<38} {'status':<11} detail")
+    print("-" * 110)
+    for r in rows:
+        first = r.detail[0] if r.detail else ""
+        print(f"{r.key:<38} {r.status:<11} {first}")
+        for extra in r.detail[1:]:
+            print(f"{'':<50} {extra}")
+        if r.status in ("MISMATCH",) or (r.status == "VERIFIED" and r.vendor != "-"):
+            print(f"{'':<50} ours:   {r.ours}")
+            print(f"{'':<50} vendor: {r.vendor}")
+
+
 def main() -> int:
     prices = load_gemini_prices()
-    models: dict[str, dict[str, object]] = prices["models"]
+    errors: list[str] = []
 
-    retryable_errors: list[str] = []
-    unmapped: list[str] = []
-    mismatches: list[tuple[str, float, float, float, float]] = []
-    verified = 0
+    def fetch_parse(url: str, parse, what: str):  # type: ignore[no-untyped-def]
+        try:
+            body = _fetch(url)
+            parsed = parse(body)
+            if not parsed:
+                raise FetchError(f"{url}: {what} table not found")
+            return parsed
+        except FetchError as e:
+            errors.append(str(e))
+            return None
 
+    anthropic = fetch_parse(ANTHROPIC_MD_URL, parse_anthropic_markdown, "'## Model pricing'")
+    openai = fetch_parse(OPENAI_MD_URL, parse_openai_markdown, "'Standard pricing data'")
     try:
-        anthropic_md = _fetch(ANTHROPIC_MD_URL)
-        anthropic_table = parse_anthropic_markdown(anthropic_md)
-        if not anthropic_table:
-            raise FetchError(f"{ANTHROPIC_MD_URL}: '## Model pricing' table not found")
+        google_html: str | None = _fetch(GOOGLE_HTML_URL)
     except FetchError as e:
-        retryable_errors.append(str(e))
-        anthropic_table = None
-
-    try:
-        openai_md = _fetch(OPENAI_MD_URL)
-        openai_table = parse_openai_markdown(openai_md)
-        if not openai_table:
-            raise FetchError(f"{OPENAI_MD_URL}: 'Standard pricing data' table not found")
-    except FetchError as e:
-        retryable_errors.append(str(e))
-        openai_table = None
-
-    try:
-        google_html = _fetch(GOOGLE_HTML_URL)
-    except FetchError as e:
-        retryable_errors.append(str(e))
+        errors.append(str(e))
         google_html = None
 
-    for model_key, entry in models.items():
-        if model_key in SKIP_ENTRIES:
-            continue
-        our_input = entry.get("input_usd_per_mtok")
-        our_output = entry.get("output_usd_per_mtok")
-        if not isinstance(our_input, (int, float)) or not isinstance(our_output, (int, float)):
-            continue
+    rows = audit(prices, anthropic, openai, google_html)
+    _print_table(rows)
 
-        if model_key in ANTHROPIC_MODEL_NAMES:
-            if anthropic_table is None:
-                continue  # already counted as a retryable_error above
-            display_name = ANTHROPIC_MODEL_NAMES[model_key]
-            fetched = anthropic_table.get(display_name)
-            if fetched is None:
-                unmapped.append(f"{model_key}: '{display_name}' not found on Anthropic's page")
-                continue
-            verified += 1
-            if (float(our_input), float(our_output)) != (fetched.input, fetched.output):
-                mismatches.append(
-                    (model_key, float(our_input), float(our_output), fetched.input, fetched.output)
-                )
-        elif model_key in GOOGLE_MODEL_SLUGS:
-            if google_html is None:
-                continue
-            google = parse_google_html(google_html, GOOGLE_MODEL_SLUGS[model_key])
-            if google is None:
-                unmapped.append(
-                    f"{model_key}: slug '{GOOGLE_MODEL_SLUGS[model_key]}' not found/parseable on Google's page"
-                )
-                continue
-            verified += 1
-            fetched = google.standard
-            if (float(our_input), float(our_output)) != (fetched.input, fetched.output):
-                mismatches.append(
-                    (model_key, float(our_input), float(our_output), fetched.input, fetched.output)
-                )
-        elif openai_table is not None and model_key in openai_table:
-            fetched = openai_table[model_key]
-            verified += 1
-            if (float(our_input), float(our_output)) != (fetched.input, fetched.output):
-                mismatches.append(
-                    (model_key, float(our_input), float(our_output), fetched.input, fetched.output)
-                )
-        elif model_key.startswith("gpt-"):
-            if openai_table is None:
-                continue
-            unmapped.append(f"{model_key}: not found on OpenAI's page")
-        # Any other model_key has no vendor mapping at all (yet) -- not an
-        # error, just outside this script's current coverage; extend
-        # ANTHROPIC_MODEL_NAMES/GOOGLE_MODEL_SLUGS when a new model is added.
-
-    if not retryable_errors and not unmapped and not mismatches:
-        print(f"OK: {verified} price entries verified against their vendor's own current page.")
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    summary = ", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
+    failing = [r for r in rows if r.status in ("MISMATCH", "UNVERIFIED")]
+    if not errors and not failing:
+        print(
+            f"\nOK: {len(rows)} entries audited ({summary}); every claimed rate matches the vendor."
+        )
         return 0
 
-    if retryable_errors:
-        print(
-            "COULD NOT VERIFY (fetch/parse failure -- distinct from a mismatch, see module docstring):",
-            file=sys.stderr,
-        )
-        for msg in retryable_errors:
-            print(f"  - {msg}", file=sys.stderr)
-    if unmapped:
-        if retryable_errors:
-            print(file=sys.stderr)
-        print(
-            "COULD NOT VERIFY (entry not found on vendor's page -- needs manual review):",
-            file=sys.stderr,
-        )
-        for msg in unmapped:
-            print(f"  - {msg}", file=sys.stderr)
-    if mismatches:
-        if retryable_errors or unmapped:
-            print(file=sys.stderr)
-        print(
-            "PRICE MISMATCH (our table disagrees with the vendor's own current page):",
-            file=sys.stderr,
-        )
-        for model_key, our_in, our_out, vendor_in, vendor_out in mismatches:
-            print(
-                f"  - {model_key}: ours=${our_in}/${our_out} per MTok, "
-                f"vendor=${vendor_in}/${vendor_out} per MTok",
-                file=sys.stderr,
-            )
-
+    print(f"\nFAILED: {len(rows)} entries audited ({summary}).", file=sys.stderr)
+    for msg in errors:
+        print(f"COULD NOT FETCH/PARSE: {msg}", file=sys.stderr)
+    for r in failing:
+        print(f"{r.status}: {r.key}: " + "; ".join(r.detail), file=sys.stderr)
     return 1
 
 

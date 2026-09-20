@@ -2,8 +2,9 @@
 scripts/check_price_table_vs_vendor.py against recorded excerpts of what each vendor's page
 returned when fetched live on 2026-09-20. No live network in CI.
 
-Stage: the parsers (input, output and cached rate; Google long-context tier, promo window and
-storage note) and main()'s exit codes on the input/output comparison.
+Stage: the audit engine -- every entry ends in exactly one status (VERIFIED / SKIPPED /
+MISMATCH / UNVERIFIED) on input, output, cached rate and long-context tier; promo windows and
+the storage note come in the next PR.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from scripts.check_price_table_vs_vendor import (
     OPENAI_MD_URL,
     FetchError,
     Rate,
+    audit,
     main,
     parse_anthropic_markdown,
     parse_google_html,
@@ -117,6 +119,25 @@ _PRICES = {
 }
 
 
+def _vendor():
+    return (
+        parse_anthropic_markdown(_ANTHROPIC_MD),
+        parse_openai_markdown(_OPENAI_MD),
+        _GOOGLE_HTML,
+    )
+
+
+def _audit(prices=None):
+    an, op, g = _vendor()
+    return {r.key: r for r in audit(prices or _PRICES, an, op, g)}
+
+
+def _mutated(mutate):
+    p = copy.deepcopy(_PRICES)
+    mutate(p)
+    return _audit(p)
+
+
 # --- parsers ---------------------------------------------------------------------------------
 
 
@@ -206,6 +227,114 @@ def test_google_slug_present_but_no_pricing_table_returns_none():
     assert parse_google_html('<h2 id="gemini-x">x</h2><p>no table</p>', "gemini-x") is None
 
 
+# --- audit(): every entry gets exactly one status --------------------------------------------
+
+
+def test_every_entry_gets_exactly_one_row():
+    rows = _audit()
+    assert set(rows) == set(_PRICES["models"])
+
+
+def test_clean_table_verifies_every_checkable_entry_and_skips_only_with_a_reason():
+    rows = _audit()
+    statuses = {k: r.status for k, r in rows.items()}
+    assert (
+        statuses["gemini-2.0-flash"] == "SKIPPED"
+        and "retired" in rows["gemini-2.0-flash"].detail[0]
+    )
+    assert statuses["__local_zero_cost__"] == "SKIPPED" and rows["__local_zero_cost__"].detail
+    assert all(s == "VERIFIED" for k, s in statuses.items() if s != "SKIPPED"), statuses
+
+
+def test_input_mismatch_is_caught():
+    rows = _mutated(lambda p: p["models"]["gpt-5.6-terra"].update(input_usd_per_mtok=2.5))
+    assert rows["gpt-5.6-terra"].status == "MISMATCH"
+    assert "input: ours $2.5 vs vendor $2" in rows["gpt-5.6-terra"].detail[0]
+
+
+def test_output_mismatch_is_caught_with_both_numbers():
+    rows = _mutated(lambda p: p["models"]["claude-opus-5"].update(output_usd_per_mtok=30.0))
+    assert rows["claude-opus-5"].status == "MISMATCH"
+    assert "ours $30 vs vendor $25" in rows["claude-opus-5"].detail[0]
+
+
+def test_cached_ratio_mismatch_is_caught_via_the_global_multiplier():
+    rows = _mutated(lambda p: p["cache_multipliers"].update(read=0.25))
+    assert rows["claude-opus-5"].status == "MISMATCH"
+    assert "table assumes 0.25x" in rows["claude-opus-5"].detail[0]
+
+
+def test_a_model_with_a_different_real_cache_ratio_is_flagged():
+    # Claude Fable 5.1's live cache-hit rate is 0.025x input -- a table entry for it under the
+    # global 0.1x multiplier would overprice cache hits 4x, and this is exactly how that shows up.
+    p = copy.deepcopy(_PRICES)
+    p["models"]["claude-fable-5.1"] = {"input_usd_per_mtok": 10.0, "output_usd_per_mtok": 50.0}
+    with patch.dict(
+        "scripts.check_price_table_vs_vendor.ANTHROPIC_MODEL_NAMES",
+        {"claude-fable-5.1": "Claude Fable 5.1"},
+    ):
+        rows = _audit(p)
+    assert rows["claude-fable-5.1"].status == "MISMATCH"
+    assert "0.025x" in rows["claude-fable-5.1"].detail[0]
+
+
+def test_long_context_tier_is_checked_not_silently_skipped():
+    rows = _mutated(
+        lambda p: p["models"]["gemini-2.5-pro-long-context"].update(output_usd_per_mtok=16.0)
+    )
+    assert rows["gemini-2.5-pro-long-context"].status == "MISMATCH"
+
+
+def test_a_one_percent_price_drift_is_caught():
+    rows = _mutated(lambda p: p["models"]["claude-opus-5"].update(input_usd_per_mtok=5.05))
+    assert rows["claude-opus-5"].status == "MISMATCH"
+
+
+def test_unmapped_entry_is_refused_not_skipped():
+    rows = _mutated(
+        lambda p: p["models"].update(
+            {"gemini-9.9-new": {"input_usd_per_mtok": 1.0, "output_usd_per_mtok": 2.0}}
+        )
+    )
+    assert rows["gemini-9.9-new"].status == "UNVERIFIED"
+    assert "no vendor mapping" in rows["gemini-9.9-new"].detail[0]
+
+
+def test_entry_missing_from_the_vendor_page_is_unverified():
+    rows = _mutated(
+        lambda p: p["models"].update(
+            {"gpt-9": {"input_usd_per_mtok": 1.0, "output_usd_per_mtok": 2.0}}
+        )
+    )
+    assert rows["gpt-9"].status == "UNVERIFIED"
+
+
+def test_vendor_with_no_published_cached_rate_leaves_the_multiplier_unverified():
+    with patch.dict(
+        "scripts.check_price_table_vs_vendor.GOOGLE_MODEL_SLUGS",
+        {"gemini-no-cache": "gemini-no-cache"},
+    ):
+        rows = _mutated(
+            lambda p: p["models"].update(
+                {"gemini-no-cache": {"input_usd_per_mtok": 1.0, "output_usd_per_mtok": 2.0}}
+            )
+        )
+    assert rows["gemini-no-cache"].status == "UNVERIFIED"
+    assert "cached rate" in rows["gemini-no-cache"].detail[0]
+
+
+def test_an_unfetched_vendor_page_makes_its_entries_unverified_not_ok():
+    an, op, g = _vendor()
+    rows = {r.key: r for r in audit(_PRICES, an, None, g)}
+    assert (
+        rows["gpt-5.6-terra"].status == "UNVERIFIED"
+        and "not fetched" in rows["gpt-5.6-terra"].detail[0]
+    )
+
+
+# --- main(): exit codes ----------------------------------------------------------------------
+
+
 def _fake_fetch(url):
     # Exact URL constants, not substring matching (CodeQL py/incomplete-url-substring-sanitization).
     return {
@@ -227,6 +356,18 @@ def test_main_returns_nonzero_when_all_vendor_fetches_fail():
         assert main() == 1
 
 
+def test_main_returns_zero_on_a_clean_table_and_prints_a_row_per_entry(capsys):
+    with (
+        patch("scripts.check_price_table_vs_vendor._fetch", side_effect=_fake_fetch),
+        patch("scripts.check_price_table_vs_vendor.load_gemini_prices", return_value=_PRICES),
+    ):
+        assert main() == 0
+    out = capsys.readouterr().out
+    for key in _PRICES["models"]:
+        assert key in out
+    assert "OK: 9 entries audited (2 SKIPPED, 7 VERIFIED)" in out
+
+
 def test_main_returns_nonzero_on_a_real_mismatch():
     prices = copy.deepcopy(_PRICES)
     prices["models"]["claude-opus-5"]["output_usd_per_mtok"] = 999.0
@@ -237,10 +378,11 @@ def test_main_returns_nonzero_on_a_real_mismatch():
         assert main() == 1
 
 
-def test_main_returns_zero_when_every_checked_entry_matches(capsys):
+def test_main_returns_nonzero_when_an_entry_cannot_be_verified():
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["gemini-9.9-new"] = {"input_usd_per_mtok": 1.0, "output_usd_per_mtok": 2.0}
     with (
         patch("scripts.check_price_table_vs_vendor._fetch", side_effect=_fake_fetch),
-        patch("scripts.check_price_table_vs_vendor.load_gemini_prices", return_value=_PRICES),
+        patch("scripts.check_price_table_vs_vendor.load_gemini_prices", return_value=prices),
     ):
-        assert main() == 0
-    assert "OK:" in capsys.readouterr().out
+        assert main() == 1
