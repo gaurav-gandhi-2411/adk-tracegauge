@@ -134,6 +134,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from ._compat import load_eval_case_ids_by_session_id, load_expected_case_sizes
+from ._plugin import DoubleRegistrationError
 from ._regression import (
     DEFAULT_CONFIDENCE,
     DEFAULT_MIN_EFFECT_PCT,
@@ -276,7 +277,16 @@ def _resolve_entrypoint(spec: str) -> UsageStore:
     if not callable(func):
         raise SystemExit(f"--entrypoint: {spec!r} is not callable")
 
-    result = func()
+    try:
+        result = func()
+    except RuntimeError as e:
+        # ADK's PluginManager re-wraps a plugin callback's exception as a plain RuntimeError
+        # chained from the original, so look at __cause__ too. Anything else is not ours: re-raise.
+        original = e if isinstance(e, DoubleRegistrationError) else e.__cause__
+        if not isinstance(original, DoubleRegistrationError):
+            raise
+        # Already an actionable, complete sentence -- surface it as one line, not a traceback.
+        raise SystemExit(f"--entrypoint {spec}: {original}") from e
     if isinstance(result, UsageStore):
         return result
     return DEFAULT_USAGE_STORE
