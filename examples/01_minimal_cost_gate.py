@@ -99,9 +99,10 @@ class _FixedCostLlm(BaseLlm):
         )
 
 
-# adk eval/AgentEvaluator build their own bare Runner and never fire an
-# App-wired plugin -- after_model_callback is the documented workaround
-# that survives it (see README).
+# On google-adk 2.6.x, adk eval/AgentEvaluator build their own bare Runner and
+# never fire an App-wired plugin; from 2.7 they apply an App's plugins when the
+# agent module exposes `app`. after_model_callback works on every version, so
+# this example uses it (see README).
 _usage_plugin = TraceGaugeUsagePlugin()
 
 root_agent = LlmAgent(
