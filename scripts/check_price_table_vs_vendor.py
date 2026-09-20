@@ -1,50 +1,45 @@
-"""scripts/check_price_table_vs_vendor.py — GG1: fetches each vendor's own
-published pricing page and compares it against every entry in this repo's
-own price table (src/adk_tracegauge/data/gemini_prices.json). Replaces the
-FF4.3 cross-repo comparison plan (never implemented) -- that plan compared
-two repos' tables against EACH OTHER, which stays green even if both drift
-into staleness together (the failure that actually occurred, see
-docs/audit/PHASE8_PLAN.md FF2.2). This checks against the one source that
-actually matters: the vendor's own current published rate.
+"""scripts/check_price_table_vs_vendor.py — fetches each vendor's own published pricing page and
+compares it against EVERY entry in this repo's price table
+(src/adk_tracegauge/data/gemini_prices.json), on every rate the table claims: input, output, the
+cached-read rate (via the table's single ``cache_multipliers.read``), long-context tiers, and
+promo windows. It compares against the one source that matters -- the vendor's current published
+rate -- not against a sibling repo's table (which stays green while both drift together, the
+failure documented in docs/audit/PHASE8_PLAN.md FF2.2).
 
-TWO DISTINCT FAILURE MODES, never conflated (GG1.3):
-1. FETCH/PARSE FAILURE -- the vendor page couldn't be reached, or its
-   structure has changed enough that this script's parser can't find the
-   expected table/rows. This means "we don't know if our price is right",
-   NOT "our price is right". Reported as `retryable_errors` and always
-   fails the run -- a page that moved or a scrape that breaks must fail
-   visibly, never silently pass as if nothing needed checking.
-2. MISMATCH -- the page was fetched and parsed successfully, and a rate we
-   found disagrees with our table. Reported as `mismatches`.
+REFUSES, does not skip. Every entry ends in exactly one status, and only VERIFIED and an explicit,
+reasoned SKIPPED (retired / synthetic) are non-failures:
 
-VENDOR FEASIBILITY (verified live this session, VERIFIED not assumed):
-- Anthropic: real, purpose-built markdown export at
-  https://platform.claude.com/docs/en/about-claude/pricing.md -- a clean
-  "| Model | Base Input Tokens | ... | Output Tokens |" table. Most robust
-  of the three.
-- OpenAI: real, purpose-built markdown export at
-  https://developers.openai.com/api/docs/pricing.md -- a clean
-  "| Model | Short context input | ... | Short context output | ... |"
-  table under a "Standard pricing data" heading. Model names already match
-  this repo's lowercase-hyphen keys directly (e.g. "gpt-5.1").
-- Google: NO markdown export (the .md URL just re-serves the same HTML
-  page) -- but the HTML itself has a clean, real (server-rendered, not
-  JS-only) `<table class="pricing-table">` per model section, each
-  preceded by `<h2 id="MODEL-SLUG">`. Parsed via a narrow, explicit
-  per-model slug map (GOOGLE_MODEL_SLUGS below) rather than an algorithmic
-  slug-guessing transform, since the slug format (e.g.
-  "gemini-2-5-flash-lite" for "gemini-2.5-flash-lite") isn't a simple
-  reversible rule and guessing it wrong would silently check the wrong
-  model.
+    VERIFIED    every rate the entry claims matches the vendor page
+    SKIPPED     retired (``"retired": true``) or the synthetic local-model entry -- stated in the row
+    MISMATCH    the page was parsed and a rate disagrees (input, output, cached, tier or promo)
+    UNVERIFIED  the entry could not be checked: not found on the vendor page, no vendor mapping,
+                or the vendor publishes no cached rate to check the multiplier against
 
-Only NON-deprecated/retired entries are checked -- an entry the vendor no
-longer lists on its live page (e.g. gemini-2.0-flash, shut down 2026-06-01,
-kept here only for pricing historical sessions -- see that entry's own
-note in the JSON) cannot be verified against a page that doesn't list it;
-see SKIP_ENTRIES.
+History (why this was rewritten, 2026-09-20): the previous version verified input and output for 18
+of 22 entries. It silently skipped both long-context Gemini tiers, never looked at cached rates
+(the table's 0.1x cache multiplier was only a dated manual note), and never checked promo windows.
+It also went red on 2026-08-31 with one real mismatch (gpt-5.6-sol) and stayed red for three weekly
+runs with nobody acting -- a correct check that reported instead of blocking. The release workflow
+now runs this script and refuses to publish while it fails.
 
-Zero-cost, no paid API calls -- plain HTTP GET via stdlib `urllib.request`
-only, no new dependency added for this.
+Two failure modes are never conflated: a FETCH/PARSE failure (vendor page moved or its structure
+changed -- "we do not know if our price is right", always fails) and a MISMATCH (page parsed, rate
+differs).
+
+Vendor pages (verified live 2026-09-20):
+- Anthropic: markdown export ``.../about-claude/pricing.md``; columns located by header text.
+- OpenAI: markdown export ``developers.openai.com/api/docs/pricing.md``; the "Standard pricing
+  data" table only (the page repeats every model under Batch/Flex/Fast; reading past the Standard
+  table silently checks the wrong tier -- a real bug this script's first version had).
+- Google: server-rendered HTML, ``<h2 id="MODEL">`` then a ``pricing-table``; parsed with
+  ``html.parser`` (not regex) so ``&lt;=`` and nested markup survive.
+
+NOT modelled by the table, therefore not verified (stated, not hidden; see README "Known
+limitations"): explicit-cache STORAGE fees (Gemini: $1.00-$4.50 per 1M tokens per hour -- not
+derivable from per-call usage), cache-WRITE surcharges (Anthropic 1.25x/2x, OpenAI cache writes),
+audio-input rates, OpenAI/Anthropic long-context tiers, Batch/Flex/Priority tiers.
+
+Zero-cost: plain HTTP GET via stdlib only.
 """
 
 from __future__ import annotations
@@ -465,7 +460,7 @@ def audit(
                     continue
                 rows.append(_compare(key, entry, model.long_context, cache_mult))
             else:
-                rows.append(_compare(key, entry, model.standard, cache_mult))
+                rows.append(_gemini_row(key, entry, model, cache_mult))
         elif key.startswith("gpt-"):
             if openai is None:
                 rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["OpenAI page not fetched"]))
@@ -489,6 +484,44 @@ def audit(
                 )
             )
     return rows
+
+
+def _gemini_row(
+    key: str, entry: dict[str, object], model: GoogleModel, cache_mult: float
+) -> AuditRow:
+    row = _compare(key, entry, model.standard, cache_mult)
+    promo_until = entry.get("promo_until")
+    std = entry.get("standard_rate")
+    if promo_until or std:
+        if model.promo_until is None or model.after_promo is None:
+            row.detail.append("entry carries a promo window but Google's page shows none")
+            row.status = "MISMATCH"
+        else:
+            if str(promo_until) != model.promo_until.isoformat():
+                row.detail.append(
+                    f"promo_until: ours {promo_until} vs vendor {model.promo_until.isoformat()}"
+                )
+                row.status = "MISMATCH"
+            std_dict = std if isinstance(std, dict) else {}
+            if not (
+                _same(float(std_dict.get("input_usd_per_mtok", -1)), model.after_promo.input)
+                and _same(float(std_dict.get("output_usd_per_mtok", -1)), model.after_promo.output)
+            ):
+                row.detail.append(
+                    f"standard_rate: ours {std_dict} vs vendor after promo "
+                    f"in ${model.after_promo.input:g} / out ${model.after_promo.output:g}"
+                )
+                row.status = "MISMATCH"
+    elif model.promo_until is not None:
+        row.detail.append(
+            f"Google lists a promo through {model.promo_until.isoformat()} the entry does not carry"
+        )
+        row.status = "MISMATCH"
+    if model.storage_usd_per_mtok_hour is not None and row.status == "VERIFIED":
+        row.detail.append(
+            f"explicit-cache storage ${model.storage_usd_per_mtok_hour:g}/Mtok/hour is NOT priced"
+        )
+    return row
 
 
 def _print_table(rows: list[AuditRow]) -> None:
