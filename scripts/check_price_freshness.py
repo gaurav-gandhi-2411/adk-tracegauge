@@ -36,6 +36,7 @@ now differs per model.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import date
 from pathlib import Path
@@ -50,12 +51,31 @@ from adk_tracegauge._pricing import (  # noqa: E402
     load_gemini_prices,
 )
 
+#: Maximum age, in days, of any price entry's ``fetched_on`` for the RELEASE gate and the test
+#: suite (the weekly workflow keeps the looser runtime STALE_THRESHOLD_DAYS=90 default).
+#: Chosen from measured vendor cadence, 2026-09-20: 20 verifiable entries were audited against the
+#: three vendors' live pages; between the 2026-08-14 fetch and today (37 days) exactly one entry
+#: changed (gpt-5.6-sol, $5/$30 -> $4/$20, first flagged 2026-08-24, i.e. within 10 days). That is
+#: ~1.4e-3 changes per entry-day, so a table left unverified for 30 days is expected to contain
+#: ~0.8 wrong entries (P(at least one) ~ 55%); at 90 days, ~2.4 (91%). One observed event is a thin
+#: basis for a rate, so this is a ceiling on how long the table may go without a passing vendor
+#: audit, not a claim that 30 days is safe -- the vendor audit (release-blocking) is what detects
+#: drift; this date only forces the audit to have been re-run. 30 = monthly, and tolerates three
+#: missed weekly runs (the actual failure lasted four).
+RELEASE_MAX_AGE_DAYS = 30
+
 
 def _check_staleness(
-    models: dict[str, dict[str, object]], today: date
+    models: dict[str, dict[str, object]],
+    today: date,
+    max_age_days: int = STALE_THRESHOLD_DAYS,
 ) -> list[tuple[str, str, int, str]]:
     stale: list[tuple[str, str, int, str]] = []
     for model_key, entry in models.items():
+        if model_key.startswith("__"):
+            # Synthetic entries (e.g. the zero-cost local-model entry) have no vendor page, so
+            # a fetch date on them cannot go stale in any meaningful sense.
+            continue
         if entry.get("retired"):
             # Retired entries are exempt by design: the vendor no longer
             # changes pricing for a model that can't be resolved/priced by
@@ -77,7 +97,7 @@ def _check_staleness(
             stale.append((model_key, fetched_on or "<missing>", -1, source_url))
             continue
         age_days = (today - fetched).days
-        if age_days > STALE_THRESHOLD_DAYS:
+        if age_days > max_age_days:
             stale.append((model_key, fetched_on, age_days, source_url))
     return stale
 
@@ -112,27 +132,37 @@ def _check_promo_expiry(
     return expiring_soon, already_expired
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Price table freshness gate.")
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=STALE_THRESHOLD_DAYS,
+        help=(
+            f"fail any entry fetched more than this many days ago (default "
+            f"{STALE_THRESHOLD_DAYS}; the release workflow passes {RELEASE_MAX_AGE_DAYS})"
+        ),
+    )
+    max_age_days = parser.parse_args(argv).max_age_days
     prices = load_gemini_prices()
     models: dict[str, dict[str, object]] = prices["models"]
     today = date.today()
 
-    stale = _check_staleness(models, today)
+    stale = _check_staleness(models, today, max_age_days)
     expiring_soon, already_expired = _check_promo_expiry(models, today)
 
     if not stale and not expiring_soon and not already_expired:
         checked = sum(1 for entry in models.values() if not entry.get("retired"))
         print(
             f"OK: all {checked} non-retired price entries fetched within "
-            f"{STALE_THRESHOLD_DAYS} days of {today.isoformat()}, and no "
+            f"{max_age_days} days of {today.isoformat()}, and no "
             f"promotional entry expires within {PROMO_EXPIRY_WARNING_DAYS} days."
         )
         return 0
 
     if stale:
         print(
-            f"STALE PRICE ENTRIES as of {today.isoformat()} "
-            f"(threshold {STALE_THRESHOLD_DAYS} days):",
+            f"STALE PRICE ENTRIES as of {today.isoformat()} (threshold {max_age_days} days):",
             file=sys.stderr,
         )
         for model_key, fetched_on, age_days, source_url in sorted(stale):
