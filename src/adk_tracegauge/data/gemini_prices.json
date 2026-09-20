@@ -139,11 +139,11 @@
       "note": "NEW 2026-08-14 (Phase 2 W3): previous-generation Claude Opus, still listed active (not deprecated/retired) and commonly pinned. Cache-hit rate $0.50/Mtok = exactly 0.1x base input."
     },
     "gpt-5.6-sol": {
-      "input_usd_per_mtok": 5.00,
-      "output_usd_per_mtok": 30.00,
+      "input_usd_per_mtok": 4.00,
+      "output_usd_per_mtok": 20.00,
       "source_url": "https://developers.openai.com/api/docs/pricing",
-      "fetched_on": "2026-08-14",
-      "note": "NEW 2026-08-14 (Phase 2 W3): current-generation OpenAI flagship ('frontier model for complex professional work' per the fetched models page), reached via ADK's LiteLlm integration (e.g. model_version 'openai/gpt-5.6-sol'). platform.openai.com/docs/pricing and openai.com/api/pricing/ both returned non-200 (404/403) at fetch time and were unreachable directly -- pricing verified instead via developers.openai.com/api/docs/pricing, which platform.openai.com/docs/pricing 301-redirects to; fetched twice independently and cross-checked against developers.openai.com/api/docs/models (which lists the same three figures for the Sol/Terra/Luna family), both agreeing. Cache-hit rate $0.50/Mtok = exactly 0.1x base input -- verified, not assumed (this ratio does NOT hold for OpenAI's older GPT-4/o-series models -- see cache_multipliers._note)."
+      "fetched_on": "2026-09-20",
+      "note": "PRICE CUT, updated 2026-09-20: the vendor page now lists $4.00 input / $0.40 cached input / $20.00 output per Mtok (standard, short-context); this entry was $5.00 / $30.00 as fetched 2026-08-14, i.e. it overstated cost by 25% on input and 50% on output until the weekly vendor check (scripts/check_price_table_vs_vendor.py, red since 2026-08-31) was acted on. Cache-hit $0.40 = exactly 0.1x base input, still consistent with the table's single cache multiplier. ORIGINAL 2026-08-14 note follows. NEW 2026-08-14 (Phase 2 W3): current-generation OpenAI flagship ('frontier model for complex professional work' per the fetched models page), reached via ADK's LiteLlm integration (e.g. model_version 'openai/gpt-5.6-sol'). platform.openai.com/docs/pricing and openai.com/api/pricing/ both returned non-200 (404/403) at fetch time and were unreachable directly -- pricing verified instead via developers.openai.com/api/docs/pricing, which platform.openai.com/docs/pricing 301-redirects to; fetched twice independently and cross-checked against developers.openai.com/api/docs/models (which lists the same three figures for the Sol/Terra/Luna family), both agreeing. Cache-hit rate $0.50/Mtok = exactly 0.1x base input -- verified, not assumed (this ratio does NOT hold for OpenAI's older GPT-4/o-series models -- see cache_multipliers._note)."
     },
     "gpt-5.6-terra": {
       "input_usd_per_mtok": 2.00,
