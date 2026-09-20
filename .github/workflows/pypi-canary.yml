@@ -28,21 +28,7 @@ jobs:
   canary:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve the version PyPI currently serves as latest
-        # The tests must be the ones that shipped WITH the published wheel. Running main's tests
-        # against an older wheel made this canary red whenever main had a tested-but-unreleased
-        # feature (it was red on every scheduled run 2026-08-17 .. 2026-09-14 for that reason plus
-        # a pythonpath bug), so red stopped meaning "google-adk broke us" and nobody read it.
-        # Red must mean exactly one thing. Also see release.yml: a red canary run now blocks releases.
-        id: pv
-        run: |
-          v=$(curl -fsS https://pypi.org/pypi/adk-tracegauge/json | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['version'])")
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "published adk-tracegauge: $v"
-
       - uses: actions/checkout@v7
-        with:
-          ref: v${{ steps.pv.outputs.version }}
 
       - name: Set up Python
         uses: actions/setup-python@v7
