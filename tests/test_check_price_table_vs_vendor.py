@@ -19,6 +19,9 @@ from unittest.mock import patch
 
 import pytest
 from scripts.check_price_table_vs_vendor import (
+    ANTHROPIC_MD_URL,
+    GOOGLE_HTML_URL,
+    OPENAI_MD_URL,
     FetchError,
     Rate,
     audit,
@@ -364,13 +367,12 @@ def test_explicit_cache_storage_is_reported_as_not_priced():
 
 
 def _fake_fetch(url):
-    return (
-        _ANTHROPIC_MD
-        if "claude.com" in url
-        else _OPENAI_MD
-        if "openai.com" in url
-        else _GOOGLE_HTML
-    )
+    # Exact URL constants, not substring matching (CodeQL py/incomplete-url-substring-sanitization).
+    return {
+        ANTHROPIC_MD_URL: _ANTHROPIC_MD,
+        OPENAI_MD_URL: _OPENAI_MD,
+        GOOGLE_HTML_URL: _GOOGLE_HTML,
+    }[url]
 
 
 def test_fetch_raises_fetch_error_not_a_silent_default():
