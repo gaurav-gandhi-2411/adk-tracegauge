@@ -23,8 +23,10 @@ from adk_tracegauge import TraceGaugeUsagePlugin
 
 runner = InMemoryRunner(agent=root_agent, app_name="my_app", plugins=[TraceGaugeUsagePlugin()])
 
+
 def run() -> None:
-    ...  # your usual `async for event in runner.run_async(...)` loop, e.g. via asyncio.run(...)
+    # your usual `async for event in runner.run_async(...)` loop, e.g. via asyncio.run(...)
+    ...
 ```
 
 ```bash
