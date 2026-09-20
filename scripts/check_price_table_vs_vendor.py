@@ -53,6 +53,9 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from datetime import date, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
@@ -109,6 +112,24 @@ class FetchError(Exception):
     module docstring's "TWO DISTINCT FAILURE MODES"."""
 
 
+@dataclass(frozen=True)
+class Rate:
+    """USD per million tokens as the vendor publishes them (``cached`` None if not published)."""
+
+    input: float
+    output: float
+    cached: float | None = None
+
+
+@dataclass(frozen=True)
+class GoogleModel:
+    standard: Rate
+    long_context: Rate | None = None  # the ``prompts > 200k tokens`` tier, if the page has one
+    promo_until: date | None = None  # standard rate is a promo through this date...
+    after_promo: Rate | None = None  # ...and this rate applies afterwards
+    storage_usd_per_mtok_hour: float | None = None  # explicit-cache storage; parsed, never priced
+
+
 def _fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
@@ -124,96 +145,201 @@ def _fetch(url: str) -> str:
         raise FetchError(f"{url}: timed out after {_TIMEOUT_SECONDS}s") from e
 
 
-def parse_anthropic_markdown(md: str) -> dict[str, tuple[float, float]]:
-    """{display_name: (input_usd_per_mtok, output_usd_per_mtok)} from the
-    '## Model pricing' table's 'Base Input Tokens'/'Output Tokens' columns.
-    Returns an empty dict (never raises) if the table header isn't found --
-    the caller (main()) treats that as a parse failure for every model
-    this vendor is expected to cover."""
-    # Columns: Model | Base Input Tokens | 5m Cache Writes | 1h Cache Writes
-    # | Cache Hits & Refreshes | Output Tokens -- Output is cells[5], NOT
-    # cells[4] (that's the cache-hit column) -- confirmed by live column
-    # count this session, not assumed from the header text alone.
-    result: dict[str, tuple[float, float]] = {}
+def _money(cell: str) -> float | None:
+    m = re.search(r"\$\s*([\d,]*\.?\d+)", cell)
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def _table_cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _find_col(header: list[str], *needles: str) -> int | None:
+    for i, cell in enumerate(header):
+        low = cell.lower()
+        if all(n in low for n in needles):
+            return i
+    return None
+
+
+def parse_anthropic_markdown(md: str) -> dict[str, Rate]:
+    """{display_name: Rate} from the '## Model pricing' table; columns are located by header text
+    ("Base input tokens", "Cache hits and refreshes", "Output tokens"), never by position.
+    Empty dict (never raises) if the table is not found."""
     idx = md.find("## Model pricing")
     if idx == -1:
-        return result
+        return {}
+    result: dict[str, Rate] = {}
+    cols: tuple[int, int | None, int] | None = None
     for line in md[idx:].splitlines():
         if line.startswith("#") and "Model pricing" not in line:
-            break  # next section -- stop, do not silently read past our table
+            break  # next section -- never read past our table
         if not line.strip().startswith("|"):
             continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 6:
+        cells = _table_cells(line)
+        if cols is None:
+            i_in = _find_col(cells, "base input")
+            i_out = _find_col(cells, "output")
+            if i_in is not None and i_out is not None:
+                cols = (i_in, _find_col(cells, "cache", "hit"), i_out)
             continue
-        raw_name = cells[0]
-        if raw_name.lower() == "model" or set(raw_name) <= {"-", " ", ":"}:
+        if set(cells[0]) <= {"-", " ", ":"} or len(cells) <= max(c for c in cols if c is not None):
             continue
-        # Strip a trailing markdown link, e.g. "Claude Opus 4.1 ([retired,
-        # ...](url))" -> "Claude Opus 4.1" -- only the display name matters.
-        display_name = re.sub(r"\s*\(\[.*", "", raw_name).strip()
-        input_match = re.search(r"\$([\d.]+)\s*/\s*MTok", cells[1])
-        output_match = re.search(r"\$([\d.]+)\s*/\s*MTok", cells[5])
-        if not input_match or not output_match:
+        name = re.sub(r"\s*\(\[.*", "", cells[0]).strip()
+        rate_in, rate_out = _money(cells[cols[0]]), _money(cells[cols[2]])
+        if rate_in is None or rate_out is None:
             continue
-        result[display_name] = (float(input_match.group(1)), float(output_match.group(1)))
+        cached = _money(cells[cols[1]]) if cols[1] is not None else None
+        result[name] = Rate(rate_in, rate_out, cached)
     return result
 
 
-def parse_openai_markdown(md: str) -> dict[str, tuple[float, float]]:
-    """{model_key: (input_usd_per_mtok, output_usd_per_mtok)} from the
-    'Standard pricing data' table's 'Short context input'/'Short context
-    output' columns -- model keys here already match this repo's own keys
-    directly, no name mapping needed."""
-    # This page has FOUR pricing tiers (Standard, Batch, Flex, Fast), each
-    # its own "### <Tier> pricing data" table, all sharing the same model
-    # names -- confirmed live this session (a real bug caught here: an
-    # earlier, unbounded version of this parser silently kept overwriting
-    # each model's entry with whichever tier's table it read LAST, since
-    # every tier reuses the same model names). Only the Standard tier
-    # matches this repo's own table (which never models tiered pricing);
-    # the scan MUST stop at the next "#"-heading, never read past it.
-    result: dict[str, tuple[float, float]] = {}
+def parse_openai_markdown(md: str) -> dict[str, Rate]:
+    """{model_key: Rate} from the 'Standard pricing data' table's SHORT-context columns only.
+    Empty dict (never raises) if the table is not found."""
     idx = md.find("Standard pricing data")
     if idx == -1:
-        return result
+        return {}
+    result: dict[str, Rate] = {}
+    cols: tuple[int, int | None, int] | None = None
     for line in md[idx:].splitlines():
         if line.startswith("#") and "Standard pricing data" not in line:
-            break
+            break  # Batch/Flex/Fast tables reuse the same model names -- never read them
         if not line.strip().startswith("|"):
             continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 5:
+        cells = _table_cells(line)
+        if cols is None:
+            i_in = _find_col(cells, "short context input")
+            i_out = _find_col(cells, "short context output")
+            if i_in is not None and i_out is not None:
+                cols = (i_in, _find_col(cells, "short context cached"), i_out)
             continue
-        model_key = cells[0]
-        if model_key.lower() == "model" or set(model_key) <= {"-", " ", ":"}:
+        if set(cells[0]) <= {"-", " ", ":"} or len(cells) <= max(c for c in cols if c is not None):
             continue
-        input_match = re.match(r"\$([\d.]+)", cells[1])
-        output_match = re.match(r"\$([\d.]+)", cells[4])
-        if not input_match or not output_match:
+        rate_in, rate_out = _money(cells[cols[0]]), _money(cells[cols[2]])
+        if rate_in is None or rate_out is None:
             continue
-        result[model_key] = (float(input_match.group(1)), float(output_match.group(1)))
+        cached = _money(cells[cols[1]]) if cols[1] is not None else None
+        result[cells[0]] = Rate(rate_in, rate_out, cached)
     return result
 
 
-def parse_google_html(html: str, slug: str) -> tuple[float, float] | None:
-    """Parses the Standard-tier pricing-table immediately following
-    `<h2 id="{slug}">` -- returns None (a parse failure, not a value) if
-    the slug isn't found or the expected row labels aren't present."""
-    marker = f'id="{slug}"'
-    idx = html.find(marker)
+class _GoogleTable(HTMLParser):
+    """Collects {row label: paid-tier cell text} from the first ``pricing-table`` after a marker."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: dict[str, str] = {}
+        self._in_table = False
+        self._done = False
+        self._cells: list[str] = []
+        self._buf: list[str] = []
+        self._in_cell = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._done:
+            return
+        if tag == "table" and ("class", "pricing-table") in attrs:
+            self._in_table = True
+        elif self._in_table and tag in ("td", "th"):
+            self._in_cell, self._buf = True, []
+        elif self._in_table and tag == "br" and self._in_cell:
+            self._buf.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._done or not self._in_table:
+            return
+        if tag in ("td", "th") and self._in_cell:
+            self._cells.append(re.sub(r"\s+", " ", "".join(self._buf)).strip())
+            self._in_cell = False
+        elif tag == "tr":
+            if len(self._cells) >= 3 and self._cells[0]:
+                self.rows.setdefault(self._cells[0], self._cells[-1])
+            self._cells = []
+        elif tag == "table":
+            self._done = True
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cell and not self._done:
+            self._buf.append(data)
+
+
+_PROMO_RE = re.compile(
+    r"\$([\d.]+) through ([A-Z][a-z]+ \d{1,2}, \d{4})\.?\s*\$([\d.]+) starting", re.S
+)
+_STORAGE_RE = re.compile(r"\$([\d.]+)\s*/\s*1,000,000 tokens per hour")
+
+
+def _parse_date(text: str) -> date | None:
+    try:
+        return datetime.strptime(text, "%B %d, %Y").date()
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class _Cell:
+    standard: float
+    long_context: float | None = None
+    after_promo: float | None = None
+    promo_until: date | None = None
+    storage: float | None = None
+
+
+def _parse_cell(text: str) -> _Cell | None:
+    storage_m = _STORAGE_RE.search(text)
+    storage = float(storage_m.group(1)) if storage_m else None
+    text = _STORAGE_RE.sub(" ", text)
+    promo = _PROMO_RE.search(text)
+    if promo:
+        return _Cell(
+            float(promo.group(1)),
+            after_promo=float(promo.group(3)),
+            promo_until=_parse_date(promo.group(2)),
+            storage=storage,
+        )
+    prices = [float(p) for p in re.findall(r"\$([\d.]+)", text)]
+    if not prices:
+        return None
+    # "$1.25, prompts <= 200k tokens $2.50, prompts > 200k tokens" -> standard then long tier.
+    if re.search(r"prompts\s*>\s*200k", text) and len(prices) >= 2:
+        return _Cell(prices[0], long_context=prices[1], storage=storage)
+    return _Cell(prices[0], storage=storage)  # first price is text/image/video; audio is ignored
+
+
+def parse_google_html(html: str, slug: str) -> GoogleModel | None:
+    """Parses the Standard-tier pricing table after ``<h2 id="{slug}">``. None (a parse failure,
+    not a value) if the slug or the Input/Output rows are missing."""
+    idx = html.find(f'id="{slug}"')
     if idx == -1:
         return None
-    section = html[idx : idx + 4000]
-    table_idx = section.find('<table class="pricing-table">')
-    if table_idx == -1:
+    parser = _GoogleTable()
+    parser.feed(html[idx : idx + 12000])
+    cells: dict[str, _Cell] = {}
+    for label, text in parser.rows.items():
+        for want in ("Input price", "Output price", "Context caching price"):
+            if label.startswith(want):
+                cell = _parse_cell(text)
+                if cell is not None:
+                    cells[want] = cell
+    if "Input price" not in cells or "Output price" not in cells:
         return None
-    table = section[table_idx : table_idx + 2500]
-    input_match = re.search(r"Input price[^<]*</td>\s*<td>[^<]*</td>\s*<td>\$([\d.]+)", table)
-    output_match = re.search(r"Output price[^<]*</td>\s*<td>[^<]*</td>\s*<td>\$([\d.]+)", table)
-    if not input_match or not output_match:
-        return None
-    return float(input_match.group(1)), float(output_match.group(1))
+    i, o, c = cells["Input price"], cells["Output price"], cells.get("Context caching price")
+    return GoogleModel(
+        standard=Rate(i.standard, o.standard, c.standard if c else None),
+        long_context=(
+            Rate(i.long_context, o.long_context, c.long_context if c else None)
+            if i.long_context is not None and o.long_context is not None
+            else None
+        ),
+        promo_until=i.promo_until,
+        after_promo=(
+            Rate(i.after_promo, o.after_promo, c.after_promo if c else None)
+            if i.after_promo is not None and o.after_promo is not None
+            else None
+        ),
+        storage_usd_per_mtok_hour=c.storage if c else None,
+    )
 
 
 def main() -> int:
@@ -266,25 +392,32 @@ def main() -> int:
                 unmapped.append(f"{model_key}: '{display_name}' not found on Anthropic's page")
                 continue
             verified += 1
-            if (float(our_input), float(our_output)) != fetched:
-                mismatches.append((model_key, float(our_input), float(our_output), *fetched))
+            if (float(our_input), float(our_output)) != (fetched.input, fetched.output):
+                mismatches.append(
+                    (model_key, float(our_input), float(our_output), fetched.input, fetched.output)
+                )
         elif model_key in GOOGLE_MODEL_SLUGS:
             if google_html is None:
                 continue
-            fetched = parse_google_html(google_html, GOOGLE_MODEL_SLUGS[model_key])
-            if fetched is None:
+            google = parse_google_html(google_html, GOOGLE_MODEL_SLUGS[model_key])
+            if google is None:
                 unmapped.append(
                     f"{model_key}: slug '{GOOGLE_MODEL_SLUGS[model_key]}' not found/parseable on Google's page"
                 )
                 continue
             verified += 1
-            if (float(our_input), float(our_output)) != fetched:
-                mismatches.append((model_key, float(our_input), float(our_output), *fetched))
+            fetched = google.standard
+            if (float(our_input), float(our_output)) != (fetched.input, fetched.output):
+                mismatches.append(
+                    (model_key, float(our_input), float(our_output), fetched.input, fetched.output)
+                )
         elif openai_table is not None and model_key in openai_table:
             fetched = openai_table[model_key]
             verified += 1
-            if (float(our_input), float(our_output)) != fetched:
-                mismatches.append((model_key, float(our_input), float(our_output), *fetched))
+            if (float(our_input), float(our_output)) != (fetched.input, fetched.output):
+                mismatches.append(
+                    (model_key, float(our_input), float(our_output), fetched.input, fetched.output)
+                )
         elif model_key.startswith("gpt-"):
             if openai_table is None:
                 continue
