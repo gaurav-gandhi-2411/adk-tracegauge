@@ -5,7 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adk-tracegauge"
 dynamic = ["version"]
-description = "Per-invocation cost-in-USD evaluator for custom Google ADK eval harnesses. Not a drop-in adk eval/AgentEvaluator metric -- see README. Raw dollars and tokens, no calibrated bands, no fabricated numbers for unknown models."
+# PyPI shows this as the page subtitle and in search results, so it says what a searcher wants
+# ("what does my Google ADK agent cost") and the honesty rule, not what the package is NOT. The
+# caveats it used to lead with (not a drop-in adk eval metric; raw dollars, no calibrated bands)
+# live in the README's "Also: a real PASS/FAIL cost metric inside adk eval" section.
+description = "See what your Google ADK agent costs: per-invocation token cost in USD, plus a CI cost-regression gate. A model it cannot price is reported as unknown, never guessed."
 authors = [{ name = "Gaurav Gandhi", email = "gaurav.gandhi2411@gmail.com" }]
 requires-python = ">=3.10"
 readme = "README.md"
@@ -20,12 +24,35 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Utilities",
     "Intended Audience :: Developers",
     "Environment :: Console",
+    "Natural Language :: English",
     "Operating System :: OS Independent",
 ]
-keywords = ["adk", "agent-development-kit", "google-adk", "evaluation", "cost", "token-efficiency"]
+# Terms someone would actually type to find this: the framework (adk / google-adk), the thing
+# measured (llm cost, token usage/cost), the verb (tracking, monitoring), the models it prices
+# (gemini, litellm-routed Claude/GPT), and the CI use (regression testing, evals).
+keywords = [
+    "adk",
+    "google-adk",
+    "agent-development-kit",
+    "llm-cost",
+    "token-cost",
+    "token-usage",
+    "cost-tracking",
+    "cost-monitoring",
+    "gemini",
+    "litellm",
+    "evaluation",
+    "evals",
+    "regression-testing",
+    "llmops",
+    "finops",
+    "token-efficiency",
+]
 dependencies = [
     # [eval] is required, not optional: google-adk's own
     # metric_evaluator_registry.py unconditionally imports every built-in
@@ -63,6 +90,10 @@ dev = [
 ]
 
 [project.urls]
+Homepage = "https://github.com/gaurav-gandhi-2411/adk-tracegauge"
+Documentation = "https://github.com/gaurav-gandhi-2411/adk-tracegauge#readme"
+Changelog = "https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/CHANGELOG.md"
+Issues = "https://github.com/gaurav-gandhi-2411/adk-tracegauge/issues"
 Repository = "https://github.com/gaurav-gandhi-2411/adk-tracegauge"
 
 [project.scripts]
