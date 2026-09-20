@@ -1,9 +1,16 @@
 """adk_tracegauge/_cli.py — `adk-tracegauge` console entry point.
 
-Two subcommands:
+Subcommands:
 
+    adk-tracegauge report <snapshot.json> | --entrypoint <module:callable> [--json]
     adk-tracegauge snapshot --entrypoint <module:callable> --output <path>
     adk-tracegauge check --baseline <path> --current <path> [options]
+    adk-tracegauge quickstart
+
+``report`` prints what a run cost (per-invocation USD/tokens/model plus a total); it answers
+"how do I see what my ADK agent costs" (google/adk-python Discussion #97). Exit 0 with data, 3
+when nothing was captured. An invocation that cannot be priced is shown as unknown -- never
+omitted, never guessed -- and the total says it excludes it.
 
 **Why `snapshot` takes an `--entrypoint`, not a bare `--store` path.** A
 ``UsageStore`` only exists as live in-process state, built up by
@@ -137,10 +144,12 @@ from ._regression import (
     evaluate_regression,
     evaluate_regression_paired,
 )
+from ._report import EMPTY_MESSAGE, render_text, to_json_dict
 from ._store import DEFAULT_USAGE_STORE, UsageStore
 from .snapshot import (
     PairingKey,
     Snapshot,
+    build_snapshot,
     evaluate_completeness,
     read_snapshot,
     resolve_pairing,
@@ -516,6 +525,40 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
+def _cmd_report(args: argparse.Namespace) -> int:
+    """`adk-tracegauge report`: the per-invocation cost table -- from a snapshot file, or (with
+    --entrypoint) straight from a live run with no file in between. Exit 0 with data, 3
+    (``EXIT_INSUFFICIENT_DATA``, same "could not tell" meaning as `check`) when nothing was
+    captured, so a setup mistake is not a silent empty success."""
+    if (args.snapshot is None) == (args.entrypoint is None):
+        raise SystemExit(
+            "report: give exactly one of a SNAPSHOT file (written by `adk-tracegauge snapshot`) "
+            "or --entrypoint MODULE:CALLABLE (runs your agent now and reports its cost)"
+        )
+    if args.entrypoint is not None:
+        snapshot = build_snapshot(_resolve_entrypoint(args.entrypoint))
+        source = f"live run of {args.entrypoint}"
+    else:
+        snapshot = _load_input_or_exit(
+            "snapshot file",
+            args.snapshot,
+            read_snapshot,
+            missing_hint=" -- create it with `adk-tracegauge snapshot --entrypoint "
+            "MODULE:CALLABLE --output FILE`, or skip the file: `adk-tracegauge report "
+            "--entrypoint MODULE:CALLABLE`",
+        )
+        source = str(args.snapshot)
+
+    empty = not snapshot.records and not snapshot.skipped
+    if args.json_output:
+        print(json.dumps(to_json_dict(snapshot, source), indent=2))
+    elif empty:
+        print(EMPTY_MESSAGE.format(source=source))
+    else:
+        print(render_text(snapshot, source))
+    return EXIT_INSUFFICIENT_DATA if empty else EXIT_PASS
+
+
 def _cmd_quickstart(args: argparse.Namespace) -> int:
     from adk_tracegauge._quickstart import run_quickstart
 
@@ -692,6 +735,41 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_check.set_defaults(func=_cmd_check)
+
+    p_report = subparsers.add_parser(
+        "report",
+        help=(
+            "Print what an ADK agent's run cost: per-invocation USD, tokens and model, plus a "
+            "total -- from a snapshot file, or live via --entrypoint. Unpriceable invocations "
+            "are shown as unknown, never omitted or guessed."
+        ),
+    )
+    p_report.add_argument(
+        "snapshot",
+        nargs="?",
+        type=Path,
+        default=None,
+        help="A snapshot JSON written by `adk-tracegauge snapshot` (omit when using --entrypoint).",
+    )
+    p_report.add_argument(
+        "--entrypoint",
+        default=None,
+        help=(
+            "'module.path:callable_name' -- a zero-arg callable that runs your agent with "
+            "TraceGaugeUsagePlugin wired in (the same callable `snapshot` takes); its captured "
+            "usage is priced and reported directly, no snapshot file needed."
+        ),
+    )
+    p_report.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help=(
+            "Machine-readable output (total_is_complete is false whenever any invocation is "
+            "unknown)."
+        ),
+    )
+    p_report.set_defaults(func=_cmd_report)
 
     subparsers.add_parser(
         "quickstart",
