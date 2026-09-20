@@ -7,6 +7,40 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.8.1] — 2026-09-20
+
+### Fixed
+
+- **`gpt-5.6-sol` was priced 25% over on input and 50% over on output in 0.7.0 and 0.8.0.** The
+  table said $5.00 / $30.00 per Mtok; OpenAI's page now lists **$4.00 / $20.00** (cached input
+  $0.40, still exactly 0.1×). The vendor price check first flagged it on 2026-08-24 (last green
+  2026-08-21, so the cut landed 7–10 days after our 2026-08-14 fetch) and stayed red for four
+  consecutive scheduled runs with nobody acting; it shipped in two releases. **If you priced
+  `gpt-5.6-sol` with 0.7.0 or 0.8.0, your figures were too high by those percentages.** No other
+  entry differed. (#67)
+- **Docs claimed `adk eval` ignores `plugins=`.** True on google-adk 2.6.x, false from 2.7.0 (commit
+  `73ecb5b5`): `adk eval`/`AgentEvaluator` apply an `App`'s plugins when the agent module exposes
+  `app`. Verified with the real `adk eval` CLI on 2.9.2, 2.7.0 (plugin captured the call) and 2.6.3
+  (it did not); `after_model_callback=` works on all three. README and docstrings corrected. (#68)
+
+### Changed
+
+- **The whole price table was re-verified against all three vendors' live pages on 2026-09-20**: 20
+  of 22 entries on input, output, cached-read ratio (every one is 0.1× its input rate on the
+  vendor's page, to within a 0.005 tolerance), the two Gemini `> 200k` tiers, and the `gemini-3.6/3.7-flash` promo windows; the
+  other 2 are the retired `gemini-2.0-flash` and the synthetic local-model entry. `fetched_on` is
+  advanced for those 20. (#70)
+- **README "Known limitations" now states what is not priced:** explicit-cache **storage** (Gemini
+  bills it per token per hour, $0.50–$4.50 per 1M tokens per hour; it cannot be derived from
+  per-call usage), cache-**write** surcharges, and non-standard tiers (OpenAI/Anthropic long
+  context, Batch/Flex/Priority). A workload that creates explicit caches costs more than this tool
+  reports. (#69)
+
+### Tests
+
+- A freshness test fails the suite when any price entry's `fetched_on` is more than 30 days old, so
+  a table nobody re-verified blocks CI instead of turning one weekly job red. (#70)
+
 ## [0.8.0] — 2026-09-20
 
 ### Added
