@@ -91,7 +91,8 @@ the ADK ``session.id`` the invocation ran under, captured by
 2. Independently of (1): the ORIGINAL capture mechanism
    (``before_run_callback``) never fires at all during `adk eval`/
    ``AgentEvaluator.evaluate()`` -- both build their own bare ``Runner``
-   with no ``App``/Plugin wiring (see ``_plugin.py``'s module docstring).
+   with no ``App``/Plugin wiring (measured on google-adk 2.6.x; from 2.7
+   an App's plugins are applied -- see ``_plugin.py``'s module docstring).
    So even a hand-authored, stable ``session_input.session_id`` was never
    actually being captured through the CLI path, regardless of (1). This is
    now fixed (session_id is also captured from ``after_model_callback``,
