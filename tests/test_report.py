@@ -269,3 +269,53 @@ def test_report_subcommand_is_registered_in_the_parser():
     args = build_parser().parse_args(["report", "snap.json", "--json"])
 
     assert args.command == "report" and args.json_output is True
+
+
+# --- prices the vendor check cannot verify ------------------------------------------------------
+
+
+def test_report_flags_a_retired_model_as_not_verifiable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    # gemini-2.0-flash: $0.10/M in, $0.40/M out (retired 2026-06-01, no longer on Google's page).
+    snap = _snapshot(tmp_path / "snap.json", [_call(model="gemini-2.0-flash")])
+
+    assert main(["report", str(snap)]) == EXIT_PASS
+
+    out = capsys.readouterr().out
+    assert "NOT verifiable against a live vendor page" in out
+    assert "gemini-2.0-flash: retired 2026-06-01" in out
+
+
+def test_report_flags_an_asserted_local_model_as_not_vendor_priced(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("ADK_TRACEGAUGE_ASSUME_LOCAL", "1")
+    snap = _snapshot(tmp_path / "snap.json", [_call(model="ollama_chat/llama3")])
+
+    assert main(["report", str(snap)]) == EXIT_PASS
+
+    out = capsys.readouterr().out
+    assert "__local_zero_cost__: priced $0.00 because ADK_TRACEGAUGE_ASSUME_LOCAL" in out
+
+
+def test_report_says_nothing_extra_for_a_vendor_verified_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    snap = _snapshot(tmp_path / "snap.json", _TWO_CALLS)
+
+    assert main(["report", str(snap), "--json"]) == EXIT_PASS
+    assert json.loads(capsys.readouterr().out)["unverifiable_pricing"] == []
+
+    assert main(["report", str(snap)]) == EXIT_PASS
+    assert "NOT verifiable" not in capsys.readouterr().out
+
+
+def test_report_json_lists_unverifiable_pricing(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    snap = _snapshot(tmp_path / "snap.json", [_call(model="gemini-2.0-flash")])
+
+    assert main(["report", str(snap), "--json"]) == EXIT_PASS
+
+    (entry,) = json.loads(capsys.readouterr().out)["unverifiable_pricing"]
+    assert entry["model"] == "gemini-2.0-flash"
+    assert entry["reason"].startswith("retired 2026-06-01")
