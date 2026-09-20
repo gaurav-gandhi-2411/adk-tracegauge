@@ -5,7 +5,7 @@ See what your [Google ADK](https://github.com/google/adk-python) agent costs —
 [![PyPI](https://img.shields.io/pypi/v/adk-tracegauge.svg)](https://pypi.org/project/adk-tracegauge/)
 [![CI](https://github.com/gaurav-gandhi-2411/adk-tracegauge/actions/workflows/ci.yml/badge.svg)](https://github.com/gaurav-gandhi-2411/adk-tracegauge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/pypi/pyversions/adk-tracegauge.svg)](https://pypi.org/project/adk-tracegauge/)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/LICENSE)
 
 ---
 
@@ -44,7 +44,7 @@ adk-tracegauge report: 2 invocation(s) (2 priced, 0 unknown) -- live run of my_r
   tokens (priced invocations): 24,000 in / 1,600 out
 ```
 
-Real output from a deterministic fake model (no API key), hand-checked: 12,000 × $0.30/M + 800 × $2.50/M = $0.0056 per call at `gemini-2.5-flash` rates. A model the price table doesn't know is shown as `UNKNOWN` — never omitted, never guessed — and the total says it excludes it. Already have a snapshot file from CI? `adk-tracegauge report snapshot.json`; add `--json` for machines. **Register the plugin exactly once** — `plugins=[...]` *or* `after_model_callback=`, not both: both would count every call twice, so the plugin refuses with an error instead. `adk eval` doesn't honor `plugins=`; use the `after_model_callback` form in ["Also: a real PASS/FAIL cost metric inside `adk eval`"](#also-a-real-passfail-cost-metric-inside-adk-eval). Prices change without notice — see [Pricing](#pricing-gemini-claude-gpt-and-local-models) before trusting a number for a budget. Once you can see the cost, [gate it in CI](#quickstart-the-ci-cost-regression-gate).
+Real output from a deterministic fake model (no API key), hand-checked: 12,000 × $0.30/M + 800 × $2.50/M = $0.0056 per call at `gemini-2.5-flash` rates. A model the price table doesn't know is shown as `UNKNOWN` — never omitted, never guessed — and the total says it excludes it. Already have a snapshot file from CI? `adk-tracegauge report snapshot.json`; add `--json` for machines. **Register the plugin exactly once** — `plugins=[...]` *or* `after_model_callback=`, not both: both would count every call twice, so the plugin refuses with an error instead. `adk eval` doesn't honor `plugins=`; use the `after_model_callback` form in ["Also: a real PASS/FAIL cost metric inside `adk eval`"](https://github.com/gaurav-gandhi-2411/adk-tracegauge#also-a-real-passfail-cost-metric-inside-adk-eval). Prices change without notice — see [Pricing](https://github.com/gaurav-gandhi-2411/adk-tracegauge#pricing-gemini-claude-gpt-and-local-models) before trusting a number for a budget. Once you can see the cost, [gate it in CI](https://github.com/gaurav-gandhi-2411/adk-tracegauge#quickstart-the-ci-cost-regression-gate).
 
 ## Also: a real PASS/FAIL cost metric inside `adk eval`
 
@@ -209,7 +209,7 @@ pip install adk-tracegauge
 adk-tracegauge quickstart
 ```
 
-Two commands, no files to create. This runs a deterministic, in-memory demo agent (bundled with the package — nothing is read from your machine) through a real `InMemoryRunner`, twice, with a deliberate cost regression injected into the second run, then fires the real `adk-tracegauge check` gate against it. **Measured, not estimated — and slower than an earlier version of this README claimed (78.2s, which could not be reproduced): median 438.5s (7.3 min) from an empty virtualenv to the printed regression verdict** (3 runs: 468.7s, 438.5s, 372.0s; Windows 11, Ryzen 7 6800H, Python 3.13.5, cold pip cache, home network, `google-adk==2.7.1`). **About 88% of that is pip installing `google-adk[eval]`'s 108-package dependency tree (329.4s of a 373.5s run); this package's own install is 5.5s and the demo itself ~30s.** Expect the same shape on your machine — roughly seven minutes on a cold cache, a fraction of that with a warm one (UNVERIFIED: not measured). Same exact output every run — see `examples/` for the full script this reuses. Raw logs and harness: [`reports/quickstart_wall_clock_2026-09-20/`](reports/quickstart_wall_clock_2026-09-20/SUMMARY.md).
+Two commands, no files to create. This runs a deterministic, in-memory demo agent (bundled with the package — nothing is read from your machine) through a real `InMemoryRunner`, twice, with a deliberate cost regression injected into the second run, then fires the real `adk-tracegauge check` gate against it. **Measured, not estimated — and slower than an earlier version of this README claimed (78.2s, which could not be reproduced): median 438.5s (7.3 min) from an empty virtualenv to the printed regression verdict** (3 runs: 468.7s, 438.5s, 372.0s; Windows 11, Ryzen 7 6800H, Python 3.13.5, cold pip cache, home network, `google-adk==2.7.1`). **About 88% of that is pip installing `google-adk[eval]`'s 108-package dependency tree (329.4s of a 373.5s run); this package's own install is 5.5s and the demo itself ~30s.** Expect the same shape on your machine — roughly seven minutes on a cold cache, a fraction of that with a warm one (UNVERIFIED: not measured). Same exact output every run — see `examples/` for the full script this reuses. Raw logs and harness: [`reports/quickstart_wall_clock_2026-09-20/`](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/reports/quickstart_wall_clock_2026-09-20/SUMMARY.md).
 
 ## Quickstart: the CI cost-regression gate
 
@@ -246,7 +246,7 @@ $ echo $?
 
 **Every `adk-tracegauge check` run prints its own "achieved power" figure (Phase 4 R4)** — the minimum effect size the bootstrap test could reliably (80% power) detect given THIS run's actual observed variance and `n`, plus (as shown above) an explicit `WARNING` whenever your configured `--min-effect-usd`/`--min-effect-pct` floor is smaller than that achievable floor — i.e. the gate is telling you, with real numbers from your own run, that it cannot reliably catch a regression as small as what you configured it to care about. See "Known limitations" below.
 
-**Measured this session, not estimated:** the 3 `adk-tracegauge`-specific command lines above took **35.3s wall-clock combined** (11.75s + 11.85s + 11.75s, each dominated by cold `google-adk` import overhead, not by the actual comparison — the bootstrap itself runs in well under a second). A full copy-pasteable GitHub Actions workflow lives at [`docs/ci-snippet.md`](docs/ci-snippet.md).
+**Measured this session, not estimated:** the 3 `adk-tracegauge`-specific command lines above took **35.3s wall-clock combined** (11.75s + 11.85s + 11.75s, each dominated by cold `google-adk` import overhead, not by the actual comparison — the bootstrap itself runs in well under a second). A full copy-pasteable GitHub Actions workflow lives at [`docs/ci-snippet.md`](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/docs/ci-snippet.md).
 
 **Why the CI gate is `adk-tracegauge check`, not the `adk eval` metric above:** `adk eval`'s own process exit code does not reflect PASSED/FAILED (verified live — see "Also: a real PASS/FAIL cost metric inside `adk eval`" above), so it cannot gate a CI job on its own; and `AgentEvaluator.evaluate()`, ADK's pytest-style harness, has a real, source-confirmed polarity bug that can invert pass/fail for a lower-is-better metric like cost (see "Known limitations"). `adk-tracegauge check` is this package's own code, with its own real exit codes, proven to work standalone — that's the actual, statistically-measured differentiator (see "Known limitations" for the honest caveats on detection power at small `n`, and how `--mode paired` fixes them).
 
@@ -552,11 +552,11 @@ other 4, for two distinct reasons — not rounded up to "most of the shape":
 
 ## Examples
 
-Three runnable, independently-verified scripts under [`examples/`](examples/) — all three re-run fresh this session, byte-identical to their documented output (deterministic seeds throughout):
+Three runnable, independently-verified scripts under [`examples/`](https://github.com/gaurav-gandhi-2411/adk-tracegauge/tree/main/examples/) — all three re-run fresh this session, byte-identical to their documented output (deterministic seeds throughout):
 
-1. [`03_ci_regression_gate.py`](examples/03_ci_regression_gate.py) — the CI gate above, end to end (`adk-tracegauge snapshot` + `adk-tracegauge check` as real subprocesses). 53.4s (includes 3 separate cold `google-adk` import subprocesses via the demo wrapper itself, not just the 3 CLI calls timed standalone above).
-2. [`01_minimal_cost_gate.py`](examples/01_minimal_cost_gate.py) — the `adk eval` metric quickstart above, as a standalone script. 31.4s.
-3. [`02_subagent_rollup.py`](examples/02_subagent_rollup.py) — a real two-agent `AgentTool` delegation, showing the parent+child dollar rollup (`$0.565` combined, verified against the price table by hand). 14.0s.
+1. [`03_ci_regression_gate.py`](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/examples/03_ci_regression_gate.py) — the CI gate above, end to end (`adk-tracegauge snapshot` + `adk-tracegauge check` as real subprocesses). 53.4s (includes 3 separate cold `google-adk` import subprocesses via the demo wrapper itself, not just the 3 CLI calls timed standalone above).
+2. [`01_minimal_cost_gate.py`](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/examples/01_minimal_cost_gate.py) — the `adk eval` metric quickstart above, as a standalone script. 31.4s.
+3. [`02_subagent_rollup.py`](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/examples/02_subagent_rollup.py) — a real two-agent `AgentTool` delegation, showing the parent+child dollar rollup (`$0.565` combined, verified against the price table by hand). 14.0s.
 
 Each has a header comment stating exactly how to run it and what output to expect.
 
@@ -572,7 +572,7 @@ A scheduled CI job (`.github/workflows/pypi-canary.yml`) installs the *latest* `
 
 ## Troubleshooting
 
-Real, live-triggered errors and their fixes — see [`docs/troubleshooting.md`](docs/troubleshooting.md) for the full text and context:
+Real, live-triggered errors and their fixes — see [`docs/troubleshooting.md`](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/docs/troubleshooting.md) for the full text and context:
 
 - **Wrong `google-adk` version installed** (outside the `>=2.6.0,<2.10.0` pin) → a loud `ModuleNotFoundError`/`RuntimeError` at import time, not a silent wrong answer.
 - **Unknown/unresolvable model** → `score=None` plus an actionable warning naming every model this package can price.
@@ -649,4 +649,4 @@ Not a general ADK observability/tracing tool — it has no span export, no trace
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](https://github.com/gaurav-gandhi-2411/adk-tracegauge/blob/main/LICENSE).
