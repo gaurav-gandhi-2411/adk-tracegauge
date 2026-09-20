@@ -9,6 +9,16 @@ which ADK's own docstring names as "the ideal place to ... collect metrics
 on token usage." This plugin does exactly that, keyed by invocation_id so
 CostEfficiencyEvaluator can look it back up.
 
+**Update 2026-09-20 (the paragraphs below describe google-adk 2.6.x, where they
+were measured):** from google-adk 2.7.0 (commit 73ecb5b5, "wire App plugins
+through eval paths") ``adk eval``/``AgentEvaluator`` build the eval Runner from
+a copy of the App with its ``plugins`` merged in, whenever the agent module
+exposes ``app``. Verified with the real ``adk eval`` CLI: an
+``App(plugins=[plugin])`` captured the call on 2.7.0 and 2.9.2 and captured
+nothing on 2.6.3; ``after_model_callback=`` captured it on all three. A bare
+``root_agent`` (no ``app``) still gets no plugins on any version. Whether
+before_run_callback/after_run_callback also fire on that path was NOT tested.
+
 Using this class's before_run_callback/after_run_callback (needed for
 sub-agent rollup) requires the agent to run through an App wrapper you
 build and drive yourself (see README, "Sub-agent delegation") -- a bare
@@ -100,8 +110,11 @@ class TraceGaugeUsagePlugin(BasePlugin):
     """Captures token usage per invocation for CostEfficiencyEvaluator.
 
     Add to your own hand-rolled App: ``App(name=..., root_agent=root_agent,
-    plugins=[TraceGaugeUsagePlugin()])``. Not honored by AgentEvaluator/adk
-    eval -- see README.
+    plugins=[TraceGaugeUsagePlugin()])``. ``adk eval``/AgentEvaluator apply an
+    App's plugins from google-adk 2.7 when the agent module exposes ``app``
+    (verified 2026-09-20 on 2.7.0 and 2.9.2; not applied on 2.6.3);
+    ``after_model_callback=plugin.after_model_callback`` works on every
+    version -- see README. Register it exactly once, not both ways.
     """
 
     def __init__(self, store: UsageStore | None = None, name: str = "trace_gauge_usage") -> None:
