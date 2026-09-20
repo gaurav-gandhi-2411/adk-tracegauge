@@ -1,16 +1,130 @@
 name: Release
 
+# Tag-triggered publish to PyPI (Trusted Publishing / OIDC). Since 2026-09-20 the publish job
+# REFUSES to run unless three preflight jobs pass. Why: the project's central claim is a dated,
+# sourced price table and correct numbers, and two monitors that guarded it were both correct and
+# both ignored -- the weekly vendor price check went red on 2026-08-24 (a real gpt-5.6-sol price
+# cut) and stayed red for four scheduled runs; pypi-canary sat red for about a month. A check that
+# reports produces no behaviour change; a check that blocks does. So:
+#
+#   preflight-prices        every price entry vs every vendor's live page (MISMATCH, UNVERIFIED or a
+#                           fetch failure all fail), and no entry older than 30 days
+#   preflight-latest-adk    the code being released, built as a wheel and installed non-editable,
+#                           against the LATEST google-adk[eval] (the canary's question, asked of
+#                           this release rather than of the previous one)
+#   gate-canary             the most recent completed pypi-canary run must be green
+#
+# `workflow_dispatch` runs the same preflights against a chosen ref and NEVER publishes (the
+# publish job is `if: github.event_name == 'push'`) -- that is how the block is tested: dispatch
+# or tag a ref with a deliberately stale price entry and confirm publish is skipped.
+#
+# To clear a red preflight: fix the cause (run scripts/check_price_table_vs_vendor.py, update the
+# table or fetched_on; or fix the google-adk incompatibility), then re-tag/re-run. There is no
+# override input, deliberately.
+
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  preflight-prices:
+    name: Refuse to release with an unverified or stale price table
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.11
+
+      - name: Every price entry vs every vendor's live page (refuses on MISMATCH, UNVERIFIED or fetch failure)
+        run: uv run python scripts/check_price_table_vs_vendor.py
+
+      - name: No price entry older than 30 days
+        run: uv run python scripts/check_price_freshness.py --max-age-days 30
+
+  preflight-latest-adk:
+    name: Refuse to release code that breaks on the latest google-adk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Build the wheel this release would publish
+        run: uv build --wheel
+
+      - name: Install that wheel (non-editable) beside the LATEST google-adk[eval]
+        # Same shape as pypi-canary.yml, but for the code being released, not the previous
+        # release: a real wheel install, then `--upgrade` so google-adk[eval] resolves to the newest
+        # release past this repo's own pin.
+        run: |
+          uv venv "$RUNNER_TEMP/canary" --python 3.11
+          uv pip install --python "$RUNNER_TEMP/canary/bin/python" dist/*.whl
+          uv pip install --python "$RUNNER_TEMP/canary/bin/python" --upgrade "google-adk[eval]"
+          uv pip install --python "$RUNNER_TEMP/canary/bin/python" "pytest>=9.0.3,<10" "pytest-asyncio>=1,<2" pytest-mock
+
+      - name: Report versions
+        run: |
+          "$RUNNER_TEMP/canary/bin/python" -c "import importlib.metadata as m; print('adk-tracegauge', m.version('adk-tracegauge')); print('google-adk', m.version('google-adk'))"
+
+      - name: Full test suite against the wheel and the latest google-adk
+        # `pythonpath` override drops "src" so the tests import the installed wheel, not the
+        # checkout; "." stays (repo root has no adk_tracegauge package, and `scripts.*` needs it).
+        run: '"$RUNNER_TEMP/canary/bin/python" -m pytest tests/ -q -p no:cacheprovider --override-ini="pythonpath=. scripts"'
+
+  gate-canary:
+    name: Refuse to release while the latest pypi-canary run is red
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: The most recent completed pypi-canary run must have succeeded
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_json=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pypi-canary.yml --status completed --limit 1 --json conclusion,createdAt,url,event --jq '.[0]')
+          if [ -z "$run_json" ] || [ "$run_json" = "null" ]; then
+            echo "::error::no completed pypi-canary run exists; run it once (gh workflow run pypi-canary.yml) before releasing"
+            exit 1
+          fi
+          echo "latest completed canary run: $run_json"
+          conclusion=$(echo "$run_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['conclusion'])")
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::the latest pypi-canary run is '$conclusion' -- an unresolved compatibility break. Fix it (or dispatch a fresh green run) before releasing."
+            exit 1
+          fi
+
   publish:
+    # Only a tag push publishes. A workflow_dispatch run stops after the preflights above.
+    if: github.event_name == 'push'
+    needs: [preflight-prices, preflight-latest-adk, gate-canary]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
