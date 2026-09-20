@@ -12,7 +12,7 @@ See scripts/check_price_freshness.py for how the 30-day limit was chosen from me
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 
 from scripts.check_price_freshness import RELEASE_MAX_AGE_DAYS, _check_staleness
 
@@ -29,7 +29,7 @@ def _entries(**fetched_on: str) -> dict[str, dict[str, object]]:
 
 
 def test_bundled_price_table_was_verified_within_the_release_max_age():
-    today = datetime.now(UTC).date()
+    today = datetime.now(timezone.utc).date()
 
     stale = _check_staleness(load_gemini_prices()["models"], today, RELEASE_MAX_AGE_DAYS)
 
