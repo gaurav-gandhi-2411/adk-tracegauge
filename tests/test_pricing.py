@@ -237,7 +237,7 @@ def test_bundled_table_is_not_currently_stale():
         ("claude-sonnet-5", 2.00, 10.00),
         ("claude-haiku-4-5", 1.00, 5.00),
         ("claude-opus-4-8", 5.00, 25.00),
-        ("gpt-5.6-sol", 5.00, 30.00),
+        ("gpt-5.6-sol", 4.00, 20.00),
         ("gpt-5.6-terra", 2.00, 12.00),
         ("gpt-5.6-luna", 0.20, 1.20),
         ("gpt-5.1", 1.25, 10.00),
