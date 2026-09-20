@@ -7,6 +7,38 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.8.0] — 2026-09-20
+
+### Added
+
+- **`adk-tracegauge report`: what did my ADK agent cost?** Prints per-invocation model(s),
+  calls, tokens in/out, and USD cost, plus a total — from a snapshot file
+  (`report snapshot.json`) or straight from a live run with no file in between
+  (`report --entrypoint MODULE:CALLABLE`, the same zero-arg callable `snapshot` takes);
+  `--json` for machines. An invocation that cannot be priced is shown as `UNKNOWN` with the
+  reason — never omitted, never guessed — and the total is labelled "priced total … EXCLUDES N
+  unknown" (`--json`: `total_is_complete: false`). Exit `0` with data, `3` when nothing was
+  captured. Answers google/adk-python Discussions #97 and #3273 ("how do I turn tokens into
+  dollars"). (#63)
+
+### Changed — BEHAVIOR CHANGE, read before upgrading
+
+- **`TraceGaugeUsagePlugin` now refuses to be registered twice.** Wiring it both as
+  `after_model_callback=` on the agent AND as `plugins=[...]` on the runner recorded every
+  model call twice — every dollar figure exactly 2x wrong, with no error (the 0.6.1 quickstart
+  did this until 0.7.0). It now raises `DoubleRegistrationError` on the second delivery of the
+  same response, with a message naming the fix (register it exactly once). **If your code
+  wired both paths, it will now stop instead of silently reporting doubled costs** — that is
+  the point. Two plugin instances sharing one store are caught too; instances with separate
+  stores are not affected. `snapshot`/`report --entrypoint` show it as one line. (#64)
+- **README leads with cost visibility**; the regression-gate methodology moved below the
+  plugin wiring, and every link is now absolute so the README renders on PyPI (relative links
+  404 there, and in-page `#anchors` do not work — verified with the renderer PyPI uses). (#65)
+- **PyPI metadata**: a summary that says what the package does (166 chars, was a 226-char
+  "what it is NOT"), 10 new search keywords (`llm-cost`, `token-usage`, `cost-tracking`, … —
+  replacing the bare `cost`), 3 more classifiers, and Homepage/Documentation/Changelog/Issues
+  project URLs.
+
 ## [0.7.0] — 2026-09-20
 
 ### Added
