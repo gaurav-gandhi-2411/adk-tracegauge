@@ -96,23 +96,42 @@ def _modality_tokens(details: object) -> dict[str, int]:
     return out
 
 
-def _grounding(llm_response: LlmResponse) -> tuple[bool, int]:
-    """(grounded, search-query count). Any of the Google Search / Maps / retrieval signals on
-    ``grounding_metadata`` counts as grounded -- a fee applies whichever one carries it."""
+def _grounding(llm_response: LlmResponse) -> tuple[tuple[str, ...], int]:
+    """(sorted grounding sources, Google Search query count) for one response.
+
+    Sources are read from ``grounding_metadata``: ``google_search`` (web/image search queries, a
+    search entry point, or web/image chunks), ``vertex_ai_search`` (retrieval queries or retrieved-
+    context chunks), ``google_maps`` (a Maps widget token, flagging URIs or Maps chunks). Any other
+    grounding signal (supports, retrieval metadata, chunks of no recognised kind) is ``unknown``:
+    still a fee-bearing feature we cannot name, so it is flagged as such, never priced."""
     gm = getattr(llm_response, "grounding_metadata", None)
     if gm is None:
-        return False, 0
+        return (), 0
     queries = len(getattr(gm, "web_search_queries", None) or [])
-    grounded = bool(
+    chunks = list(getattr(gm, "grounding_chunks", None) or [])
+    sources: set[str] = set()
+    if (
         queries
         or getattr(gm, "image_search_queries", None)
-        or getattr(gm, "grounding_chunks", None)
-        or getattr(gm, "grounding_supports", None)
         or getattr(gm, "search_entry_point", None)
-        or getattr(gm, "retrieval_queries", None)
-        or getattr(gm, "google_maps_widget_context_token", None)
-    )
-    return grounded, queries
+        or any(getattr(c, "web", None) or getattr(c, "image", None) for c in chunks)
+    ):
+        sources.add("google_search")
+    if getattr(gm, "retrieval_queries", None) or any(
+        getattr(c, "retrieved_context", None) for c in chunks
+    ):
+        sources.add("vertex_ai_search")
+    if (
+        getattr(gm, "google_maps_widget_context_token", None)
+        or getattr(gm, "source_flagging_uris", None)
+        or any(getattr(c, "maps", None) for c in chunks)
+    ):
+        sources.add("google_maps")
+    if not sources and (
+        chunks or getattr(gm, "grounding_supports", None) or getattr(gm, "retrieval_metadata", None)
+    ):
+        sources.add("unknown")
+    return tuple(sorted(sources)), queries
 
 
 class DoubleRegistrationError(RuntimeError):
@@ -214,7 +233,7 @@ class TraceGaugeUsagePlugin(BasePlugin):
         prompt_modalities = _modality_tokens(usage.prompt_tokens_details)
         cache_modalities = _modality_tokens(usage.cache_tokens_details)
         output_modalities = _modality_tokens(usage.candidates_tokens_details)
-        grounded, grounding_queries = _grounding(llm_response)
+        grounding_sources, grounding_queries = _grounding(llm_response)
 
         self._store.record(
             callback_context.invocation_id,
@@ -224,7 +243,7 @@ class TraceGaugeUsagePlugin(BasePlugin):
                 non_text_output_tokens=tuple(
                     sorted((m, n) for m, n in output_modalities.items() if m != "TEXT" and n)
                 ),
-                grounded=grounded,
+                grounding_sources=grounding_sources,
                 grounding_queries=grounding_queries,
                 model_version=llm_response.model_version or "",
                 prompt_token_count=usage.prompt_token_count or 0,

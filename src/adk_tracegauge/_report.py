@@ -114,8 +114,12 @@ def _unpriced_summary(snapshot: Snapshot) -> list[dict[str, Any]]:
     found: dict[str, dict[str, Any]] = {}
     for r in snapshot.records:
         for c in r.unpriced_components:
+            source = str(c.get("source", ""))
+            base: dict[str, Any] = {"component": c["component"]}
+            if source:
+                base["source"] = source
             entry = found.setdefault(
-                str(c["component"]), {"component": c["component"], "invocations": 0, "tokens": 0}
+                f"{c['component']}/{source}", {**base, "invocations": 0, "tokens": 0}
             )
             entry["invocations"] += 1
             entry["tokens"] += int(c.get("tokens", 0))

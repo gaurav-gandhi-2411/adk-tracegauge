@@ -7,6 +7,22 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Changed
+
+- **The "grounding fee not included in total" flag now names the grounding source.** It said only
+  "grounding". `report` and `--json` now say which one the response used: Google Search (web or image
+  search queries, a search entry point, web/image chunks), Vertex AI Search (retrieval queries or
+  retrieved-context chunks), Google Maps (a Maps token or Maps chunks) or an unrecognised source type
+  (grounding signals with none of those; nothing is priced and the message says the billing is
+  unknown). Each flagged component in `--json` gains a `source` key and the top-level
+  `unpriced_components` summary is one entry per component and source. Only Google Search reports a
+  query count. Still flagged, not priced. Note that real Gemini 2.5 Google Search responses also carry
+  `tool_use_prompt_token_count` (115-148 tokens in six captured calls), which the adapter has always
+  refused to price, so such an invocation currently shows as **unknown** rather than as priced with this
+  flag; the flag is reached when a grounded response carries no tool-use tokens.
+
 ## [0.9.0] — 2026-09-21
 
 This release folds in the never-published 0.8.2 (its items are under "Added", "Fixed" and "Changed"
