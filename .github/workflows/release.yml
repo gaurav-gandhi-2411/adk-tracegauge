@@ -109,13 +109,15 @@ jobs:
         # branch) can turn the "latest run" green without anything being fixed -- that masking is
         # exactly what this filter closes. Cancelled/skipped runs carry no signal and are skipped
         # over (the canary's concurrency group cancels an in-flight scheduled run when a manual one
-        # starts). No qualifying run inside the window is a refusal, not a pass: the canary is
-        # weekly, so 8 days means one scheduled run was missed.
+        # starts). No qualifying run inside the window is a refusal, not a pass. The canary is
+        # daily and GitHub starts scheduled runs 1-7 hours late and sometimes drops one, so the
+        # window is 3 days: one dropped run (worst-case gap about 2 days plus start-time jitter
+        # of up to 7 hours) still passes, two consecutive drops refuse.
         env:
           GH_TOKEN: ${{ github.token }}
           CANARY_EVENT: schedule
           CANARY_BRANCH: main
-          CANARY_MAX_AGE_DAYS: "8"
+          CANARY_MAX_AGE_DAYS: "3"
         run: |
           set -euo pipefail
           runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pypi-canary.yml --event "$CANARY_EVENT" --branch "$CANARY_BRANCH" --status completed --limit 20 --json conclusion,createdAt,url,event,headBranch)
@@ -127,7 +129,7 @@ jobs:
           max_age = float(os.environ["CANARY_MAX_AGE_DAYS"])
           runs = [r for r in json.loads(os.environ["RUNS"]) if r["conclusion"] in ("success", "failure")]
           if not runs:
-              print(f"::error::no completed pypi-canary run with event={event} on branch {branch}; the weekly schedule has not produced one, so the canary cannot vouch for this release")
+              print(f"::error::no completed pypi-canary run with event={event} on branch {branch}; the scheduled canary has not produced one, so it cannot vouch for this release")
               sys.exit(1)
           latest = max(runs, key=lambda r: r["createdAt"])
           age = (datetime.now(timezone.utc) - datetime.fromisoformat(latest["createdAt"].replace("Z", "+00:00"))).total_seconds() / 86400
