@@ -33,6 +33,11 @@ wheels = [
 name = "adk-tracegauge"
 source = { editable = "." }
 dependencies = [
+    { name = "google-adk" },
+]
+
+[package.optional-dependencies]
+eval = [
     { name = "google-adk", extra = ["eval"] },
 ]
 
@@ -47,7 +52,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "google-adk", extras = ["eval"], specifier = ">=2.6.0,<2.10.0" }]
+requires-dist = [
+    { name = "google-adk", specifier = ">=2.6.0,<2.10.0" },
+    { name = "google-adk", extras = ["eval"], marker = "extra == 'eval'", specifier = ">=2.6.0,<2.10.0" },
+]
+provides-extras = ["eval"]
 
 [package.metadata.requires-dev]
 dev = [
