@@ -54,21 +54,18 @@ keywords = [
     "token-efficiency",
 ]
 dependencies = [
-    # [eval] is required, not optional: google-adk's own
-    # metric_evaluator_registry.py unconditionally imports every built-in
-    # evaluator at module import time, including the Vertex AI eval facade,
-    # which transitively needs pandas/jinja2/rouge-score/tabulate/gepa --
-    # gated behind this extra. Without it, `import adk_tracegauge` fails
-    # with ModuleNotFoundError: No module named 'pandas', even though this
-    # package uses none of those libraries itself. Confirmed by reading
-    # google-adk's own pyproject.toml requires list.
+    # Base install = bare google-adk (48 distributions, ~70-85 s cold with pip, measured 2026-09-21).
+    # Everything except the `adk eval` integration works on it: the plugin, `report`, `snapshot`,
+    # `check`, `quickstart` and CostEfficiencyEvaluator (verified on google-adk 2.6.0 and 2.9.2 by
+    # the `bare-adk` CI job). The `[eval]` extra below is only needed to register the metric for
+    # `adk eval` / AgentEvaluator.
     # <2.10.0: the full 470-test suite passes clean on every release in [2.7.1, 2.9.2]
     # (2.7.1, 2.8.0, 2.9.0, 2.9.1, 2.9.2 -- each in its own venv, 2026-09-20; 2.9.2 is
     # the newest on PyPI as of that date), no code changes required. Capped at the next
     # minor after the newest verified release rather than left open, because the
     # MetricEvaluatorRegistry this package registers into is @experimental (no SemVer
     # guarantee) -- widen again only after re-running the suite against the new release.
-    "google-adk[eval]>=2.6.0,<2.10.0",
+    "google-adk>=2.6.0,<2.10.0",
     # tracegauge dependency removed, Phase 4 R5: the only things this package
     # ever used from it (tes.cost.compute_session_cost/compute_turn_cost's
     # arithmetic, plus the tes._digest.SessionDigest/TurnDigest dataclasses
@@ -76,6 +73,14 @@ dependencies = [
     # in-house at src/adk_tracegauge/_cost.py. See that module's docstring
     # for the full audit/rationale.
 ]
+
+[project.optional-dependencies]
+# Only for using the cost metric inside `adk eval` / AgentEvaluator. google-adk's own
+# metric_evaluator_registry.py unconditionally imports every built-in evaluator at import time,
+# including the Vertex AI eval facade, which needs pandas/jinja2/rouge-score/tabulate/gepa --
+# gated behind google-adk's [eval] extra (61 more distributions, ~645 MB, ~5 min cold with pip).
+# adk-tracegauge itself uses none of them; see adk_tracegauge/__init__.py.
+eval = ["google-adk[eval]>=2.6.0,<2.10.0"]
 
 [dependency-groups]
 dev = [

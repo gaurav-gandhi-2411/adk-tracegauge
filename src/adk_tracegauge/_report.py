@@ -45,6 +45,22 @@ def priced_total_usd(snapshot: Snapshot) -> float:
     return sum(r.cost_usd for r in snapshot.records)
 
 
+def agent_totals(snapshot: Snapshot) -> tuple[dict[str, float], float]:
+    """Priced cost per agent name, summed over invocations (``SnapshotRecord.cost_by_agent``),
+    plus the part of the priced total no agent name is recorded for -- an invocation from a
+    snapshot written before ``cost_by_agent`` existed, or a call captured without an agent name.
+    The two always add up to ``priced_total_usd``, so the block never hides a remainder."""
+    totals: dict[str, float] = {}
+    unattributed = 0.0
+    for r in snapshot.records:
+        attributed = 0.0
+        for agent, cost in r.cost_by_agent.items():
+            totals[agent] = totals.get(agent, 0.0) + cost
+            attributed += cost
+        unattributed += max(0.0, r.cost_usd - attributed)
+    return totals, unattributed
+
+
 def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
     """Priced invocations whose rate the weekly vendor check cannot verify against a live page,
     one entry per distinct model: a retired model (the vendor page no longer lists it, so the
@@ -192,6 +208,17 @@ def render_text(snapshot: Snapshot, source: str) -> str:
         lines.append("")
         lines.append("  Unknown invocations were NOT priced (no guessed rate is ever used):")
         lines.extend(unknown_notes)
+    agents, unattributed = agent_totals(snapshot)
+    if len(agents) >= 2:  # one agent is the whole total: a block would only repeat it
+        lines.append("")
+        lines.append("  Cost by agent (priced invocations):")
+        rows_a = sorted(agents.items(), key=lambda kv: (-kv[1], kv[0]))
+        if unattributed > 1e-9:
+            rows_a.append(("(no agent name captured)", unattributed))
+        name_w = max(len(n) for n, _ in rows_a)
+        for name, cost in rows_a:
+            share = f"{100 * cost / total:5.1f}%" if total > 0 else "    -"
+            lines.append(f"    {name.ljust(name_w)}  {_usd(cost)}  {share}")
     unverifiable = unverifiable_pricing(snapshot)
     if unverifiable:
         lines.append("")
@@ -218,5 +245,6 @@ __all__ = [
     "priced_total_usd",
     "render_text",
     "to_json_dict",
+    "agent_totals",
     "unverifiable_pricing",
 ]

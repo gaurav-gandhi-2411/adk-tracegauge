@@ -42,7 +42,9 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen --python ${{ matrix.python-version }}
+        # --extra eval: the suite exercises the `adk eval` integration, which needs google-adk's
+        # [eval] extra. The base-install path is covered by the bare-adk job below.
+        run: uv sync --frozen --extra eval --python ${{ matrix.python-version }}
 
       - name: Lint (ruff check)
         if: matrix.python-version == '3.11'
@@ -173,3 +175,41 @@ jobs:
             exit 1
           fi
           echo "example OK: 03_ci_regression_gate.py correctly propagated exit code 1"
+
+  # The base install is BARE google-adk (no [eval] extra, so no pandas). lint-and-test installs the
+  # extra and wheel-smoke-test resolves whatever google-adk is newest inside the pin, so neither can
+  # catch a new top-level import of an eval-only dependency, nor a break specific to the 2.6.0 floor.
+  # This job installs the built wheel next to an exact google-adk release with pandas absent and runs
+  # the package's whole base surface: import, plugin, evaluator class, every CLI subcommand.
+  bare-adk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor of the supported range, and the newest release verified against it.
+        google-adk: ["2.6.0", "2.9.2"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Build the wheel
+        run: uv build --wheel
+
+      - name: Fresh venv with bare google-adk ${{ matrix.google-adk }} and the wheel
+        run: |
+          uv venv "${{ runner.temp }}/bare-venv" --python 3.11
+          uv pip install --python "${{ runner.temp }}/bare-venv" "google-adk==${{ matrix.google-adk }}" dist/*.whl
+
+      - name: Smoke-test the whole base surface (no pandas)
+        working-directory: ${{ runner.temp }}
+        run: |
+          "${{ runner.temp }}/bare-venv/bin/python" "$GITHUB_WORKSPACE/scripts/bare_install_smoke.py"

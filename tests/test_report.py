@@ -319,3 +319,73 @@ def test_report_json_lists_unverifiable_pricing(tmp_path: Path, capsys: pytest.C
     (entry,) = json.loads(capsys.readouterr().out)["unverifiable_pricing"]
     assert entry["model"] == "gemini-2.0-flash"
     assert entry["reason"].startswith("retired 2026-06-01")
+
+
+# --- cost by agent -------------------------------------------------------------------------------
+
+
+def _agent_call(agent: str, prompt: int, output: int) -> CapturedCall:
+    return CapturedCall(
+        model_version="gemini-2.5-flash",
+        prompt_token_count=prompt,
+        candidates_token_count=output,
+        cached_content_token_count=0,
+        total_token_count=prompt + output,
+        agent_name=agent,
+    )
+
+
+def test_report_prints_cost_by_agent_when_more_than_one_agent_ran(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    # root_agent: 1,000 x $0.30/M + 200 x $2.50/M = $0.000800
+    # capital_finder: 12,000 x $0.30/M + 800 x $2.50/M = $0.005600; total $0.006400
+    # shares: 0.0008 / 0.0064 = 12.5%, 0.0056 / 0.0064 = 87.5%
+    store = UsageStore()
+    store.record("e-root", _agent_call("root_agent", 1000, 200))
+    store.record("e-sub", _agent_call("capital_finder", 12000, 800))
+    write_snapshot(store, tmp_path / "snap.json")
+
+    assert main(["report", str(tmp_path / "snap.json")]) == EXIT_PASS
+
+    out = capsys.readouterr().out
+    assert "Cost by agent (priced invocations):" in out
+    lines = [ln.strip() for ln in out.splitlines()]
+    assert "capital_finder  $0.005600   87.5%" in lines
+    assert "root_agent      $0.000800   12.5%" in lines
+    assert lines.index("capital_finder  $0.005600   87.5%") < lines.index(
+        "root_agent      $0.000800   12.5%"
+    )  # most expensive first
+    assert "total: $0.006400 across 2 invocation(s)" in out
+
+
+def test_report_omits_the_agent_block_for_a_single_agent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    store = UsageStore()
+    store.record("e-1", _agent_call("root_agent", 1000, 200))
+    store.record("e-2", _agent_call("root_agent", 1000, 200))
+    write_snapshot(store, tmp_path / "snap.json")
+
+    assert main(["report", str(tmp_path / "snap.json")]) == EXIT_PASS
+
+    assert "Cost by agent" not in capsys.readouterr().out
+
+
+def test_report_agent_block_shows_the_part_no_agent_name_was_captured_for(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    # Two named agents ($0.000800 each) plus one call with no agent name ($0.000800):
+    # the block must add up to the $0.002400 total, not silently drop the third.
+    store = UsageStore()
+    store.record("e-a", _agent_call("agent_a", 1000, 200))
+    store.record("e-b", _agent_call("agent_b", 1000, 200))
+    store.record("e-c", _agent_call("", 1000, 200))
+    write_snapshot(store, tmp_path / "snap.json")
+
+    assert main(["report", str(tmp_path / "snap.json")]) == EXIT_PASS
+
+    out = capsys.readouterr().out
+    assert "total: $0.002400 across 3 invocation(s)" in out
+    assert "(no agent name captured)  $0.000800   33.3%" in out
+    assert out.count("$0.000800   33.3%") == 3
