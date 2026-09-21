@@ -7,6 +7,54 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.8.2] — 2026-09-21
+
+### Added
+
+- **`adk-tracegauge report` now says which priced entries no vendor page can verify.** Two of the
+  price table's 22 entries are not checked against any live vendor page: `gemini-2.0-flash` (retired
+  2026-06-01; Google's page dropped its section on about 2026-08-27, so the table holds the last
+  rate it published) and the `__local_zero_cost__` policy (a $0.00 rate for models you assert are
+  local, not a vendor rate). When `report` prices an invocation with either, its text output adds a
+  "Priced, but NOT verifiable against a live vendor page" block naming the model and the reason, and
+  `--json` gains an `unverifiable_pricing` list (empty for every vendor-verified model). (#77)
+
+### Fixed
+
+- **The README said every price entry was "re-verified against each model's live published
+  rate". That was true of 20 of the 22.** It now says 20 of 22 and names the other two. The price
+  table itself is unchanged in this release. (#77)
+
+### Changed
+
+- **The vendor price checker (`scripts/check_price_table_vs_vendor.py`) was rewritten.** The old
+  version verified input and output rates for 18 of 22 entries and silently skipped the rest: both
+  Gemini long-context tiers, cached rates (the table's 0.1× cache multiplier was only a dated manual
+  note), promo windows, and any entry with no vendor mapping. Every entry now ends in exactly one
+  status (`VERIFIED`, `SKIPPED` with a stated reason, `MISMATCH`, `UNVERIFIED`); only `VERIFIED` and
+  a reasoned `SKIPPED` pass, and an unmapped entry, an unfetched page, or a vendor that publishes no
+  cached rate to check the multiplier against is `UNVERIFIED` and fails. Cached rates, both `> 200k`
+  tiers and the `gemini-3.6/3.7-flash` promo windows are now compared; the explicit-cache storage fee
+  is reported as not priced instead of ignored. Live run at release: 22 entries, 20 `VERIFIED`,
+  2 `SKIPPED`. (#74, #75)
+- **`gemini-2.0-flash` provenance is now checkable.** Its `fetched_on` (2026-08-14) postdates its
+  `retired_on` (2026-06-01), which looked like a fetch that could not have happened. It was real:
+  Google's pricing page kept a "deprecated and shut down" section listing $0.10 / $0.40 until
+  2026-08-26 (Wayback captures). The entry now carries `vendor_page_last_listed`, `archive_url` and a
+  `provenance_note`, and a test rejects any `fetched_on` in the future or later than the date the
+  vendor page last listed the rate. No rate or date changed. (#79)
+
+### Release process (not part of the wheel)
+
+- **The release workflow now refuses to publish** while the price table is unverified or older than
+  30 days, while the code fails its tests against the latest `google-adk`, or while the latest
+  *scheduled* `pypi-canary` run on `main` is red or older than 8 days (a manual re-run cannot mask a
+  red scheduled run). This was added because the weekly vendor check and the canary were both red
+  and both ignored while 0.7.0 and 0.8.0 shipped. (#72)
+- **`pypi-canary` now tests the release it installs**: it resolves the version PyPI serves as
+  latest and checks out that release's tag, so red means a real `google-adk` incompatibility rather
+  than "main has a tested feature that is not released yet". (#78)
+
 ## [0.8.1] — 2026-09-20
 
 ### Fixed
