@@ -31,8 +31,13 @@ Three things happen here before any TurnDigest is built, all fail-closed:
 
 2. A call reporting nonzero tool_use_prompt_token_count (Gemini server-side
    built-in tool use, e.g. Google Search grounding) has no verified billing
-   rate in this table -- adaptation fails closed rather than silently
-   ignoring billed tokens (see AdaptResult.unpriced_component).
+   treatment -- vendors differ by tool (Vertex states Google Search grounding
+   input tokens are not charged; the URL-context docs bill theirs as input).
+   Those tokens are left OUT of the priced figure and reported as an unpriced
+   component (``tool_use_prompt_tokens``), exactly like audio input: the rest
+   of the invocation prices normally and the total is marked incomplete. They
+   used to make the whole invocation unknown, which also hid every other flag
+   (a real Google Search call always carries them).
 
 3. Model resolution happens once per real call, tiering-aware (a long-context
    model resolves to its own, higher, over-threshold rate once
@@ -93,12 +98,6 @@ class AdaptResult:
     digest: SessionDigest | None
     unresolved_model: str | None = None
     streaming_anomaly: str | None = None
-    unpriced_component: str | None = None
-    """Set when a real call includes a token category adk-tracegauge cannot
-    price with confidence (currently: tool_use_prompt_token_count > 0, from
-    Gemini's server-side built-in tools). Same fail-closed philosophy as
-    unresolved_model -- refuse rather than under-report cost by silently
-    ignoring billed tokens. See CapturedCall's docstring in _store.py."""
     unpriced_components: tuple[UnpricedComponent, ...] = ()
     """Set alongside a usable ``digest`` when the invocation ran something the vendor bills that
     the digest does not price: a grounding fee, audio input tokens, non-text output tokens. The
@@ -177,6 +176,7 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
     turns: list[TurnDigest] = []
     agent_names: list[str] = []
     audio_tokens = 0
+    tool_use_tokens = 0
     output_by_modality: dict[str, int] = {}
     grounded_calls: dict[str, int] = {}
     grounding_queries = 0
@@ -186,21 +186,6 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         # totals -- intermediate partial chunks are superseded by it, not
         # summed with it.
         final_call = group[-1]
-
-        if final_call.tool_use_prompt_token_count:
-            return AdaptResult(
-                digest=None,
-                unpriced_component=(
-                    f"call for model '{final_call.model_version}' includes "
-                    f"{final_call.tool_use_prompt_token_count} tool_use_prompt "
-                    "token(s) (Gemini server-side built-in tool use, e.g. "
-                    "Google Search grounding or code execution) -- "
-                    "adk-tracegauge has no verified billing rate for this "
-                    "token category and refuses to under-report cost by "
-                    "silently ignoring it rather than fabricate one. See "
-                    "README."
-                ),
-            )
 
         resolved = resolve_model_for_call(final_call.model_version, final_call.prompt_token_count)
         if resolved is None:
@@ -218,6 +203,10 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
             non_text_out += count
         non_text_out = min(non_text_out, final_call.candidates_token_count)
         audio_tokens += audio
+        # Server-side tool tokens (Google Search grounding, code execution) are not part of
+        # prompt_token_count (total = prompt + candidates + thoughts + tool_use), so leaving
+        # them out is just not adding them.
+        tool_use_tokens += final_call.tool_use_prompt_token_count
         # A streamed call's grounding metadata may sit on any of its chunks, not only the last.
         group_sources = {s for c in group for s in c.grounding_sources}
         for source in group_sources:
@@ -286,6 +275,20 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         unpriced.append(
             UnpricedComponent(
                 component="grounding_fee", detail=detail, tokens=quantity, source=source
+            )
+        )
+    if tool_use_tokens:
+        unpriced.append(
+            UnpricedComponent(
+                component="tool_use_prompt_tokens",
+                detail=(
+                    f"{tool_use_tokens:,} tool-use prompt token(s) not priced: Gemini server-side "
+                    "tools (e.g. Google Search grounding, code execution) feed these tokens to the "
+                    "model and vendors treat them differently (Vertex states Google Search "
+                    "grounding input tokens are not charged), so they are left out rather than "
+                    "priced"
+                ),
+                tokens=tool_use_tokens,
             )
         )
     if audio_tokens:

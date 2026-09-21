@@ -788,11 +788,6 @@ class CostEfficiencyEvaluator(Evaluator):
                     _streaming_anomaly_result(actual, expected, adapted.streaming_anomaly)
                 )
                 continue
-            if adapted.unpriced_component is not None:
-                per_invocation_results.append(
-                    _unpriced_component_result(actual, expected, adapted.unpriced_component)
-                )
-                continue
             if adapted.ok and adapted.unpriced_components:
                 # A cost gate must never pass or fail on a lower bound it cannot label: the
                 # vendor bills something this figure leaves out, so the answer is "not

@@ -18,10 +18,17 @@ see `CONTRIBUTING.md`).
   (grounding signals with none of those; nothing is priced and the message says the billing is
   unknown). Each flagged component in `--json` gains a `source` key and the top-level
   `unpriced_components` summary is one entry per component and source. Only Google Search reports a
-  query count. Still flagged, not priced. Note that real Gemini 2.5 Google Search responses also carry
-  `tool_use_prompt_token_count` (115-148 tokens in six captured calls), which the adapter has always
-  refused to price, so such an invocation currently shows as **unknown** rather than as priced with this
-  flag; the flag is reached when a grounded response carries no tool-use tokens.
+  query count. Still flagged, not priced.
+- **A call with server-side tool-use tokens is now priced for everything else and flagged, not dropped as
+  unknown.** Real Gemini 2.5 Google Search responses always carry `tool_use_prompt_token_count` (115-148
+  tokens in all six captured calls), and any such call used to make the whole invocation `unknown`, which
+  also hid the grounding flag above. Those tokens are now an unpriced component
+  (`tool_use_prompt_tokens`) with a message naming them and why (vendors treat them differently: Vertex
+  states Google Search grounding input tokens are not charged), exactly like audio input: the rest of the
+  invocation prices normally, the row is marked `*`, the total says INCOMPLETE, and the source-named
+  grounding flag appears next to it. They are not priced. The `adk eval` metric still returns
+  `NOT_EVALUATED` for such an invocation. Tests replay the real captured responses in
+  `docs/design/data/real_grounding_2026-09-21.jsonl`.
 
 ## [0.9.0] — 2026-09-21
 
