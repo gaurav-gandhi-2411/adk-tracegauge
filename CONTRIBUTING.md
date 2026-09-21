@@ -118,7 +118,7 @@ this package, and are worth understanding before you touch either:
   changed) would otherwise go unnoticed until the next unrelated commit.
   Pure date arithmetic against the JSON file, zero network/API calls.
 
-- **`.github/workflows/pypi-canary.yml`** (weekly cron +
+- **`.github/workflows/pypi-canary.yml`** (daily cron +
   `workflow_dispatch`) installs the *latest*, unpinned `google-adk[eval]`
   release and runs the full test suite against it — independent of this
   package's own `google-adk` pin in `pyproject.toml`. This package
