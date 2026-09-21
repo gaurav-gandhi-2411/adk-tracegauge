@@ -117,6 +117,7 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import sys
 import warnings
 from typing import Any, ClassVar
 
@@ -528,6 +529,30 @@ duration of a real ``AgentEvaluator.evaluate()`` call. See
 ``_warn_if_running_under_agent_evaluator`` for why this exists and why it is
 a ``ContextVar``, not a call-stack check."""
 
+_EVAL_EXTRA_HINT = (
+    "adk-tracegauge: install adk-tracegauge[eval] to use this metric with adk eval "
+    "(google-adk's metric registry could not be imported: {reason})"
+)
+"""The one line printed when the metric was NOT registered because google-adk's registry
+needs its ``[eval]`` extra (see ``adk_tracegauge.__init__``). Shown on the ``adk eval`` CLI
+path and on the ``AgentEvaluator.evaluate()`` path, never for report/plugin users."""
+
+_eval_extra_hint_printed = False
+
+
+def _announce_eval_extra_missing() -> None:
+    """Prints ``_EVAL_EXTRA_HINT`` once per process if registration was skipped."""
+    global _eval_extra_hint_printed
+    if _eval_extra_hint_printed:
+        return
+    import adk_tracegauge  # already imported by now; lazy to avoid an import cycle
+
+    reason = getattr(adk_tracegauge, "EVAL_REGISTRATION_SKIPPED_REASON", None)
+    if reason is not None:
+        _eval_extra_hint_printed = True
+        print(_EVAL_EXTRA_HINT.format(reason=reason), file=sys.stderr)
+
+
 _AGENT_EVALUATOR_MARKER_INSTALLED = False
 """Idempotency guard for ``_install_agent_evaluator_marker`` -- importing
 ``adk_tracegauge`` more than once in a process (re-import after
@@ -622,6 +647,7 @@ def _install_agent_evaluator_marker() -> None:
 
         @functools.wraps(original)
         async def _marked_evaluate(*args: Any, **kwargs: Any) -> Any:
+            _announce_eval_extra_missing()
             token = _RUNNING_UNDER_AGENT_EVALUATOR.set(True)
             try:
                 return await original(*args, **kwargs)
