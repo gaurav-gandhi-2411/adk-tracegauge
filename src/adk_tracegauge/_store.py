@@ -41,11 +41,11 @@ class CapturedCall:
       folds this into token_count_output alongside candidates_token_count.
     - ``tool_use_prompt_token_count``: tokens from Gemini's server-side
       built-in tools (e.g. Google Search grounding, code execution) fed back
-      to the model within the same call. adk-tracegauge could not find an
-      authoritative source for this category's exact billing rate/tier, so
-      rather than guess, _adapter.py refuses to price any call where this is
-      nonzero (fail-closed, same philosophy as an unresolved model) --
-      see AdaptResult.unpriced_component.
+      to the model within the same call. Vendors treat these differently (Vertex
+      states Google Search grounding input tokens are not charged), so
+      _adapter.py leaves them out of the priced figure and reports them as an
+      unpriced component (``tool_use_prompt_tokens``); the rest of the call is
+      priced -- see AdaptResult.unpriced_components.
     """
 
     model_version: str
@@ -56,6 +56,32 @@ class CapturedCall:
     partial: bool = False
     thoughts_token_count: int = 0
     tool_use_prompt_token_count: int = 0
+    audio_prompt_token_count: int = 0
+    """Audio-modality input tokens (``usage_metadata.prompt_tokens_details``), of which
+    ``audio_cached_token_count`` are cache reads (``cache_tokens_details``). Vendors publish a
+    separate, usually higher, audio input rate (gemini-2.5-flash: $1.00 vs $0.30 text), so
+    ``_adapter`` leaves these out of the priced figure and flags them instead of pricing them at
+    the text rate."""
+    audio_cached_token_count: int = 0
+    non_text_output_tokens: tuple[tuple[str, int], ...] = ()
+    """``(modality, tokens)`` for every non-TEXT entry in ``candidates_tokens_details`` (image,
+    audio, video output). Included in ``candidates_token_count``; vendors publish a different
+    output rate for them (Gemini image output $30-60/M vs $1.50-3 text), and a prefix-matched
+    model id such as ``gemini-2.5-flash-image`` resolves to the text entry, so ``_adapter`` flags
+    these rather than pricing them at the text output rate."""
+    grounding_sources: tuple[str, ...] = ()
+    """Which grounding source(s) the response's grounding metadata names, sorted:
+    ``google_search``, ``vertex_ai_search``, ``google_maps`` or ``unknown`` (grounding signals
+    present but no recognisable source). Empty when the response was not grounded. Each source is
+    billed on its own basis, none of it in token usage, so ``_adapter`` names the source in the
+    flag instead of saying only "grounding". ``grounding_queries`` counts Google Search queries
+    when ADK reports them."""
+    grounding_queries: int = 0
+
+    @property
+    def grounded(self) -> bool:
+        return bool(self.grounding_sources)
+
     agent_name: str = ""
     """LL2 (sub-agent attribution): the name of the agent that made this
     specific call, sourced from ``callback_context.agent_name`` --

@@ -484,7 +484,7 @@ def test_unpriced_component_reports_none_score_not_a_partial_total():
 
     pir = result.per_invocation_results[0]
     assert pir.score is None
-    assert "tool_use_prompt" in pir.rubric_scores[0].rationale
+    assert "tool-use prompt" in pir.rubric_scores[0].rationale
     assert "77" in pir.rubric_scores[0].rationale
     assert result.overall_score is None
 

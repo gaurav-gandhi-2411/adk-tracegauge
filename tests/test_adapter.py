@@ -153,24 +153,27 @@ def test_build_session_digest_folds_thoughts_into_output_tokens():
     assert result.digest.turns[0].token_count_output == 250
 
 
-def test_build_session_digest_fails_closed_on_tool_use_prompt_tokens():
-    # Gemini's server-side built-in tool use (Google Search grounding, code
-    # execution) has no verified billing rate in this table -- refuse rather
-    # than silently ignore (undercount) or guess (fabricate).
+def test_tool_use_prompt_tokens_are_left_out_and_reported_as_an_unpriced_component():
+    # Gemini's server-side built-in tool use (Google Search grounding, code execution) has no
+    # single vendor treatment (Vertex: grounding input tokens are not charged). The tokens are not
+    # part of prompt_token_count, so the rest of the call prices normally and they are reported,
+    # never priced and never a reason to drop the whole invocation.
     result = build_session_digest("inv-1", [_call(tool_use=123)])
-    assert not result.ok
-    assert result.digest is None
-    assert result.unpriced_component is not None
-    assert "123" in result.unpriced_component
-    assert "tool_use_prompt" in result.unpriced_component
+    assert result.ok
+    assert result.digest.turns[0].token_count_input == 1000  # tool-use tokens are not added
+    assert result.digest.turns[0].token_count_output == 200
+    (component,) = result.unpriced_components
+    assert component.component == "tool_use_prompt_tokens"
+    assert component.tokens == 123
+    assert "123 tool-use prompt token(s) not priced" in component.detail
+    assert "Vertex" in component.detail
 
 
-def test_build_session_digest_zero_tool_use_prompt_tokens_prices_normally():
-    # The default (0) must not trip the refusal path -- this is the ordinary
-    # client-orchestrated function-calling shape every other test uses.
+def test_build_session_digest_zero_tool_use_prompt_tokens_has_no_component():
+    # The default (0) is the ordinary client-orchestrated function-calling shape.
     result = build_session_digest("inv-1", [_call(tool_use=0)])
     assert result.ok
-    assert result.unpriced_component is None
+    assert result.unpriced_components == ()
 
 
 def test_build_session_digest_uses_base_rate_at_or_below_long_context_threshold():

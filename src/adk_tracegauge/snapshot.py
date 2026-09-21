@@ -12,11 +12,11 @@ boundary: ``write_snapshot`` (in-process UsageStore -> JSON file, run at the
 end of an eval script) and ``read_snapshot`` (JSON file -> Snapshot, run by
 the ``check`` CLI subcommand, which never needs a live UsageStore at all).
 
-Snapshot JSON schema (schema_version=3, LL2 -- see below for what changed
+Snapshot JSON schema (schema_version=4 -- see below for what changed
 and why)::
 
     {
-      "schema_version": 3,
+      "schema_version": 4,
       "created_at": "2026-08-14T12:00:00+00:00",
       "records": [
         {
@@ -29,7 +29,8 @@ and why)::
           "tokens_cache_read": 0,
           "models": ["gemini-2.5-flash"],
           "call_count": 1,
-          "cost_by_agent": {"root_agent": 0.004231}
+          "cost_by_agent": {"root_agent": 0.004231},
+          "unpriced_components": []
         },
         ...
       ],
@@ -37,6 +38,12 @@ and why)::
         {"invocation_id": "e-5678...", "reason": "cost not computed: ..."}
       ]
     }
+
+**``unpriced_components`` (additive field, schema_version bumped 3->4):** what the vendor
+bills for an invocation that ``cost_usd`` does NOT include -- a grounding fee, audio input
+tokens, non-text output tokens (``_adapter.UnpricedComponent``). A record with a non-empty
+list is priced but INCOMPLETE: its ``cost_usd`` is a lower bound, exactly as an unknown
+invocation makes the total a lower bound. ``[]`` for every v1-v3 file, which never carried it.
 
 **LL2 -- ``cost_by_agent`` (additive field, schema_version bumped 2->3):**
 per-record breakdown of ``cost_usd`` by the ``agent_name`` that made each
@@ -152,8 +159,11 @@ from ._adapter import build_session_digest, price_digest
 from ._pricing import load_gemini_prices
 from ._store import UsageStore
 
-SNAPSHOT_SCHEMA_VERSION = 3
-"""Bumped 2->3 in LL2 for the new ``cost_by_agent`` field (see module
+SNAPSHOT_SCHEMA_VERSION = 4
+"""Bumped 3->4 for ``unpriced_components`` (see module docstring): a v1-v3 file reads back with
+``[]`` and simply never flagged anything. Older text follows.
+
+Bumped 2->3 in LL2 for the new ``cost_by_agent`` field (see module
 docstring). Same additive-field precedent as the 1->2 bump: ``read_snapshot``
 accepts 1, 2, AND 3 -- a v1 or v2 file is structurally still perfectly valid
 (``cost_by_agent`` just defaults to ``{}`` via ``SnapshotRecord(**r)``, since
@@ -168,7 +178,7 @@ agent_name contribute to no key at all, see module docstring) -- and to make
 a genuinely-unknown future version (4+) fail loudly via the explicit version
 check below rather than silently misparsing new fields this version of
 adk-tracegauge doesn't know about."""
-_READABLE_SCHEMA_VERSIONS = (1, 2, 3)
+_READABLE_SCHEMA_VERSIONS = (1, 2, 3, 4)
 
 
 @dataclass(frozen=True)
@@ -205,6 +215,10 @@ class SnapshotRecord:
     field existed) still deserializes via ``SnapshotRecord(**r)`` with no
     KeyError -- matching the exact precedent ``session_id``/``eval_case_id``
     already established for additive fields on this dataclass."""
+    unpriced_components: list[dict[str, Any]] = field(default_factory=list)
+    """Vendor-billed parts of this invocation that ``cost_usd`` leaves out, one
+    ``{"component", "detail", "tokens"}`` dict each (see module docstring). Non-empty means
+    ``cost_usd`` is a lower bound. Defaults to ``[]`` so a v1-v3 file still deserializes."""
 
 
 @dataclass(frozen=True)
@@ -393,7 +407,6 @@ def build_snapshot(
             reason = (
                 adapted.unresolved_model
                 or adapted.streaming_anomaly
-                or adapted.unpriced_component
                 or "unknown adaptation failure"
             )
             skip_session_id = store.session_id(invocation_id)
@@ -448,6 +461,7 @@ def build_snapshot(
                     eval_case_ids_by_session.get(session_id) if session_id is not None else None
                 ),
                 cost_by_agent=cost_by_agent,
+                unpriced_components=[c.as_dict() for c in adapted.unpriced_components],
             )
         )
 

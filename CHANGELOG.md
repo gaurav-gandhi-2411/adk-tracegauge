@@ -7,6 +7,29 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Changed
+
+- **The "grounding fee not included in total" flag now names the grounding source.** It said only
+  "grounding". `report` and `--json` now say which one the response used: Google Search (web or image
+  search queries, a search entry point, web/image chunks), Vertex AI Search (retrieval queries or
+  retrieved-context chunks), Google Maps (a Maps token or Maps chunks) or an unrecognised source type
+  (grounding signals with none of those; nothing is priced and the message says the billing is
+  unknown). Each flagged component in `--json` gains a `source` key and the top-level
+  `unpriced_components` summary is one entry per component and source. Only Google Search reports a
+  query count. Still flagged, not priced.
+- **A call with server-side tool-use tokens is now priced for everything else and flagged, not dropped as
+  unknown.** Real Gemini 2.5 Google Search responses always carry `tool_use_prompt_token_count` (115-148
+  tokens in all six captured calls), and any such call used to make the whole invocation `unknown`, which
+  also hid the grounding flag above. Those tokens are now an unpriced component
+  (`tool_use_prompt_tokens`) with a message naming them and why (vendors treat them differently: Vertex
+  states Google Search grounding input tokens are not charged), exactly like audio input: the rest of the
+  invocation prices normally, the row is marked `*`, the total says INCOMPLETE, and the source-named
+  grounding flag appears next to it. They are not priced. The `adk eval` metric still returns
+  `NOT_EVALUATED` for such an invocation. Tests replay the real captured responses in
+  `docs/design/data/real_grounding_2026-09-21.jsonl`.
+
 ## [0.9.0] — 2026-09-21
 
 This release folds in the never-published 0.8.2 (its items are under "Added", "Fixed" and "Changed"
@@ -15,9 +38,13 @@ below) and makes the base install much lighter.
 ### Changed
 
 - **`pip install adk-tracegauge` no longer installs `google-adk[eval]`; the base install is bare
-  `google-adk`.** Measured 2026-09-21 (cold pip cache, Windows, Python 3.11, google-adk 2.9.2, single
-  runs): 110 distributions / 737 MB / 386 s before, 49 distributions / 92 MB / 68 s now (uv: 40 s vs
-  10 s). The other 61 distributions came from google-adk's `[eval]` extra (pandas, the Vertex AI eval
+  `google-adk`.** Measured 2026-09-21 from PyPI on 0.9.0 (cold: `pip --no-cache-dir` / `uv --no-cache`,
+  a fresh venv per run, Windows, Python 3.11.15, google-adk 2.9.2; 3 runs each, median [min-max]; package
+  counts and sizes exclude the 2 packages / 24.0 MB a bare venv already holds): the base install is
+  49 packages / 84 MB, pip 78.5 s [76.2-86.3], uv 12.1 s [12.0-15.0]; the `[eval]` tier, which is what
+  the plain install pulled in before this release, is 110 packages / 760 MB, pip 393.9 s [374.8-499.4],
+  uv 83.7 s [80.1-86.7]. (Sizes are of `site-packages`; uv does not compile bytecode, so its sizes are
+  smaller: 54 MB and 492 MB.) The other 61 packages came from google-adk's `[eval]` extra (pandas, the Vertex AI eval
   stack, ...) and were needed for one thing: google-adk's metric registry imports them at import time,
   and this package imported that registry in `__init__.py` to register the cost metric for `adk eval`.
   Everything else works on the bare install: the plugin, `report`, `snapshot`, `check`, `quickstart`
@@ -64,6 +91,8 @@ below) and makes the base install much lighter.
 
 ### Fixed
 
+- **A Google Search grounded call was reported at a fraction of its true cost with no flag.** The grounding fee is billed per prompt or per query, not per token, so it was never in the total (a cost-correctness case measured a grounded call at 4% of its true cost). An invocation whose response carries grounding metadata is now marked incomplete: `report` marks the row `*` and lists "grounding fee not included in total", `report --json` gets `total_is_complete: false`, `n_incomplete`, `unpriced_components` and a per-invocation `is_complete`, and the `adk eval` metric returns `NOT_EVALUATED` instead of a score on a lower bound. Covers the built-in `google_search` tool on Gemini 2.5 and 3.x and `GoogleSearchAgentTool`. The fee itself is still not priced. Snapshot files are now schema version 4 (additive; version 1-3 files still read). (#86)
+- **Audio input tokens were priced at the text rate, and non-text output tokens at the text output rate.** Audio input has its own published rate on several models (gemini-2.5-flash: $1.00/M vs $0.30/M text, so a call measured at 0.47x of its true cost), and image/audio/video output is published at a much higher rate than text; a prefix-matched model id such as `gemini-2.5-flash-image` resolved to the text entry. Both are now taken out of the priced tokens and reported as unpriced, with the invocation marked incomplete exactly as for grounding. Image, video and document input is unchanged: every Gemini entry in the table publishes one rate for text/image/video input. The README limitation that said audio was priced at the text rate is replaced. (#87)
 - **The README said every price entry was "re-verified against each model's live published rate".
   That was true of 20 of the 22.** It now says 20 of 22 and names the other two. The price table
   itself is unchanged. (#77)
