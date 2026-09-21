@@ -7,6 +7,84 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.9.0] — 2026-09-21
+
+This release folds in the never-published 0.8.2 (its items are under "Added", "Fixed" and "Changed"
+below) and makes the base install much lighter.
+
+### Changed
+
+- **`pip install adk-tracegauge` no longer installs `google-adk[eval]`; the base install is bare
+  `google-adk`.** Measured 2026-09-21 (cold pip cache, Windows, Python 3.11, google-adk 2.9.2, single
+  runs): 110 distributions / 737 MB / 386 s before, 49 distributions / 92 MB / 68 s now (uv: 40 s vs
+  10 s). The other 61 distributions came from google-adk's `[eval]` extra (pandas, the Vertex AI eval
+  stack, ...) and were needed for one thing: google-adk's metric registry imports them at import time,
+  and this package imported that registry in `__init__.py` to register the cost metric for `adk eval`.
+  Everything else works on the bare install: the plugin, `report`, `snapshot`, `check`, `quickstart`
+  and `CostEfficiencyEvaluator`. Verified on google-adk 2.6.0 (the supported floor) and 2.9.2 by a new
+  `bare-adk` CI job that runs all of it with pandas absent. (#82)
+  - **If you use the metric inside `adk eval` or `AgentEvaluator`, install the extra:
+    `pip install "adk-tracegauge[eval]"`.** Without it, `adk eval` stops on its own with "Eval module
+    is not installed" (before this package is imported), and `AgentEvaluator.evaluate()` prints one
+    line saying to install `adk-tracegauge[eval]`.
+  - Only `ModuleNotFoundError`, only around the registry import, is tolerated; an `AttributeError`
+    from a changed ADK registry API or an `ImportError` for a moved symbol still fails the import
+    loudly (both tested). `adk_tracegauge.EVAL_REGISTRATION_SKIPPED_REASON` records why registration
+    was skipped.
+- **The vendor price checker (`scripts/check_price_table_vs_vendor.py`) was rewritten.** The old
+  version verified input and output rates for 18 of 22 entries and silently skipped the rest: both
+  Gemini long-context tiers, cached rates (the table's 0.1× cache multiplier was only a dated manual
+  note), promo windows, and any entry with no vendor mapping. Every entry now ends in exactly one
+  status (`VERIFIED`, `SKIPPED` with a stated reason, `MISMATCH`, `UNVERIFIED`); only `VERIFIED` and
+  a reasoned `SKIPPED` pass, and an unmapped entry, an unfetched page, or a vendor that publishes no
+  cached rate to check the multiplier against is `UNVERIFIED` and fails. Cached rates, both `> 200k`
+  tiers and the `gemini-3.6/3.7-flash` promo windows are now compared; the explicit-cache storage fee
+  is reported as not priced instead of ignored. Live run at release: 22 entries, 20 `VERIFIED`,
+  2 `SKIPPED`. (#74, #75)
+- **`gemini-2.0-flash` provenance is now checkable.** Its `fetched_on` (2026-08-14) postdates its
+  `retired_on` (2026-06-01), which looked like a fetch that could not have happened. It was real:
+  Google's pricing page kept a "deprecated and shut down" section listing $0.10 / $0.40 until
+  2026-08-26 (Wayback captures). The entry now carries `vendor_page_last_listed`, `archive_url` and a
+  `provenance_note`, and a test rejects any `fetched_on` in the future or later than the date the
+  vendor page last listed the rate. No rate or date changed. (#79)
+
+### Added
+
+- **`adk-tracegauge report` prints cost by agent.** With two or more agents in the run, a "Cost by
+  agent (priced invocations)" block lists each agent's cost and share of the priced total, most
+  expensive first; cost with no agent name recorded is shown as its own line so the block always adds
+  up. The text output only; `--json` is unchanged. (#83)
+- **`report` says which priced entries no vendor page can verify.** Two of the price table's 22
+  entries are not checked against any live vendor page: `gemini-2.0-flash` (retired 2026-06-01;
+  Google's page dropped its section on about 2026-08-27, so the table holds the last rate it
+  published) and the `__local_zero_cost__` policy (a $0.00 rate for models you assert are local, not a
+  vendor rate). When `report` prices an invocation with either, its text output adds a "Priced, but
+  NOT verifiable against a live vendor page" block naming the model and the reason, and `--json`
+  gains an `unverifiable_pricing` list (empty for every vendor-verified model). (#77)
+
+### Fixed
+
+- **The README said every price entry was "re-verified against each model's live published rate".
+  That was true of 20 of the 22.** It now says 20 of 22 and names the other two. The price table
+  itself is unchanged. (#77)
+- **`tests/test_version_consistency.py` failed in a dev venv after every version bump.** It compared
+  the installed metadata with `__version__`, but an editable install's metadata (and the
+  `src/adk_tracegauge.egg-info` that pytest's `pythonpath` puts ahead of it) is frozen until the venv
+  is refreshed. The comparison now skips for that stale development metadata and still runs against a
+  real install; a separate test keeps the single-source `dynamic` version in `pyproject.toml`. A
+  plain `uv sync` does not refresh it; `uv sync --reinstall-package adk-tracegauge` does. (#82)
+
+### Release process (not part of the wheel)
+
+- **The release workflow now refuses to publish** while the price table is unverified or older than
+  30 days, while the code fails its tests against the latest `google-adk`, or while the latest
+  *scheduled* `pypi-canary` run on `main` is red or older than 8 days (a manual re-run cannot mask a
+  red scheduled run). This was added because the weekly vendor check and the canary were both red
+  and both ignored while 0.7.0 and 0.8.0 shipped. (#72)
+- **`pypi-canary` now tests the release it installs**: it resolves the version PyPI serves as
+  latest and checks out that release's tag, so red means a real `google-adk` incompatibility rather
+  than "main has a tested feature that is not released yet". (#78)
+
 ## [0.8.1] — 2026-09-20
 
 ### Fixed
