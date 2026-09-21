@@ -793,6 +793,18 @@ class CostEfficiencyEvaluator(Evaluator):
                     _unpriced_component_result(actual, expected, adapted.unpriced_component)
                 )
                 continue
+            if adapted.ok and adapted.unpriced_components:
+                # A cost gate must never pass or fail on a lower bound it cannot label: the
+                # vendor bills something this figure leaves out, so the answer is "not
+                # evaluated", same as for tool-use tokens above.
+                per_invocation_results.append(
+                    _unpriced_component_result(
+                        actual,
+                        expected,
+                        "; ".join(c.detail for c in adapted.unpriced_components),
+                    )
+                )
+                continue
             if not adapted.ok:
                 per_invocation_results.append(
                     _unresolved_model_result(actual, expected, adapted.unresolved_model or "")

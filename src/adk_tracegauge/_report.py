@@ -11,6 +11,8 @@ The one rule that shapes the layout: **an invocation this package could not pric
 unknown, never omitted and never given a guessed number** (``Snapshot.skipped`` carries each with
 its reason). The total is therefore labelled a *priced* total and says out loud when it excludes
 unknowns -- a total that silently left an invocation out would read as complete when it is not.
+The same holds for a *component* the vendor bills that is not in the figure (a grounding fee): the invocation is priced for everything else, marked ``*``, and
+listed under "NOT included in the total" -- the total is then a lower bound, never read as complete.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._pricing import LOCAL_MODEL_KEY, is_local_model, load_gemini_prices, resolve_model
-from .snapshot import Snapshot
+from .snapshot import Snapshot, SnapshotRecord
 
 
 def _usd(value: float) -> str:
@@ -61,6 +63,16 @@ def agent_totals(snapshot: Snapshot) -> tuple[dict[str, float], float]:
     return totals, unattributed
 
 
+def incomplete_records(snapshot: Snapshot) -> list[SnapshotRecord]:
+    """Priced invocations whose figure leaves out a vendor-billed component (lower bounds)."""
+    return [r for r in snapshot.records if r.unpriced_components]
+
+
+def total_is_complete(snapshot: Snapshot) -> bool:
+    """True only when nothing is unknown AND no priced invocation leaves a billed component out."""
+    return not snapshot.skipped and not incomplete_records(snapshot)
+
+
 def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
     """Priced invocations whose rate the weekly vendor check cannot verify against a live page,
     one entry per distinct model: a retired model (the vendor page no longer lists it, so the
@@ -94,6 +106,21 @@ def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
     return [{"model": m, "reason": r} for m, r in found.items()]
 
 
+def _unpriced_summary(snapshot: Snapshot) -> list[dict[str, Any]]:
+    """One entry per distinct unpriced component key across the whole snapshot: how many
+    invocations carry it and the summed token/query count -- a machine-readable version of the
+    text report's \"NOT included in the total\" block."""
+    found: dict[str, dict[str, Any]] = {}
+    for r in snapshot.records:
+        for c in r.unpriced_components:
+            entry = found.setdefault(
+                str(c["component"]), {"component": c["component"], "invocations": 0, "tokens": 0}
+            )
+            entry["invocations"] += 1
+            entry["tokens"] += int(c.get("tokens", 0))
+    return list(found.values())
+
+
 def to_json_dict(snapshot: Snapshot, source: str) -> dict[str, Any]:
     """Machine-readable form. ``total_usd_priced`` is the sum over priced invocations only;
     ``total_is_complete`` is False whenever any invocation is unknown, so a consumer cannot
@@ -113,6 +140,8 @@ def to_json_dict(snapshot: Snapshot, source: str) -> dict[str, Any]:
                 "session_id": r.session_id,
                 "eval_case_id": r.eval_case_id,
                 "cost_by_agent": dict(r.cost_by_agent),
+                "unpriced_components": [dict(c) for c in r.unpriced_components],
+                "is_complete": not r.unpriced_components,
             }
         )
     for s in snapshot.skipped:
@@ -133,7 +162,9 @@ def to_json_dict(snapshot: Snapshot, source: str) -> dict[str, Any]:
         "n_priced": len(snapshot.records),
         "n_unknown": len(snapshot.skipped),
         "total_usd_priced": priced_total_usd(snapshot),
-        "total_is_complete": not snapshot.skipped,
+        "total_is_complete": total_is_complete(snapshot),
+        "n_incomplete": len(incomplete_records(snapshot)),
+        "unpriced_components": _unpriced_summary(snapshot),
         "tokens_input_priced": sum(r.tokens_input for r in snapshot.records),
         "tokens_output_priced": sum(r.tokens_output for r in snapshot.records),
         "missing_eval_cases": list(snapshot.missing),
@@ -166,7 +197,7 @@ def render_text(snapshot: Snapshot, source: str) -> str:
         ]
         if show_cache:
             row.append(f"{r.tokens_cache_read:,}")
-        row.append(_usd(r.cost_usd))
+        row.append(_usd(r.cost_usd) + (" *" if r.unpriced_components else ""))
         rows.append(row)
     unknown_notes: list[str] = []
     for s in snapshot.skipped:
@@ -196,10 +227,17 @@ def render_text(snapshot: Snapshot, source: str) -> str:
     total = priced_total_usd(snapshot)
     tok_in = sum(r.tokens_input for r in snapshot.records)
     tok_out = sum(r.tokens_output for r in snapshot.records)
+    incomplete = incomplete_records(snapshot)
     if n_unknown:
         lines.append(
             f"  priced total: {_usd(total)} across {n_priced} invocation(s) -- EXCLUDES "
             f"{n_unknown} unknown invocation(s), so the true total is at least this"
+        )
+    elif incomplete:
+        lines.append(
+            f"  priced total: {_usd(total)} across {n_priced} invocation(s) -- INCOMPLETE: "
+            f"{len(incomplete)} invocation(s) (marked *) bill a component that is not priced, "
+            "so the true total is at least this"
         )
     else:
         lines.append(f"  total: {_usd(total)} across {n_priced} invocation(s)")
@@ -208,6 +246,12 @@ def render_text(snapshot: Snapshot, source: str) -> str:
         lines.append("")
         lines.append("  Unknown invocations were NOT priced (no guessed rate is ever used):")
         lines.extend(unknown_notes)
+    if incomplete:
+        lines.append("")
+        lines.append("  NOT included in the total (billed by the vendor, not priced here):")
+        for r in incomplete:
+            for c in r.unpriced_components:
+                lines.append(f"    {_short_id(r.invocation_id)}: {c['detail']}")
     agents, unattributed = agent_totals(snapshot)
     if len(agents) >= 2:  # one agent is the whole total: a block would only repeat it
         lines.append("")
@@ -242,8 +286,10 @@ just be a header over nothing."""
 
 __all__ = [
     "EMPTY_MESSAGE",
+    "incomplete_records",
     "priced_total_usd",
     "render_text",
+    "total_is_complete",
     "to_json_dict",
     "agent_totals",
     "unverifiable_pricing",

@@ -60,6 +60,21 @@ from ._pricing import (
 from ._store import CapturedCall
 
 
+@dataclass(frozen=True)
+class UnpricedComponent:
+    """Something billed by the vendor that is NOT in the priced figure, so the figure is a
+    lower bound. ``component`` is a stable machine key (``grounding_fee``); ``detail`` is the sentence a person
+    reads. Same fail-closed philosophy as an unresolved model, but the invocation's priced part
+    is still reported (labelled incomplete) rather than dropped."""
+
+    component: str
+    detail: str
+    tokens: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"component": self.component, "detail": self.detail, "tokens": self.tokens}
+
+
 @dataclass
 class AdaptResult:
     """A ready-to-price digest, or the specific reason pricing was refused."""
@@ -73,6 +88,11 @@ class AdaptResult:
     Gemini's server-side built-in tools). Same fail-closed philosophy as
     unresolved_model -- refuse rather than under-report cost by silently
     ignoring billed tokens. See CapturedCall's docstring in _store.py."""
+    unpriced_components: tuple[UnpricedComponent, ...] = ()
+    """Set alongside a usable ``digest`` when the invocation ran something the vendor bills that
+    the digest does not price: a grounding fee. The
+    digest prices everything else; a caller must treat its total as incomplete (see
+    ``UnpricedComponent``)."""
     agent_names_by_turn: tuple[str, ...] = ()
     """LL2: one entry per ``digest.turns`` entry, same order, same length
     (indexed by ``turn_index``) -- the agent_name of the CapturedCall that
@@ -145,6 +165,8 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
 
     turns: list[TurnDigest] = []
     agent_names: list[str] = []
+    grounded_calls = 0
+    grounding_queries = 0
 
     for index, group in enumerate(groups):
         # The non-partial terminator carries each real call's true, complete
@@ -171,6 +193,11 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         if resolved is None:
             return AdaptResult(digest=None, unresolved_model=final_call.model_version)
 
+        # A streamed call's grounding metadata may sit on any of its chunks, not only the last.
+        if any(c.grounded for c in group):
+            grounded_calls += 1
+            grounding_queries += max(c.grounding_queries for c in group)
+
         turns.append(
             TurnDigest(
                 turn_index=index,
@@ -192,8 +219,31 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         # agent, by construction (see _group_streaming_calls above).
         agent_names.append(final_call.agent_name)
 
+    unpriced: list[UnpricedComponent] = []
+    if grounded_calls:
+        queries = ""
+        if grounding_queries:
+            noun = "query" if grounding_queries == 1 else "queries"
+            queries = f" ({grounding_queries} search {noun})"
+        unpriced.append(
+            UnpricedComponent(
+                component="grounding_fee",
+                detail=(
+                    f"grounding fee not included in total: {grounded_calls} call(s) used "
+                    f"grounding{queries}; the vendor bills grounding per prompt or per query on "
+                    "top of tokens, and a plugin cannot see the free allowance, so the fee is "
+                    "left out rather than guessed"
+                ),
+                tokens=grounding_queries,
+            )
+        )
+
     digest = SessionDigest(session_id=invocation_id, turns=turns)
-    return AdaptResult(digest=digest, agent_names_by_turn=tuple(agent_names))
+    return AdaptResult(
+        digest=digest,
+        unpriced_components=tuple(unpriced),
+        agent_names_by_turn=tuple(agent_names),
+    )
 
 
 def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
@@ -282,4 +332,10 @@ def unknown_model_message(model_version: str) -> str:
     )
 
 
-__all__ = ["AdaptResult", "build_session_digest", "price_digest", "unknown_model_message"]
+__all__ = [
+    "AdaptResult",
+    "UnpricedComponent",
+    "build_session_digest",
+    "price_digest",
+    "unknown_model_message",
+]

@@ -179,8 +179,10 @@ def test_pair_costs_by_session_id_agent_scoped_still_matches_on_session_id_not_c
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_bumped_to_3():
-    assert SNAPSHOT_SCHEMA_VERSION == 3
+def test_schema_version_is_4_after_unpriced_components_was_added():
+    # 2->3 added cost_by_agent (LL2); 3->4 added unpriced_components (grounding / audio /
+    # non-text output flags). Both are additive, and v1-v3 files stay readable.
+    assert SNAPSHOT_SCHEMA_VERSION == 4
 
 
 def test_read_snapshot_defaults_cost_by_agent_to_empty_dict_for_a_v1_file(tmp_path):
@@ -253,7 +255,7 @@ def test_write_then_read_snapshot_round_trips_cost_by_agent(tmp_path):
     written = write_snapshot(store, out_path)
     read_back = read_snapshot(out_path)
 
-    assert written.schema_version == 3
+    assert written.schema_version == 4
     assert written.records[0].cost_by_agent == {
         "root_agent": pytest.approx(written.records[0].cost_usd)
     }
