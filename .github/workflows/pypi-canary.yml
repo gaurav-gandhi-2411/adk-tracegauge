@@ -4,7 +4,7 @@ name: PyPI canary (latest google-adk)
 # against google-adk's @experimental MetricEvaluatorRegistry API, which
 # carries no SemVer guarantee. This workflow deliberately installs the
 # *latest* google-adk[eval] release, ignoring that pin, so a breaking
-# change surfaces here on a weekly schedule instead of via a user's own
+# change surfaces here on a daily schedule instead of via a user's own
 # import failing with no warning. A red run here does not mean this repo
 # is broken -- it means the current pin needs re-validating (and likely
 # bumping) against a new google-adk release.
@@ -17,7 +17,7 @@ name: PyPI canary (latest google-adk)
 
 on:
   schedule:
-    - cron: "0 6 * * 1" # every Monday 06:00 UTC
+    - cron: "0 6 * * *" # every day 06:00 UTC; GitHub starts scheduled runs late (06:52-12:47 UTC observed)
   workflow_dispatch:
 
 concurrency:
