@@ -99,27 +99,47 @@ jobs:
         run: '"$RUNNER_TEMP/canary/bin/python" -m pytest tests/ -q -p no:cacheprovider --override-ini="pythonpath=. scripts"'
 
   gate-canary:
-    name: Refuse to release while the latest pypi-canary run is red
+    name: Refuse to release while the latest scheduled pypi-canary run is red or stale
     runs-on: ubuntu-latest
     permissions:
       actions: read
     steps:
-      - name: The most recent completed pypi-canary run must have succeeded
+      - name: The latest SCHEDULED canary run on main must be recent and green
+        # Only `schedule` runs on `main` count. A manual workflow_dispatch (or a run on another
+        # branch) can turn the "latest run" green without anything being fixed -- that masking is
+        # exactly what this filter closes. Cancelled/skipped runs carry no signal and are skipped
+        # over (the canary's concurrency group cancels an in-flight scheduled run when a manual one
+        # starts). No qualifying run inside the window is a refusal, not a pass: the canary is
+        # weekly, so 8 days means one scheduled run was missed.
         env:
           GH_TOKEN: ${{ github.token }}
+          CANARY_EVENT: schedule
+          CANARY_BRANCH: main
+          CANARY_MAX_AGE_DAYS: "8"
         run: |
           set -euo pipefail
-          run_json=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pypi-canary.yml --status completed --limit 1 --json conclusion,createdAt,url,event --jq '.[0]')
-          if [ -z "$run_json" ] || [ "$run_json" = "null" ]; then
-            echo "::error::no completed pypi-canary run exists; run it once (gh workflow run pypi-canary.yml) before releasing"
-            exit 1
-          fi
-          echo "latest completed canary run: $run_json"
-          conclusion=$(echo "$run_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['conclusion'])")
-          if [ "$conclusion" != "success" ]; then
-            echo "::error::the latest pypi-canary run is '$conclusion' -- an unresolved compatibility break. Fix it (or dispatch a fresh green run) before releasing."
-            exit 1
-          fi
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pypi-canary.yml --event "$CANARY_EVENT" --branch "$CANARY_BRANCH" --status completed --limit 20 --json conclusion,createdAt,url,event,headBranch)
+          RUNS="$runs" python3 - <<'PY'
+          import json, os, sys
+          from datetime import datetime, timezone
+
+          event, branch = os.environ["CANARY_EVENT"], os.environ["CANARY_BRANCH"]
+          max_age = float(os.environ["CANARY_MAX_AGE_DAYS"])
+          runs = [r for r in json.loads(os.environ["RUNS"]) if r["conclusion"] in ("success", "failure")]
+          if not runs:
+              print(f"::error::no completed pypi-canary run with event={event} on branch {branch}; the weekly schedule has not produced one, so the canary cannot vouch for this release")
+              sys.exit(1)
+          latest = max(runs, key=lambda r: r["createdAt"])
+          age = (datetime.now(timezone.utc) - datetime.fromisoformat(latest["createdAt"].replace("Z", "+00:00"))).total_seconds() / 86400
+          print(f"latest qualifying canary run: {latest} (age {age:.2f} days, limit {max_age:g})")
+          if latest["conclusion"] != "success":
+              print(f"::error::the latest {event} pypi-canary run on {branch} is '{latest['conclusion']}' ({latest['url']}) -- an unresolved compatibility break. A manual green re-run does not clear it; fix the cause and wait for the next scheduled run.")
+              sys.exit(1)
+          if age > max_age:
+              print(f"::error::the latest {event} pypi-canary run on {branch} is {age:.1f} days old (limit {max_age:g}); a scheduled run was missed")
+              sys.exit(1)
+          print("canary gate: OK")
+          PY
 
   publish:
     # Only a tag push publishes. A workflow_dispatch run stops after the preflights above.
