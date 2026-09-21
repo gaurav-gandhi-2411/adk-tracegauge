@@ -11,7 +11,8 @@ The one rule that shapes the layout: **an invocation this package could not pric
 unknown, never omitted and never given a guessed number** (``Snapshot.skipped`` carries each with
 its reason). The total is therefore labelled a *priced* total and says out loud when it excludes
 unknowns -- a total that silently left an invocation out would read as complete when it is not.
-The same holds for a *component* the vendor bills that is not in the figure (a grounding fee): the invocation is priced for everything else, marked ``*``, and
+The same holds for a *component* the vendor bills that is not in the figure (a grounding fee,
+audio input, non-text output): the invocation is priced for everything else, marked ``*``, and
 listed under "NOT included in the total" -- the total is then a lower bound, never read as complete.
 """
 

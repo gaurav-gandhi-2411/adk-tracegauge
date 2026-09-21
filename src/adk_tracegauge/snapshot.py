@@ -40,8 +40,8 @@ and why)::
     }
 
 **``unpriced_components`` (additive field, schema_version bumped 3->4):** what the vendor
-bills for an invocation that ``cost_usd`` does NOT include -- a grounding fee
-(``_adapter.UnpricedComponent``). A record with a non-empty
+bills for an invocation that ``cost_usd`` does NOT include -- a grounding fee, audio input
+tokens, non-text output tokens (``_adapter.UnpricedComponent``). A record with a non-empty
 list is priced but INCOMPLETE: its ``cost_usd`` is a lower bound, exactly as an unknown
 invocation makes the total a lower bound. ``[]`` for every v1-v3 file, which never carried it.
 

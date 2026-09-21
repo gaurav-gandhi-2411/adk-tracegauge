@@ -63,7 +63,8 @@ from ._store import CapturedCall
 @dataclass(frozen=True)
 class UnpricedComponent:
     """Something billed by the vendor that is NOT in the priced figure, so the figure is a
-    lower bound. ``component`` is a stable machine key (``grounding_fee``); ``detail`` is the sentence a person
+    lower bound. ``component`` is a stable machine key (``grounding_fee``,
+    ``audio_input_tokens``, ``non_text_output_tokens``); ``detail`` is the sentence a person
     reads. Same fail-closed philosophy as an unresolved model, but the invocation's priced part
     is still reported (labelled incomplete) rather than dropped."""
 
@@ -90,7 +91,7 @@ class AdaptResult:
     ignoring billed tokens. See CapturedCall's docstring in _store.py."""
     unpriced_components: tuple[UnpricedComponent, ...] = ()
     """Set alongside a usable ``digest`` when the invocation ran something the vendor bills that
-    the digest does not price: a grounding fee. The
+    the digest does not price: a grounding fee, audio input tokens, non-text output tokens. The
     digest prices everything else; a caller must treat its total as incomplete (see
     ``UnpricedComponent``)."""
     agent_names_by_turn: tuple[str, ...] = ()
@@ -165,6 +166,8 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
 
     turns: list[TurnDigest] = []
     agent_names: list[str] = []
+    audio_tokens = 0
+    output_by_modality: dict[str, int] = {}
     grounded_calls = 0
     grounding_queries = 0
 
@@ -193,6 +196,18 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         if resolved is None:
             return AdaptResult(digest=None, unresolved_model=final_call.model_version)
 
+        # Audio input and non-text output have their own vendor rates; pricing them at the text
+        # rate is a silent wrong figure, so they are taken OUT of the priced tokens and reported
+        # as unpriced instead. Image/video/document INPUT is left in: every model in the table
+        # publishes one rate for text/image/video input (README, "Known limitations").
+        audio = min(final_call.audio_prompt_token_count, final_call.prompt_token_count)
+        audio_cached = min(final_call.audio_cached_token_count, audio)
+        non_text_out = 0
+        for modality, count in final_call.non_text_output_tokens:
+            output_by_modality[modality] = output_by_modality.get(modality, 0) + count
+            non_text_out += count
+        non_text_out = min(non_text_out, final_call.candidates_token_count)
+        audio_tokens += audio
         # A streamed call's grounding metadata may sit on any of its chunks, not only the last.
         if any(c.grounded for c in group):
             grounded_calls += 1
@@ -202,14 +217,16 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
             TurnDigest(
                 turn_index=index,
                 role="ai",
-                token_count_input=final_call.prompt_token_count,
+                token_count_input=final_call.prompt_token_count - audio,
                 # thoughts_token_count ("thinking" tokens) is billed as
                 # output per Gemini's pricing pages -- folded in here so it
                 # isn't silently undercounted (Phase 2 W1 P0 finding).
                 token_count_output=(
-                    final_call.candidates_token_count + final_call.thoughts_token_count
+                    final_call.candidates_token_count
+                    - non_text_out
+                    + final_call.thoughts_token_count
                 ),
-                cache_read=final_call.cached_content_token_count,
+                cache_read=max(0, final_call.cached_content_token_count - audio_cached),
                 cache_creation=0,
                 model=resolved.model_key,
             )
@@ -235,6 +252,30 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
                     "left out rather than guessed"
                 ),
                 tokens=grounding_queries,
+            )
+        )
+    if audio_tokens:
+        unpriced.append(
+            UnpricedComponent(
+                component="audio_input_tokens",
+                detail=(
+                    f"{audio_tokens:,} audio input token(s) not priced: vendors publish a "
+                    "separate audio input rate, so they are left out rather than priced at the "
+                    "text rate"
+                ),
+                tokens=audio_tokens,
+            )
+        )
+    for modality, count in sorted(output_by_modality.items()):
+        unpriced.append(
+            UnpricedComponent(
+                component="non_text_output_tokens",
+                detail=(
+                    f"{count:,} {modality.lower()} output token(s) not priced: vendors publish a "
+                    "separate output rate for non-text modalities, so they are left out rather "
+                    "than priced at the text output rate"
+                ),
+                tokens=count,
             )
         )
 
