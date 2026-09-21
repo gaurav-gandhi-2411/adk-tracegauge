@@ -2,9 +2,13 @@
 scripts/check_price_table_vs_vendor.py against recorded excerpts of what each vendor's page
 returned when fetched live on 2026-09-20. No live network in CI.
 
-Stage: the audit engine -- every entry ends in exactly one status (VERIFIED / SKIPPED /
-MISMATCH / UNVERIFIED) on input, output, cached rate and long-context tier; promo windows and
-the storage note come in the next PR.
+The checker's contract, tested below: EVERY table entry ends in exactly one status; only VERIFIED
+and an explicit, reasoned SKIPPED are non-failures; anything it cannot check (unmapped entry, no
+cached rate to check the multiplier against, page not fetched) is UNVERIFIED and fails the run.
+Its previous version verified 18 of 22 entries, silently skipped the long-context tiers, never
+compared cached rates, and stayed red for three weeks without anyone acting -- so the tests here
+pin the behaviours that failure mode needs: cached/tier/promo mismatches are caught, and nothing
+is skipped silently.
 """
 
 from __future__ import annotations
@@ -285,6 +289,28 @@ def test_long_context_tier_is_checked_not_silently_skipped():
     assert rows["gemini-2.5-pro-long-context"].status == "MISMATCH"
 
 
+def test_promo_until_mismatch_is_caught():
+    rows = _mutated(lambda p: p["models"]["gemini-3.6-flash"].update(promo_until="2026-11-30"))
+    assert rows["gemini-3.6-flash"].status == "MISMATCH"
+    assert "promo_until" in rows["gemini-3.6-flash"].detail[0]
+
+
+def test_post_promo_standard_rate_mismatch_is_caught():
+    rows = _mutated(
+        lambda p: p["models"]["gemini-3.6-flash"]["standard_rate"].update(input_usd_per_mtok=1.6)
+    )
+    assert rows["gemini-3.6-flash"].status == "MISMATCH"
+    assert "standard_rate" in rows["gemini-3.6-flash"].detail[0]
+
+
+def test_a_promo_the_vendor_lists_but_the_entry_lacks_is_a_mismatch():
+    def drop_promo(p):
+        e = p["models"]["gemini-3.6-flash"]
+        del e["promo_until"], e["standard_rate"]
+
+    assert _mutated(drop_promo)["gemini-3.6-flash"].status == "MISMATCH"
+
+
 def test_a_one_percent_price_drift_is_caught():
     rows = _mutated(lambda p: p["models"]["claude-opus-5"].update(input_usd_per_mtok=5.05))
     assert rows["claude-opus-5"].status == "MISMATCH"
@@ -330,6 +356,11 @@ def test_an_unfetched_vendor_page_makes_its_entries_unverified_not_ok():
         rows["gpt-5.6-terra"].status == "UNVERIFIED"
         and "not fetched" in rows["gpt-5.6-terra"].detail[0]
     )
+
+
+def test_explicit_cache_storage_is_reported_as_not_priced():
+    rows = _audit()
+    assert any("storage" in d and "NOT priced" in d for d in rows["gemini-2.5-pro"].detail)
 
 
 # --- main(): exit codes ----------------------------------------------------------------------
