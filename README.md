@@ -50,7 +50,13 @@ Real output from a deterministic fake model (no API key), hand-checked: 12,000 Ã
 
 ## Also: a real PASS/FAIL cost metric inside `adk eval`
 
-**Needs the extra: `pip install "adk-tracegauge[eval]"`** (adds google-adk's own `[eval]` extra: 61 more distributions, about 645 MB). Without it `adk eval` stops on its own with "Eval module is not installed", and `AgentEvaluator.evaluate()` prints one line telling you to install the extra. Everything else in this README works without it.
+**Needs the extra: `pip install "adk-tracegauge[eval]"`** (adds google-adk's own `[eval]` extra: 61 more distributions, about 645 MB). Without it, `adk eval` stops with ADK's own message, printed before it imports your agent (so before this package is loaded):
+
+```
+Error: Eval module is not installed, please install via `pip install "google-adk[eval]"`.
+```
+
+That message names `google-adk[eval]`; for this package the fix is the same and one step shorter: `pip install "adk-tracegauge[eval]"`. `AgentEvaluator.evaluate()` does reach this package first, and prints one line telling you to install `adk-tracegauge[eval]`. Everything else in this README works without the extra.
 
 Register the metric with a threshold, wire the plugin into your agent, and `adk eval` itself prints a real dollar score and PASSED/FAILED verdict per invocation â€” useful for inline cost visibility while iterating on an eval set, complementary to (not a replacement for) the CI gate above.
 
