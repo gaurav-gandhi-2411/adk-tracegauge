@@ -56,6 +56,19 @@ class CapturedCall:
     partial: bool = False
     thoughts_token_count: int = 0
     tool_use_prompt_token_count: int = 0
+    audio_prompt_token_count: int = 0
+    """Audio-modality input tokens (``usage_metadata.prompt_tokens_details``), of which
+    ``audio_cached_token_count`` are cache reads (``cache_tokens_details``). Vendors publish a
+    separate, usually higher, audio input rate (gemini-2.5-flash: $1.00 vs $0.30 text), so
+    ``_adapter`` leaves these out of the priced figure and flags them instead of pricing them at
+    the text rate."""
+    audio_cached_token_count: int = 0
+    non_text_output_tokens: tuple[tuple[str, int], ...] = ()
+    """``(modality, tokens)`` for every non-TEXT entry in ``candidates_tokens_details`` (image,
+    audio, video output). Included in ``candidates_token_count``; vendors publish a different
+    output rate for them (Gemini image output $30-60/M vs $1.50-3 text), and a prefix-matched
+    model id such as ``gemini-2.5-flash-image`` resolves to the text entry, so ``_adapter`` flags
+    these rather than pricing them at the text output rate."""
     grounded: bool = False
     """The response carried grounding metadata (Google Search / Maps / retrieval): a per-prompt
     or per-query fee that is not in token usage. ``grounding_queries`` counts the search

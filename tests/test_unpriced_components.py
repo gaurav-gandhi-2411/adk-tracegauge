@@ -1,5 +1,6 @@
-"""A vendor-billed component the token arithmetic cannot price (the Google Search grounding fee)
-is FLAGGED and the total is marked incomplete -- never silently omitted.
+"""Vendor-billed components the token arithmetic cannot price (grounding fees, audio input,
+non-text output) are FLAGGED and the total is marked incomplete -- never silently omitted and never
+priced at the text rate.
 
 Every dollar figure is hand-computed from the published gemini-2.5-flash rates in a comment next
 to it: $0.30/M input, $0.03/M cached input (0.1x), $2.50/M output.
@@ -23,18 +24,35 @@ from adk_tracegauge._store import UsageStore
 from adk_tracegauge.evaluator import METRIC_NAME, CostEfficiencyEvaluator
 from adk_tracegauge.snapshot import build_snapshot, read_snapshot, write_snapshot
 
+_M = genai_types.MediaModality
+
+
+def _details(**tokens: int) -> list[genai_types.ModalityTokenCount]:
+    return [
+        genai_types.ModalityTokenCount(modality=_M[name.upper()], token_count=n)
+        for name, n in tokens.items()
+    ]
+
 
 def _response(
     model: str = "gemini-2.5-flash",
     prompt: int = 1000,
     output: int = 200,
+    cached: int = 0,
+    prompt_details: list[genai_types.ModalityTokenCount] | None = None,
+    cache_details: list[genai_types.ModalityTokenCount] | None = None,
+    output_details: list[genai_types.ModalityTokenCount] | None = None,
     grounding: genai_types.GroundingMetadata | None = None,
     partial: bool = False,
 ) -> LlmResponse:
     usage = genai_types.GenerateContentResponseUsageMetadata(
         prompt_token_count=prompt,
         candidates_token_count=output,
+        cached_content_token_count=cached,
         total_token_count=prompt + output,
+        prompt_tokens_details=prompt_details,
+        cache_tokens_details=cache_details,
+        candidates_tokens_details=output_details,
     )
     return LlmResponse(
         model_version=model, usage_metadata=usage, grounding_metadata=grounding, partial=partial
@@ -153,6 +171,110 @@ async def test_a_plain_call_and_an_empty_grounding_object_are_not_flagged(mocker
     assert "NOT included" not in render_text(snap, "x")
 
 
+# ---- audio input -------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audio_input_is_left_out_and_flagged_never_priced_at_the_text_rate(mocker):
+    # 1,000 prompt tokens of which 400 audio. Text-rate pricing of all 1,000 would be $0.000800
+    # (the silent-wrong figure). Priced part: 600 x $0.30/M = $0.000180 + 200 x $2.50/M =
+    # $0.000500 -> $0.000680; the 400 audio tokens are reported as unpriced.
+    store = UsageStore()
+    await _capture(store, mocker, [_response(prompt_details=_details(text=600, audio=400))])
+
+    snap = build_snapshot(store)
+
+    (record,) = snap.records
+    assert record.cost_usd == pytest.approx(0.00068)
+    assert record.tokens_input == 600
+    (component,) = record.unpriced_components
+    assert component["component"] == "audio_input_tokens"
+    assert component["tokens"] == 400
+    assert "400 audio input token(s) not priced" in component["detail"]
+    assert not total_is_complete(snap)
+    assert "audio input token(s) not priced" in render_text(snap, "x")
+
+
+@pytest.mark.asyncio
+async def test_cached_audio_tokens_are_removed_from_the_cache_read_too(mocker):
+    # 1,000 prompt: 400 audio, 600 text; 500 cached, 200 of them audio. Priced: 600 text-side
+    # input, of which 500 - 200 = 300 cached ($0.03/M) and 300 fresh ($0.30/M):
+    # 300 x 0.30/M = $0.000090; 300 x 0.03/M = $0.000009; 200 out x 2.50/M = $0.000500
+    # -> $0.000599.
+    store = UsageStore()
+    await _capture(
+        store,
+        mocker,
+        [
+            _response(
+                cached=500,
+                prompt_details=_details(text=600, audio=400),
+                cache_details=_details(text=300, audio=200),
+            )
+        ],
+    )
+
+    (record,) = build_snapshot(store).records
+
+    assert record.cost_usd == pytest.approx(0.000599)
+    assert record.tokens_cache_read == 300
+
+
+# ---- other non-text modalities -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_image_video_document_input_is_priced_at_the_text_rate_and_not_flagged(mocker):
+    # The vendor publishes ONE input rate for text/image/video on every Gemini model in the table
+    # (ai.google.dev/gemini-api/docs/pricing, read 2026-09-21), so 1,000 mixed tokens at $0.30/M
+    # + 200 out at $2.50/M = $0.000800 is the correct, complete figure.
+    store = UsageStore()
+    await _capture(
+        store,
+        mocker,
+        [_response(prompt_details=_details(text=100, image=300, video=400, document=200))],
+    )
+
+    snap = build_snapshot(store)
+
+    (record,) = snap.records
+    assert record.cost_usd == pytest.approx(0.0008)
+    assert record.unpriced_components == []
+    assert total_is_complete(snap)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modality", ["image", "audio", "video"])
+async def test_non_text_output_is_left_out_and_flagged(mocker, modality: str):
+    # 1,000 output tokens of which 800 are `modality`. The model id may prefix-match a text entry
+    # (gemini-2.5-flash-image -> gemini-2.5-flash), whose $2.50/M would misprice image output
+    # ($30/M+). Priced part: 1,000 in x $0.30/M = $0.000300 + 200 text out x $2.50/M = $0.000500
+    # -> $0.000800; the 800 non-text output tokens are unpriced.
+    store = UsageStore()
+    await _capture(
+        store,
+        mocker,
+        [
+            _response(
+                model="gemini-2.5-flash-image",
+                prompt=1000,
+                output=1000,
+                output_details=_details(text=200, **{modality: 800}),
+            )
+        ],
+    )
+
+    snap = build_snapshot(store)
+
+    (record,) = snap.records
+    assert record.cost_usd == pytest.approx(0.0008)
+    (component,) = record.unpriced_components
+    assert component["component"] == "non_text_output_tokens"
+    assert component["tokens"] == 800
+    assert f"800 {modality} output token(s) not priced" in component["detail"]
+    assert not total_is_complete(snap)
+
+
 # ---- persistence, the eval metric, and old files ----------------------------------------------
 
 
@@ -181,7 +303,11 @@ async def test_flags_survive_the_snapshot_file_and_a_v3_file_reads_back_complete
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "kwargs",
-    [{"grounding": _search(1)}],
+    [
+        {"grounding": _search(1)},
+        {"prompt_details": _details(text=600, audio=400)},
+        {"output_details": _details(text=100, image=100), "output": 200},
+    ],
 )
 async def test_the_eval_metric_reports_not_evaluated_not_a_lower_bound_score(mocker, kwargs):
     store = UsageStore()

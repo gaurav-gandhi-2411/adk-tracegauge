@@ -85,6 +85,17 @@ _ACTIVE_INVOCATIONS: contextvars.ContextVar[tuple[str, ...]] = contextvars.Conte
 )
 
 
+def _modality_tokens(details: object) -> dict[str, int]:
+    """``ModalityTokenCount`` list -> ``{"AUDIO": n, ...}`` (modality name upper-cased; an enum's
+    ``.value`` when it is one). Missing/None details -> ``{}``."""
+    out: dict[str, int] = {}
+    for d in details or []:  # type: ignore[attr-defined]
+        modality = getattr(d, "modality", None)
+        name = str(getattr(modality, "value", modality) or "").upper()
+        out[name] = out.get(name, 0) + int(getattr(d, "token_count", 0) or 0)
+    return out
+
+
 def _grounding(llm_response: LlmResponse) -> tuple[bool, int]:
     """(grounded, search-query count). Any of the Google Search / Maps / retrieval signals on
     ``grounding_metadata`` counts as grounded -- a fee applies whichever one carries it."""
@@ -200,11 +211,19 @@ class TraceGaugeUsagePlugin(BasePlugin):
             # record zeros, which would understate real cost.
             return None
 
+        prompt_modalities = _modality_tokens(usage.prompt_tokens_details)
+        cache_modalities = _modality_tokens(usage.cache_tokens_details)
+        output_modalities = _modality_tokens(usage.candidates_tokens_details)
         grounded, grounding_queries = _grounding(llm_response)
 
         self._store.record(
             callback_context.invocation_id,
             CapturedCall(
+                audio_prompt_token_count=prompt_modalities.get("AUDIO", 0),
+                audio_cached_token_count=cache_modalities.get("AUDIO", 0),
+                non_text_output_tokens=tuple(
+                    sorted((m, n) for m, n in output_modalities.items() if m != "TEXT" and n)
+                ),
                 grounded=grounded,
                 grounding_queries=grounding_queries,
                 model_version=llm_response.model_version or "",
