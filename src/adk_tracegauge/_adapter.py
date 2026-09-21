@@ -71,9 +71,19 @@ class UnpricedComponent:
     component: str
     detail: str
     tokens: int = 0
+    source: str = ""
+    """For ``grounding_fee``: which grounding source it is (``google_search``, ``vertex_ai_search``,
+    ``google_maps``, ``unknown``). Empty for every other component."""
 
     def as_dict(self) -> dict[str, Any]:
-        return {"component": self.component, "detail": self.detail, "tokens": self.tokens}
+        d: dict[str, Any] = {
+            "component": self.component,
+            "detail": self.detail,
+            "tokens": self.tokens,
+        }
+        if self.source:
+            d["source"] = self.source
+        return d
 
 
 @dataclass
@@ -168,7 +178,7 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
     agent_names: list[str] = []
     audio_tokens = 0
     output_by_modality: dict[str, int] = {}
-    grounded_calls = 0
+    grounded_calls: dict[str, int] = {}
     grounding_queries = 0
 
     for index, group in enumerate(groups):
@@ -209,8 +219,10 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         non_text_out = min(non_text_out, final_call.candidates_token_count)
         audio_tokens += audio
         # A streamed call's grounding metadata may sit on any of its chunks, not only the last.
-        if any(c.grounded for c in group):
-            grounded_calls += 1
+        group_sources = {s for c in group for s in c.grounding_sources}
+        for source in group_sources:
+            grounded_calls[source] = grounded_calls.get(source, 0) + 1
+        if "google_search" in group_sources:
             grounding_queries += max(c.grounding_queries for c in group)
 
         turns.append(
@@ -237,21 +249,43 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         agent_names.append(final_call.agent_name)
 
     unpriced: list[UnpricedComponent] = []
-    if grounded_calls:
-        queries = ""
-        if grounding_queries:
-            noun = "query" if grounding_queries == 1 else "queries"
-            queries = f" ({grounding_queries} search {noun})"
+    for source in sorted(grounded_calls):
+        n_calls = grounded_calls[source]
+        if source == "google_search":
+            queries = ""
+            if grounding_queries:
+                noun = "query" if grounding_queries == 1 else "queries"
+                queries = f" ({grounding_queries} search {noun})"
+            detail = (
+                f"grounding fee not included in total: Google Search grounding on {n_calls} call(s)"
+                f"{queries}; the vendor bills it per prompt or per query on top of tokens, and a "
+                "plugin cannot see the free allowance, so the fee is left out rather than guessed"
+            )
+            quantity = grounding_queries
+        elif source == "vertex_ai_search":
+            detail = (
+                f"grounding fee not included in total: Vertex AI Search grounding on {n_calls} "
+                "call(s); it is billed separately from Google Search grounding and no rate for it "
+                "is in the price table, so the fee is left out rather than guessed"
+            )
+            quantity = n_calls
+        elif source == "google_maps":
+            detail = (
+                f"grounding fee not included in total: Google Maps grounding on {n_calls} call(s); "
+                "it is billed separately from Google Search grounding and no rate for it is in "
+                "the price table, so the fee is left out rather than guessed"
+            )
+            quantity = n_calls
+        else:
+            detail = (
+                f"grounding fee not included in total: grounding metadata of an unrecognised "
+                f"source type on {n_calls} call(s); whether and how it is billed is unknown, so "
+                "nothing is priced"
+            )
+            quantity = n_calls
         unpriced.append(
             UnpricedComponent(
-                component="grounding_fee",
-                detail=(
-                    f"grounding fee not included in total: {grounded_calls} call(s) used "
-                    f"grounding{queries}; the vendor bills grounding per prompt or per query on "
-                    "top of tokens, and a plugin cannot see the free allowance, so the fee is "
-                    "left out rather than guessed"
-                ),
-                tokens=grounding_queries,
+                component="grounding_fee", detail=detail, tokens=quantity, source=source
             )
         )
     if audio_tokens:

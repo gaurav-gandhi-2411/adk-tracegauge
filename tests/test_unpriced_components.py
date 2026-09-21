@@ -101,7 +101,7 @@ async def test_builtin_google_search_is_flagged_on_2_5_and_3_x(mocker, model: st
     assert body["n_incomplete"] == 1
     assert body["invocations"][0]["is_complete"] is False
     assert body["unpriced_components"] == [
-        {"component": "grounding_fee", "invocations": 1, "tokens": 2}
+        {"component": "grounding_fee", "source": "google_search", "invocations": 1, "tokens": 2}
     ]
 
 
@@ -329,3 +329,153 @@ async def test_the_eval_metric_reports_not_evaluated_not_a_lower_bound_score(moc
     assert pir.score is None
     assert pir.eval_status == EvalStatus.NOT_EVALUATED
     assert "cost not computed" in pir.rubric_scores[0].rationale
+
+
+# ---- the flag names WHICH grounding source was used -----------------------------------------
+
+
+def _gm(**kw) -> genai_types.GroundingMetadata:
+    return genai_types.GroundingMetadata(**kw)
+
+
+_SOURCES = {
+    "google_search:queries": (
+        _gm(web_search_queries=["a"]),
+        "google_search",
+        "Google Search grounding",
+    ),
+    "google_search:image_queries": (
+        _gm(image_search_queries=["a"]),
+        "google_search",
+        "Google Search grounding",
+    ),
+    "google_search:entry_point": (
+        _gm(search_entry_point=genai_types.SearchEntryPoint(rendered_content="<x/>")),
+        "google_search",
+        "Google Search grounding",
+    ),
+    "vertex_ai_search:queries": (
+        _gm(retrieval_queries=["a"]),
+        "vertex_ai_search",
+        "Vertex AI Search grounding",
+    ),
+    "vertex_ai_search:chunk": (
+        _gm(
+            grounding_chunks=[
+                genai_types.GroundingChunk(
+                    retrieved_context=genai_types.GroundingChunkRetrievedContext(uri="u")
+                )
+            ]
+        ),
+        "vertex_ai_search",
+        "Vertex AI Search grounding",
+    ),
+    "google_maps:token": (
+        _gm(google_maps_widget_context_token="t"),
+        "google_maps",
+        "Google Maps grounding",
+    ),
+    "google_maps:chunk": (
+        _gm(
+            grounding_chunks=[
+                genai_types.GroundingChunk(maps=genai_types.GroundingChunkMaps(uri="u"))
+            ]
+        ),
+        "google_maps",
+        "Google Maps grounding",
+    ),
+    "unknown:supports_only": (
+        _gm(grounding_supports=[genai_types.GroundingSupport()]),
+        "unknown",
+        "unrecognised source type",
+    ),
+    "unknown:empty_chunk": (
+        _gm(grounding_chunks=[genai_types.GroundingChunk()]),
+        "unknown",
+        "unrecognised source type",
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", sorted(_SOURCES))
+async def test_the_flag_names_the_grounding_source(mocker, case: str):
+    metadata, source, phrase = _SOURCES[case]
+    store = UsageStore()
+    await _capture(store, mocker, [_response(grounding=metadata)])
+
+    snap = build_snapshot(store)
+
+    (record,) = snap.records
+    (component,) = record.unpriced_components
+    assert component["component"] == "grounding_fee"
+    assert component["source"] == source
+    assert "grounding fee not included in total" in component["detail"]
+    assert phrase in component["detail"]
+    assert phrase in render_text(snap, "x")
+    assert not total_is_complete(snap)
+    assert {c["source"] for c in to_json_dict(snap, "x")["unpriced_components"]} == {source}
+
+
+@pytest.mark.asyncio
+async def test_only_google_search_counts_search_queries_and_others_do_not_claim_them(mocker):
+    store = UsageStore()
+    await _capture(store, mocker, [_response(grounding=_gm(retrieval_queries=["a", "b"]))])
+
+    (record,) = build_snapshot(store).records
+
+    (component,) = record.unpriced_components
+    assert "search quer" not in component["detail"]
+    assert component["tokens"] == 1  # one grounded call, not a query count
+
+
+@pytest.mark.asyncio
+async def test_one_call_with_two_sources_gets_one_flag_per_source(mocker):
+    store = UsageStore()
+    both = _gm(web_search_queries=["a", "b"], retrieval_queries=["c"])
+    await _capture(store, mocker, [_response(grounding=both)])
+
+    snap = build_snapshot(store)
+
+    (record,) = snap.records
+    assert [c["source"] for c in record.unpriced_components] == [
+        "google_search",
+        "vertex_ai_search",
+    ]
+    assert [
+        (c["source"], c["invocations"]) for c in to_json_dict(snap, "x")["unpriced_components"]
+    ] == [
+        ("google_search", 1),
+        ("vertex_ai_search", 1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_shape_of_a_real_google_search_response_is_named_google_search(mocker):
+    # Trimmed from a real gemini-2.5-flash response captured through ADK's built-in google_search
+    # tool on 2026-09-21 (two queries, web chunks, supports, a search entry point).
+    real = genai_types.GroundingMetadata.model_validate(
+        {
+            "grounding_chunks": [
+                {"web": {"title": "python.org", "uri": "https://example.invalid/redirect/1"}},
+                {"web": {"title": "python.org", "uri": "https://example.invalid/redirect/2"}},
+            ],
+            "grounding_supports": [
+                {"grounding_chunk_indices": [0, 1], "segment": {"start_index": 95, "end_index": 97}}
+            ],
+            "search_entry_point": {"rendered_content": "<style></style>"},
+            "web_search_queries": [
+                "latest stable python version",
+                "latest stable Node.js LTS version",
+            ],
+        }
+    )
+    store = UsageStore()
+    await _capture(store, mocker, [_response(grounding=real)])
+
+    (record,) = build_snapshot(store).records
+
+    (component,) = record.unpriced_components
+    assert component["source"] == "google_search"
+    assert component["tokens"] == 2
+    assert "Google Search grounding on 1 call(s) (2 search queries)" in component["detail"]

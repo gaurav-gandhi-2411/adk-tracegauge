@@ -69,11 +69,19 @@ class CapturedCall:
     output rate for them (Gemini image output $30-60/M vs $1.50-3 text), and a prefix-matched
     model id such as ``gemini-2.5-flash-image`` resolves to the text entry, so ``_adapter`` flags
     these rather than pricing them at the text output rate."""
-    grounded: bool = False
-    """The response carried grounding metadata (Google Search / Maps / retrieval): a per-prompt
-    or per-query fee that is not in token usage. ``grounding_queries`` counts the search
-    queries when ADK reports them."""
+    grounding_sources: tuple[str, ...] = ()
+    """Which grounding source(s) the response's grounding metadata names, sorted:
+    ``google_search``, ``vertex_ai_search``, ``google_maps`` or ``unknown`` (grounding signals
+    present but no recognisable source). Empty when the response was not grounded. Each source is
+    billed on its own basis, none of it in token usage, so ``_adapter`` names the source in the
+    flag instead of saying only "grounding". ``grounding_queries`` counts Google Search queries
+    when ADK reports them."""
     grounding_queries: int = 0
+
+    @property
+    def grounded(self) -> bool:
+        return bool(self.grounding_sources)
+
     agent_name: str = ""
     """LL2 (sub-agent attribution): the name of the agent that made this
     specific call, sourced from ``callback_context.agent_name`` --
