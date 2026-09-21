@@ -7,6 +7,121 @@
     "write_1hr": 0.0,
     "_note": "This ONE global read-multiplier applies to every model in the table -- tes.cost.compute_turn_cost (tracegauge's shared cost engine) has no per-model cache-multiplier override, so a vendor whose real cache-read discount differs from 0.1x cannot be added here without silently mispricing its cache hits. Gemini's default (automatic/implicit) context caching bills only a read-time discount at 0.1x the model's fresh input rate -- verified per-model against ai.google.dev's published cached-input rates (every model checked, including the >200k long-context tiers, divides out to exactly 0.1x of that tier's own input rate; re-verified 2026-08-14 across 10 models). Claude's prompt-caching cache-read rate is ALSO exactly 0.1x of base input on every current model, per platform.claude.com/docs/en/about-claude/pricing (fetched 2026-08-14, e.g. Opus 5: $0.50 cache-hit / $5.00 base input = 0.1x). OpenAI's CURRENT (GPT-5.x) generation is ALSO 0.1x on every model checked (developers.openai.com/api/docs/pricing, fetched 2026-08-14, e.g. gpt-5.1: $0.125 cached / $1.25 input = 0.1x) -- this is why Phase 2 W3 added the GPT-5.x family. OpenAI's GPT-4/o-series generation does NOT share this ratio (observed 0.25x on gpt-4.1, 0.5x on gpt-4o and o1) and was deliberately NOT added to this table for that reason -- adding it here would silently under-price any cached call on those models by 2.5x-5x. Register those (or any other off-ratio vendor) via the ADK_TRACEGAUGE_PRICE_TABLE env var override instead, which lets you supply your own cache_multipliers alongside your own models. There is no cache-write surcharge and no cache_creation token field surfaced through ADK's plugin path for any provider (Gemini has none natively; ADK's LiteLlm bridge normalizes OpenAI/Anthropic cache-hit fields into the same cache-READ shape as Gemini's cached_content_token_count but does not surface a separate cache-WRITE token count anywhere adk-tracegauge's plugin can capture it -- see _plugin.py/_store.py), so write multipliers are 0 by design for every entry, not a placeholder. cache_read billing correctness also depends on prompt_token_count already including cached tokens (so fresh_tokens = prompt_token_count - cache_read is not double-billing) -- confirmed directly from the installed google-genai SDK's GenerateContentResponseUsageMetadata docstring: 'prompt_token_count ... When cached_content is set, this also includes the number of tokens in the cached content.'"
   },
+  "input_modality_verification": {
+    "checked_on": "2026-09-21",
+    "result": "No entry prices image or video input apart from text input. Read from the RAW vendor pages (curl, not a summarizing tool). Where a Gemini page labels the modalities, image and video share the text rate (only audio differs, and audio is flagged unpriced); where it lists one input price, no per-modality rate is listed. No table model lists a separate video-input rate. For Claude and GPT the vendor docs bill image tokens at the model's input price. Re-checked for Gemini every week: scripts/check_price_table_vs_vendor.py reports MISMATCH if an input row ever prices image or video apart from text.",
+    "raw_page_sha256_prefix": {
+      "ai.google.dev/gemini-api/docs/pricing": "9da8d7ab9c423615",
+      "platform.claude.com/docs/en/about-claude/pricing.md": "52ec9ccca111bc16",
+      "platform.claude.com/docs/en/build-with-claude/vision.md": "2ba3a1c3fc93dd82",
+      "developers.openai.com/api/docs/pricing.md": "714cbb324e68df34",
+      "developers.openai.com/api/docs/guides/images-vision.md": "b4aca9b44700eab8",
+      "web.archive.org/web/20260826211535/ai.google.dev/gemini-api/docs/pricing": "56dcefa7dd2626bf"
+    },
+    "fetched_at_utc": "2026-09-21T15:13Z",
+    "by_model": {
+      "gemini-2.5-pro": {
+        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
+        "cell": "$1.25, prompts <= 200k tokens $2.50, prompts > 200k tokens",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-2.5-pro-long-context": {
+        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
+        "cell": "(the > 200k tier of gemini-2.5-pro's row)",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-2.5-flash": {
+        "basis": "explicit: the page prices text, image and video input at one rate",
+        "cell": "$0.30 (text / image / video) $1.00 (audio)",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-2.5-flash-lite": {
+        "basis": "explicit: the page prices text, image and video input at one rate",
+        "cell": "$0.10 (text / image / video) $0.30 (audio)",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-2.0-flash": {
+        "basis": "explicit: the page prices text, image and video input at one rate",
+        "cell": "$0.10 (text / image / video) $0.70 (audio)",
+        "source": "https://web.archive.org/web/20260826211535/https://ai.google.dev/gemini-api/docs/pricing (retired; last Wayback capture that lists it)"
+      },
+      "gemini-3.5-flash": {
+        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
+        "cell": "$1.50",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-3.5-flash-lite": {
+        "basis": "explicit: the page prices text, image and video input at one rate",
+        "cell": "$0.30 (text / image / video / audio)",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-3.6-flash": {
+        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
+        "cell": "$0.75 through December 31, 2026. $1.50 starting January 1, 2027.",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-3.7-flash": {
+        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
+        "cell": "$0.75 through December 31, 2026. $1.50 starting January 1, 2027.",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-3.1-flash-lite": {
+        "basis": "explicit: the page prices text, image and video input at one rate",
+        "cell": "$0.25 (text / image / video) $0.50 (audio)",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-3.1-pro-preview": {
+        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
+        "cell": "$2.00, prompts <= 200k tokens $4.00, prompts > 200k tokens",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "gemini-3.1-pro-preview-long-context": {
+        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
+        "cell": "(the > 200k tier of gemini-3.1-pro-preview's row)",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "claude-opus-5": {
+        "basis": "images_billed_as_input_tokens: Anthropic's vision docs bill image tokens at the model's per-token input price; the pricing page lists no separate image or video rate",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md ; https://platform.claude.com/docs/en/build-with-claude/vision.md"
+      },
+      "claude-sonnet-5": {
+        "basis": "images_billed_as_input_tokens: Anthropic's vision docs bill image tokens at the model's per-token input price; the pricing page lists no separate image or video rate",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md ; https://platform.claude.com/docs/en/build-with-claude/vision.md"
+      },
+      "claude-haiku-4-5": {
+        "basis": "images_billed_as_input_tokens: Anthropic's vision docs bill image tokens at the model's per-token input price; the pricing page lists no separate image or video rate",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md ; https://platform.claude.com/docs/en/build-with-claude/vision.md"
+      },
+      "claude-opus-4-8": {
+        "basis": "images_billed_as_input_tokens: Anthropic's vision docs bill image tokens at the model's per-token input price; the pricing page lists no separate image or video rate",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing.md ; https://platform.claude.com/docs/en/build-with-claude/vision.md"
+      },
+      "gpt-5.6-sol": {
+        "basis": "images_billed_as_input_tokens: OpenAI's images guide converts image input into billable input tokens at the model's input price; the pricing page lists no separate image rate for this model",
+        "source": "https://developers.openai.com/api/docs/pricing.md ; https://developers.openai.com/api/docs/guides/images-vision.md"
+      },
+      "gpt-5.6-terra": {
+        "basis": "images_billed_as_input_tokens: OpenAI's images guide converts image input into billable input tokens at the model's input price; the pricing page lists no separate image rate for this model",
+        "source": "https://developers.openai.com/api/docs/pricing.md ; https://developers.openai.com/api/docs/guides/images-vision.md"
+      },
+      "gpt-5.6-luna": {
+        "basis": "images_billed_as_input_tokens: OpenAI's images guide converts image input into billable input tokens at the model's input price; the pricing page lists no separate image rate for this model",
+        "source": "https://developers.openai.com/api/docs/pricing.md ; https://developers.openai.com/api/docs/guides/images-vision.md"
+      },
+      "gpt-5.1": {
+        "basis": "images_billed_as_input_tokens: OpenAI's images guide converts image input into billable input tokens at the model's input price; the pricing page lists no separate image rate for this model",
+        "source": "https://developers.openai.com/api/docs/pricing.md ; https://developers.openai.com/api/docs/guides/images-vision.md"
+      },
+      "gpt-5": {
+        "basis": "images_billed_as_input_tokens: OpenAI's images guide converts image input into billable input tokens at the model's input price; the pricing page lists no separate image rate for this model",
+        "source": "https://developers.openai.com/api/docs/pricing.md ; https://developers.openai.com/api/docs/guides/images-vision.md"
+      },
+      "__local_zero_cost__": {
+        "basis": "not_applicable: a $0.00 policy for models the caller asserts are local",
+        "source": "-"
+      }
+    }
+  },
   "models": {
     "gemini-2.5-pro": {
       "input_usd_per_mtok": 1.25,

@@ -417,3 +417,48 @@ def test_main_returns_nonzero_when_an_entry_cannot_be_verified():
         patch("scripts.check_price_table_vs_vendor.load_gemini_prices", return_value=prices),
     ):
         assert main() == 1
+
+
+# --- image / video input must stay at the text rate, or the check says so ---------------------
+
+
+@pytest.mark.parametrize(
+    ("cell", "split"),
+    [
+        (
+            "$0.30 (text / image / video) $1.00 (audio)",
+            False,
+        ),  # gemini-2.5-flash: only audio differs
+        ("$0.10 (text / image / video) $0.30 (audio)", False),
+        ("$0.30 (text / image / video / audio)", False),  # gemini-3.5-flash-lite
+        ("$1.50", False),  # a single price, no modality labels
+        ("$1.25, prompts <= 200k tokens $2.50, prompts > 200k tokens", False),
+        ("$0.30 (text) $0.60 (image) $1.00 (audio)", True),  # image priced apart from text
+        ("$0.30 (text / video) $0.45 (image)", True),
+        ("$0.30 (text / image) $0.90 (video)", True),
+        ("$0.30 (text) $2.00 (video)", True),
+    ],
+)
+def test_image_video_split_detection(cell: str, split: bool):
+    from scripts.check_price_table_vs_vendor import _image_video_split
+
+    assert _image_video_split(cell) is split
+
+
+def test_a_page_that_prices_image_input_apart_from_text_is_a_mismatch():
+    html = _GOOGLE_HTML.replace(
+        "$0.10 (text / image / video)<br>$0.30 (audio)</td></tr>\n<tr><td>Output price (including thinking tokens)</td><td>Free of charge</td><td>$0.40",
+        "$0.10 (text)<br>$0.25 (image)<br>$0.30 (audio)</td></tr>\n<tr><td>Output price (including thinking tokens)</td><td>Free of charge</td><td>$0.40",
+    )
+    assert html != _GOOGLE_HTML
+    an, op, _ = _vendor()
+    rows = {r.key: r for r in audit(_PRICES, an, op, html)}
+    row = rows["gemini-2.5-flash-lite"]
+    assert row.status == "MISMATCH"
+    assert "image or video input apart from text" in row.detail[0]
+
+
+def test_the_recorded_pages_still_verify_with_the_split_guard_in_place():
+    rows = _audit()
+    assert rows["gemini-2.5-flash-lite"].status == "VERIFIED"
+    assert rows["gemini-2.5-pro"].status == "VERIFIED"

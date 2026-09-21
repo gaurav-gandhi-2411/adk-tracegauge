@@ -7,6 +7,21 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Changed
+
+- **Image and video input are now verified against the raw vendor pages, and the weekly check guards it.** 0.9.1
+  priced image and video input at the text input rate on the strength of an earlier read through a summarizing
+  fetch tool. Read directly (raw HTML / markdown, 2026-09-21) for every table model: where a Gemini page labels the
+  modalities (gemini-2.5-flash, 2.5-flash-lite, 3.1-flash-lite, 3.5-flash-lite, and the archived 2.0-flash) image and
+  video share the text rate and only audio differs; the other Gemini entries list one input price with no
+  per-modality rate; Claude's and OpenAI's docs bill image tokens at the model's input price; no table model lists a
+  separate video rate. So nothing changes in pricing. The evidence is recorded per model in
+  `input_modality_verification` in the price table (cell text, source, date, raw-page hash), and
+  `scripts/check_price_table_vs_vendor.py` now reports MISMATCH if a Gemini input row ever prices image or video apart
+  from text (which would make the text-rate pricing silently wrong).
+
 ## [0.9.1] — 2026-09-21
 
 Real Google Search grounded calls were reported `unknown` in 0.9.0 (every real Gemini 2.5 grounded response carries tool-use tokens); they now price normally and carry two flags. Nothing new is priced.

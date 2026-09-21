@@ -48,7 +48,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -126,6 +126,7 @@ class GoogleModel:
     promo_until: date | None = None  # standard rate is a promo through this date...
     after_promo: Rate | None = None  # ...and this rate applies afterwards
     storage_usd_per_mtok_hour: float | None = None  # explicit-cache storage; parsed, never priced
+    image_video_split: bool = False  # the input row prices image or video apart from text
 
 
 @dataclass
@@ -291,9 +292,28 @@ class _Cell:
     after_promo: float | None = None
     promo_until: date | None = None
     storage: float | None = None
+    image_video_split: bool = False
+
+
+_MODALITY_GROUP_RE = re.compile(r"\$[\d.]+\s*\(([^)]*)\)")
+
+
+def _image_video_split(text: str) -> bool:
+    """True when a labelled price group OTHER than the text group names image or video, i.e. the page
+    prices image/video input apart from text (``$0.30 (text) $0.60 (image)``). The table (and the
+    adapter) price image and video input at the text rate, which is right only while this is False.
+    ``$0.30 (text / image / video) $1.00 (audio)`` is False: audio differs, and audio is flagged."""
+    groups = [g.lower() for g in _MODALITY_GROUP_RE.findall(text)]
+    return any(("image" in g or "video" in g) for g in groups if "text" not in g)
 
 
 def _parse_cell(text: str) -> _Cell | None:
+    split = _image_video_split(text)
+    cell = _parse_cell_prices(text)
+    return None if cell is None else replace(cell, image_video_split=split)
+
+
+def _parse_cell_prices(text: str) -> _Cell | None:
     storage_m = _STORAGE_RE.search(text)
     storage = float(storage_m.group(1)) if storage_m else None
     text = _STORAGE_RE.sub(" ", text)
@@ -346,6 +366,7 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
             else None
         ),
         storage_usd_per_mtok_hour=c.storage if c else None,
+        image_video_split=i.image_video_split,
     )
 
 
@@ -443,6 +464,21 @@ def audit(
                         "-",
                         "-",
                         [f"slug '{slug}' not found/parseable on Google's page"],
+                    )
+                )
+                continue
+            if model.image_video_split:
+                rows.append(
+                    AuditRow(
+                        key,
+                        "MISMATCH",
+                        "-",
+                        "-",
+                        [
+                            "Google prices image or video input apart from text; the table and the "
+                            "adapter price image/video at the text rate, so that is silently wrong -- "
+                            "flag those tokens as unpriced (see input_modality_verification)"
+                        ],
                     )
                 )
                 continue
