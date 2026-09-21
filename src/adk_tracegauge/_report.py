@@ -2,7 +2,8 @@
 the per-invocation cost table people in google/adk-python Discussion #97 asked for ("how do I
 turn tokens into dollars").
 
-Pure functions over an already-built ``Snapshot`` -- no I/O, no pricing of its own. Every dollar
+Pure functions over an already-built ``Snapshot`` -- no I/O, no pricing of its own (the price
+table is read only to flag the two entries the vendor check cannot verify). Every dollar
 figure here was priced by ``snapshot.build_snapshot`` through the same fail-closed path as the
 eval metric, so this module can only *display* a cost, never invent one.
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._pricing import LOCAL_MODEL_KEY, is_local_model, load_gemini_prices, resolve_model
 from .snapshot import Snapshot
 
 
@@ -41,6 +43,39 @@ def _describe_reason(reason: str) -> str:
 
 def priced_total_usd(snapshot: Snapshot) -> float:
     return sum(r.cost_usd for r in snapshot.records)
+
+
+def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
+    """Priced invocations whose rate the weekly vendor check cannot verify against a live page,
+    one entry per distinct model: a retired model (the vendor page no longer lists it, so the
+    table holds the last rate it published) and a local model (priced $0.00 because the caller
+    asserted it is local; no vendor rate exists). Everything else in the table is re-verified
+    against the vendor's own page, so this list is empty for it -- a price shown without a note
+    here is one the check covers."""
+    prices = load_gemini_prices()
+    found: dict[str, str] = {}
+    for record in snapshot.records:
+        for model in record.models:
+            # A local call is recorded under the zero-cost entry's key, not its raw model string.
+            if model == LOCAL_MODEL_KEY or is_local_model(model):
+                found.setdefault(
+                    model,
+                    "priced $0.00 because ADK_TRACEGAUGE_ASSUME_LOCAL asserts it is local; "
+                    "there is no vendor rate to verify",
+                )
+                continue
+            resolved = resolve_model(model, prices)
+            if resolved is None or resolved.model_key == LOCAL_MODEL_KEY:
+                continue
+            entry = prices["models"][resolved.model_key]
+            if entry.get("retired"):
+                found.setdefault(
+                    model,
+                    f"retired {entry.get('retired_on', '')}".strip()
+                    + "; the rate is the last one the vendor published and cannot be "
+                    "re-verified against a live page",
+                )
+    return [{"model": m, "reason": r} for m, r in found.items()]
 
 
 def to_json_dict(snapshot: Snapshot, source: str) -> dict[str, Any]:
@@ -86,6 +121,7 @@ def to_json_dict(snapshot: Snapshot, source: str) -> dict[str, Any]:
         "tokens_input_priced": sum(r.tokens_input for r in snapshot.records),
         "tokens_output_priced": sum(r.tokens_output for r in snapshot.records),
         "missing_eval_cases": list(snapshot.missing),
+        "unverifiable_pricing": unverifiable_pricing(snapshot),
         "invocations": invocations,
     }
 
@@ -156,6 +192,11 @@ def render_text(snapshot: Snapshot, source: str) -> str:
         lines.append("")
         lines.append("  Unknown invocations were NOT priced (no guessed rate is ever used):")
         lines.extend(unknown_notes)
+    unverifiable = unverifiable_pricing(snapshot)
+    if unverifiable:
+        lines.append("")
+        lines.append("  Priced, but NOT verifiable against a live vendor page:")
+        lines.extend(f"  {u['model']}: {u['reason']}" for u in unverifiable)
     if snapshot.missing:
         lines.append("")
         lines.append(f"  eval case(s) expected but never captured: {', '.join(snapshot.missing)}")
@@ -172,4 +213,10 @@ EMPTY_MESSAGE = (
 just be a header over nothing."""
 
 
-__all__ = ["EMPTY_MESSAGE", "priced_total_usd", "render_text", "to_json_dict"]
+__all__ = [
+    "EMPTY_MESSAGE",
+    "priced_total_usd",
+    "render_text",
+    "to_json_dict",
+    "unverifiable_pricing",
+]
