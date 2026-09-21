@@ -15,7 +15,7 @@ See what your [Google ADK](https://github.com/google/adk-python) agent costs —
 pip install adk-tracegauge
 ```
 
-That installs bare `google-adk` plus this package (49 distributions; the plugin, `report`, `snapshot`, `check` and `quickstart` all work on it). You only need the extra, `pip install "adk-tracegauge[eval]"`, if you want the cost metric inside `adk eval` / `AgentEvaluator` — see [that section](https://github.com/gaurav-gandhi-2411/adk-tracegauge#also-a-real-passfail-cost-metric-inside-adk-eval).
+That installs bare `google-adk` plus this package (49 packages, about 79 s cold with pip or 12 s with uv, median of 3; the plugin, `report`, `snapshot`, `check` and `quickstart` all work on it). You only need the extra, `pip install "adk-tracegauge[eval]"`, if you want the cost metric inside `adk eval` / `AgentEvaluator` — see [that section](https://github.com/gaurav-gandhi-2411/adk-tracegauge#also-a-real-passfail-cost-metric-inside-adk-eval).
 
 Wire the plugin into the runner you already use (`App(..., plugins=[...])` works the same way) and put your usual run in a zero-argument function:
 
@@ -50,7 +50,7 @@ Real output from a deterministic fake model (no API key), hand-checked: 12,000 �
 
 ## Also: a real PASS/FAIL cost metric inside `adk eval`
 
-**Needs the extra: `pip install "adk-tracegauge[eval]"`** (adds google-adk's own `[eval]` extra: 61 more distributions, about 645 MB). Without it, `adk eval` stops with ADK's own message, printed before it imports your agent (so before this package is loaded):
+**Needs the extra: `pip install "adk-tracegauge[eval]"`** (adds google-adk's own `[eval]` extra: 61 more packages, about 676 MB with pip or 439 MB with uv, and about 394 s cold with pip or 84 s with uv, median of 3). Without it, `adk eval` stops with ADK's own message, printed before it imports your agent (so before this package is loaded):
 
 ```
 Error: Eval module is not installed, please install via `pip install "google-adk[eval]"`.
