@@ -56,6 +56,11 @@ class CapturedCall:
     partial: bool = False
     thoughts_token_count: int = 0
     tool_use_prompt_token_count: int = 0
+    grounded: bool = False
+    """The response carried grounding metadata (Google Search / Maps / retrieval): a per-prompt
+    or per-query fee that is not in token usage. ``grounding_queries`` counts the search
+    queries when ADK reports them."""
+    grounding_queries: int = 0
     agent_name: str = ""
     """LL2 (sub-agent attribution): the name of the agent that made this
     specific call, sourced from ``callback_context.agent_name`` --

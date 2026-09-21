@@ -85,6 +85,25 @@ _ACTIVE_INVOCATIONS: contextvars.ContextVar[tuple[str, ...]] = contextvars.Conte
 )
 
 
+def _grounding(llm_response: LlmResponse) -> tuple[bool, int]:
+    """(grounded, search-query count). Any of the Google Search / Maps / retrieval signals on
+    ``grounding_metadata`` counts as grounded -- a fee applies whichever one carries it."""
+    gm = getattr(llm_response, "grounding_metadata", None)
+    if gm is None:
+        return False, 0
+    queries = len(getattr(gm, "web_search_queries", None) or [])
+    grounded = bool(
+        queries
+        or getattr(gm, "image_search_queries", None)
+        or getattr(gm, "grounding_chunks", None)
+        or getattr(gm, "grounding_supports", None)
+        or getattr(gm, "search_entry_point", None)
+        or getattr(gm, "retrieval_queries", None)
+        or getattr(gm, "google_maps_widget_context_token", None)
+    )
+    return grounded, queries
+
+
 class DoubleRegistrationError(RuntimeError):
     """The same model response reached ``TraceGaugeUsagePlugin`` twice.
 
@@ -181,9 +200,13 @@ class TraceGaugeUsagePlugin(BasePlugin):
             # record zeros, which would understate real cost.
             return None
 
+        grounded, grounding_queries = _grounding(llm_response)
+
         self._store.record(
             callback_context.invocation_id,
             CapturedCall(
+                grounded=grounded,
+                grounding_queries=grounding_queries,
                 model_version=llm_response.model_version or "",
                 prompt_token_count=usage.prompt_token_count or 0,
                 candidates_token_count=usage.candidates_token_count or 0,

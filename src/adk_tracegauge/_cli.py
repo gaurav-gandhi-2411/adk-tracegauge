@@ -346,6 +346,9 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
     except OSError as e:
         raise SystemExit(f"--output: could not write {args.output!r}: {e.strerror or e}") from e
     skip_note = f", {len(snapshot.skipped)} skipped (unpriceable)" if snapshot.skipped else ""
+    n_incomplete = sum(1 for r in snapshot.records if r.unpriced_components)
+    if n_incomplete:
+        skip_note += f", {n_incomplete} incomplete (a billed component is not priced: lower bound)"
     resolved_note = ""
     if args.eval_history is not None:
         n_resolved = sum(1 for r in snapshot.records if r.eval_case_id is not None)
