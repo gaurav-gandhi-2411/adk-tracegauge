@@ -47,6 +47,9 @@
       "note": "Deprecated by Google (shut down 2026-06-01). Kept for pricing historical eval sessions recorded before the shutdown; will not appear in new runs.",
       "retired": true,
       "retired_on": "2026-06-01",
+      "vendor_page_last_listed": "2026-08-26",
+      "archive_url": "https://web.archive.org/web/20260826211535/https://ai.google.dev/gemini-api/docs/pricing",
+      "provenance_note": "fetched_on (2026-08-14) is genuine, not a fetch of a live model: Google's pricing page kept a 'Gemini 2.0 Flash ... deprecated and has been shut down June 1, 2026' section listing $0.10 in / $0.40 out (paid tier, text/image/video) after the shutdown -- present in Wayback captures from 2026-07-01 through 2026-08-26 (archive_url is the last one that lists it) and absent from the 2026-08-27 capture onward. So the 2026-08-13 add and the 2026-08-14 re-verification both saw the rate on the page; the page no longer lists it, which is why the vendor check SKIPs this entry. vendor_page_last_listed is the date of that last capture, an upper bound on when this rate could have been re-verified.",
       "retired_source": "Confirmed fully absent from the free models.list() endpoint (verified live 2026-08-21, 50-model catalog, zero matches for any '2.0'-named model) -- also already hardcoded into check_price_table_vs_vendor.py's SKIP_ENTRIES before this field existed, for the same reason. This is the free-verifiable retirement class: full removal from the model catalog, not merely an account-eligibility gate (contrast gemini-2.5-flash-lite above)."
     },
     "gemini-3.5-flash": {
