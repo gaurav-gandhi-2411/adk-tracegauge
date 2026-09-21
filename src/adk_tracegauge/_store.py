@@ -41,11 +41,11 @@ class CapturedCall:
       folds this into token_count_output alongside candidates_token_count.
     - ``tool_use_prompt_token_count``: tokens from Gemini's server-side
       built-in tools (e.g. Google Search grounding, code execution) fed back
-      to the model within the same call. adk-tracegauge could not find an
-      authoritative source for this category's exact billing rate/tier, so
-      rather than guess, _adapter.py refuses to price any call where this is
-      nonzero (fail-closed, same philosophy as an unresolved model) --
-      see AdaptResult.unpriced_component.
+      to the model within the same call. Vendors treat these differently (Vertex
+      states Google Search grounding input tokens are not charged), so
+      _adapter.py leaves them out of the priced figure and reports them as an
+      unpriced component (``tool_use_prompt_tokens``); the rest of the call is
+      priced -- see AdaptResult.unpriced_components.
     """
 
     model_version: str

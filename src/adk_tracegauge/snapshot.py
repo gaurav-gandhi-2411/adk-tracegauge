@@ -407,7 +407,6 @@ def build_snapshot(
             reason = (
                 adapted.unresolved_model
                 or adapted.streaming_anomaly
-                or adapted.unpriced_component
                 or "unknown adaptation failure"
             )
             skip_session_id = store.session_id(invocation_id)
