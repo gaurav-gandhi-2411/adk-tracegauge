@@ -45,6 +45,7 @@ signal on top of that, not a guarantee.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -57,11 +58,15 @@ if TYPE_CHECKING:
 
 _KNOWN_TESTED_MIN = (2, 6, 0)
 _KNOWN_TESTED_MAX_EXCLUSIVE = (2, 12, 0)
-"""Mirrors pyproject.toml's own google-adk[eval] pin (>=2.6.0,<2.12.0) --
-kept in sync manually, not imported from pyproject.toml, since this module
-must work from an installed wheel with no pyproject.toml on disk. If these
-two ever drift, the drift is harmless (this check is advisory -- see module
-docstring), but should be fixed at the same time the pin is next bumped."""
+"""Exclusive upper end of the google-adk range this release was tested against: the next minor
+after the newest release in CI's ``bare-adk`` matrix. NOT a dependency bound -- pyproject.toml has
+no upper bound on google-adk since 0.9.3, because a cap's only observed effect was pip silently
+downgrading users. This is a soft signal only: ``warn_once_if_adk_untested`` logs one line when the
+installed google-adk is outside the range and never raises. ``tests/test_adk_tested_range.py`` fails
+if this drifts from the CI matrix, and the owner's weekly check alerts when a newer stable google-adk
+exists on PyPI than this constant admits."""
+
+_untested_adk_warned = False
 
 
 def _parse_version(raw: str) -> tuple[int, ...] | None:
@@ -88,6 +93,59 @@ def _parse_version(raw: str) -> tuple[int, ...] | None:
             break
         numbers.append(int(digits))
     return tuple(numbers) if numbers else None
+
+
+def warn_once_if_adk_untested() -> bool:
+    """Logs ONE warning line per process when the installed google-adk is outside the tested range
+    [``_KNOWN_TESTED_MIN``, ``_KNOWN_TESTED_MAX_EXCLUSIVE``); returns True only on the call that
+    logged. Never raises and never changes behavior.
+
+    Design constraints, each deliberate:
+
+    * ``logging``, not ``warnings.warn``: it is one line (the default last-resort handler prints the
+      bare message to stderr), and it cannot be promoted to an exception by ``python -W error`` or a
+      pytest ``filterwarnings = error`` -- a version notice must not be able to fail a run.
+    * Once per process (the flag is set before anything else can go wrong), so it is not noise.
+    * Called only from first-use points -- ``TraceGaugeUsagePlugin.__init__``,
+      ``CostEfficiencyEvaluator.__init__`` and the CLI entry point -- never from a per-LLM-call
+      callback, never at import time, and it is plain Python (no jit/compile/trace machinery), so it
+      has nothing to fire under inside a traced or compiled path.
+    * An unreadable or unparseable version (frozen/stripped installs) is silent, not a guess.
+    """
+    global _untested_adk_warned
+    if _untested_adk_warned:
+        return False
+    _untested_adk_warned = True
+    try:
+        installed = getattr(_google_adk, "__version__", "unknown")
+        parsed = _parse_version(installed) if installed != "unknown" else None
+        if parsed is None:
+            return False
+        lo = ".".join(map(str, _KNOWN_TESTED_MIN))
+        hi = ".".join(map(str, _KNOWN_TESTED_MAX_EXCLUSIVE))
+        if parsed >= _KNOWN_TESTED_MAX_EXCLUSIVE:
+            logging.getLogger("adk_tracegauge").warning(
+                "adk_tracegauge: google-adk==%s is newer than the newest release this adk-tracegauge "
+                "version was tested against (tested: %s <= version < %s). Continuing; this is expected "
+                "to work, and CI checks the newest google-adk daily. If something misbehaves, upgrade "
+                "adk-tracegauge or report it at "
+                "https://github.com/gaurav-gandhi-2411/adk-tracegauge/issues",
+                installed,
+                lo,
+                hi,
+            )
+            return True
+        if parsed < _KNOWN_TESTED_MIN:
+            logging.getLogger("adk_tracegauge").warning(
+                "adk_tracegauge: google-adk==%s is older than the minimum supported release %s. "
+                "Continuing, but registration may fail; upgrade google-adk.",
+                installed,
+                lo,
+            )
+            return True
+    except Exception:  # noqa: BLE001 -- a version notice must never be able to fail a run
+        return False
+    return False
 
 
 def convert_events_to_eval_invocations(events: list[Event]) -> list[Invocation]:

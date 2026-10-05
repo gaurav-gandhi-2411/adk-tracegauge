@@ -799,6 +799,9 @@ def main(argv: list[str] | None = None) -> int:
     """`adk-tracegauge` console entry point (see [project.scripts] in pyproject.toml)."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    from . import _compat  # after parsing, so --help and usage errors stay quiet
+
+    _compat.warn_once_if_adk_untested()
     return int(args.func(args))
 
 
