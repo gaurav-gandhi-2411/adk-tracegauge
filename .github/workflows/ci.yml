@@ -215,3 +215,47 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           "${{ runner.temp }}/bare-venv/bin/python" "$GITHUB_WORKSPACE/scripts/bare_install_smoke.py"
+
+  # The full test suite on the google-adk FLOOR. `lint-and-test` runs the suite on whatever the lockfile
+  # pins (2.9.2) and `bare-adk` only smoke-tests the base surface on 2.6.0, so a break that only the
+  # real suite can see on the oldest supported ADK (a test that needs a newer ADK feature and does not
+  # skip, a code path that assumes a newer API) was invisible until the 2026-10-05 manual run. The
+  # lockfile is installed first (editable, so installed-package metadata exists for the version tests),
+  # then google-adk[eval] is pinned to the floor in that same environment.
+  full-suite-floor:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor of the supported range (pyproject.toml: google-adk>=2.6.0).
+        google-adk: ["2.6.0"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install the locked environment (with the [eval] extra the suite needs)
+        run: uv sync --frozen --extra eval --python 3.11
+
+      - name: Pin google-adk[eval] to ${{ matrix.google-adk }} in that environment
+        run: uv pip install "google-adk[eval]==${{ matrix.google-adk }}"
+
+      - name: Fail loudly if the pin did not take (a silent no-op would test the wrong ADK)
+        run: |
+          uv run --no-sync python - <<'PY'
+          import importlib.metadata as m
+          got = m.version("google-adk")
+          print("google-adk", got, "| adk-tracegauge", m.version("adk-tracegauge"))
+          assert got == "${{ matrix.google-adk }}", f"expected google-adk ${{ matrix.google-adk }}, got {got}"
+          PY
+
+      - name: Full test suite on google-adk ${{ matrix.google-adk }}
+        run: uv run --no-sync pytest tests/ -v
