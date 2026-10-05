@@ -7,6 +7,17 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [Unreleased]
+
+### Added
+
+- **`examples/mixed_run.py`, the fixture behind a published `report` table.** The `adk-tracegauge report --entrypoint
+  mixed_run:run` output in a public reply on google/adk-python Discussion #97 (2026-09-20) came from a fixture that
+  no longer existed. This reconstructs it from the figures that reply printed (two priced `gemini-2.5-flash` calls,
+  one unpriced `acme-llm-7b`), and `tests/test_mixed_run_example.py` asserts the published table: $0.005600 and
+  $0.002100 priced, $0.007700 total excluding the unknown invocation, 15,500 in / 1,220 out. The third call's token
+  counts and the invocation ids were not in the reply, so those are chosen, not recovered.
+
 ## [0.9.3] — 2026-10-05
 
 Removes the `google-adk` upper bound (`google-adk>=2.6.0`), so a newer google-adk can never again be silently downgraded by installing adk-tracegauge. Tested range: `>=2.6.0,<2.12.0`; newer versions log one soft line at first use (#100). No pricing changed.
