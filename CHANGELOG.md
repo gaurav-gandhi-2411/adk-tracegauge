@@ -9,6 +9,10 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI runs the full test suite on the google-adk floor.** New `full-suite-floor (2.6.0)` job: locked environment with the `[eval]` extra, then `google-adk[eval]==2.6.0` pinned in it, then all of `tests/` (656 passed, 4 skipped that need `EvalStatus.INFORMATIONAL`, 0 failed when run this way on 2026-10-05). Until now the floor only had the `bare-adk` smoke test; the full suite ran only on the lockfile's google-adk.
+
 ### Added
 
 - **`examples/mixed_run.py`, the fixture behind a published `report` table.** The `adk-tracegauge report --entrypoint
