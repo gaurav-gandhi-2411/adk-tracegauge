@@ -7,7 +7,9 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
-## [Unreleased]
+## [0.9.3] — 2026-10-05
+
+Removes the `google-adk` upper bound (`google-adk>=2.6.0`), so a newer google-adk can never again be silently downgraded by installing adk-tracegauge. Tested range: `>=2.6.0,<2.12.0`; newer versions log one soft line at first use (#100). No pricing changed.
 
 ### Changed
 
