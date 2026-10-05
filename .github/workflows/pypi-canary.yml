@@ -1,13 +1,18 @@
 name: PyPI canary (latest google-adk)
 
-# adk-tracegauge pins google-adk[eval]>=2.6.0,<2.10.0 because it registers
-# against google-adk's @experimental MetricEvaluatorRegistry API, which
-# carries no SemVer guarantee. This workflow deliberately installs the
-# *latest* google-adk[eval] release, ignoring that pin, so a breaking
-# change surfaces here on a daily schedule instead of via a user's own
-# import failing with no warning. A red run here does not mean this repo
-# is broken -- it means the current pin needs re-validating (and likely
-# bumping) against a new google-adk release.
+# adk-tracegauge requires google-adk[eval]>=2.6.0 with NO upper bound (since 0.9.3) and registers
+# against google-adk's @experimental MetricEvaluatorRegistry API, which carries no SemVer guarantee.
+# This workflow installs the *latest* google-adk[eval] release, so a breaking change surfaces here on
+# a daily schedule instead of via a user's own import failing with no warning. With no cap this job IS
+# the compatibility monitor: a red run means a newer google-adk broke the published package, and
+# release.yml's gate-canary refuses to release while it is red.
+#
+# What a GREEN run does and does not say: it says the newest google-adk works with the published wheel.
+# It does not say that release is inside the range adk-tracegauge was TESTED against
+# (`_compat._KNOWN_TESTED_MAX_EXCLUSIVE`); that is checked separately, by the owner's weekly check
+# comparing the newest PyPI google-adk with the constant in the published wheel. (0.9.1's cap of
+# <2.10.0 locked users out of google-adk 2.10/2.11 while this job stayed green, because it
+# upgrades past any cap on purpose.)
 #
 # Known structural limit: this runs THIS checkout's tests against the PUBLISHED wheel, so it
 # is red whenever main has a tested feature that has not been released yet (a wheel/tests
@@ -57,10 +62,11 @@ jobs:
       - name: Install the real published adk-tracegauge from PyPI, then latest google-adk[eval]
         # This is a *canary* -- it must install what a real user actually gets
         # (the published PyPI wheel), not this checkout's local source via
-        # `-e .`. `--upgrade` after the plain install lets google-adk[eval]'s
-        # own extras resolve to the latest release, ignoring this repo's
-        # <2.10.0 pin, so a breaking change surfaces here instead of via a
-        # user's own import failing with no warning.
+        # `-e .`. `--upgrade` after the plain install makes google-adk[eval]'s
+        # own extras resolve to the latest release (redundant now that there is
+        # no upper bound, kept so the intent survives a future cap), so a
+        # breaking change surfaces here instead of via a user's own import
+        # failing with no warning.
         run: |
           uv pip install --system adk-tracegauge
           uv pip install --system --upgrade "google-adk[eval]"
