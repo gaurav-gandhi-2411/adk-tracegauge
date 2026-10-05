@@ -5,7 +5,7 @@ every CLI subcommand (``snapshot``, ``check``, ``report`` in all three forms, ``
 exact exit code each is documented to return. Exits non-zero on the first surprise.
 
 Used by the ``bare-adk`` CI job on the google-adk floor (2.6.0) and the newest verified release
-(2.9.2): the ``lint-and-test`` job installs the ``[eval]`` extra and so can never see a base-install
+(2.11.0, plus 2.9.2): the ``lint-and-test`` job installs the ``[eval]`` extra and so can never see a base-install
 break (a new top-level import of pandas & co.), by construction.
 """
 

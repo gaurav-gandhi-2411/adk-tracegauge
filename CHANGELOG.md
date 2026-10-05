@@ -11,6 +11,23 @@ see `CONTRIBUTING.md`).
 
 ### Changed
 
+- **`google-adk` pin widened from `>=2.6.0,<2.10.0` to `>=2.6.0,<2.12.0`.** 0.9.1 capped google-adk below 2.10.0, so
+  with 2.10.0 (2026-09-25) and 2.11.0 (2026-10-02) out, `pip install adk-tracegauge` into an environment that already
+  had google-adk 2.11.0 silently *downgraded* it to 2.9.2 (reproduced with real pip, 2026-10-05) and reported success.
+  Verified before widening, each in its own venv: the full suite (644 tests, [eval] extra) passes on 2.10.0 and
+  2.11.0 and 640 pass with 4 skipped on 2.9.2 (those 4 need `EvalStatus.INFORMATIONAL`), and the bare-adk smoke
+  passes on 2.6.0, 2.9.2 and 2.11.0. Nothing alerted because the pypi-canary and
+  the release preflight install the newest google-adk past the cap on purpose, so they stayed green. `_compat._KNOWN_TESTED_MAX_EXCLUSIVE`, a second
+  hand-synced copy of the cap that drives the runtime out-of-range warning, was widened with it and is now guarded by
+  a test that fails if it drifts from `pyproject.toml`.
+- **`EvalStatus.INFORMATIONAL` (new in google-adk 2.10.0) is handled explicitly** in the evaluator's per-case
+  aggregate: it never overrides a real PASSED/FAILED, and a case whose invocations are all informational reports
+  INFORMATIONAL instead of NOT_EVALUATED. This evaluator never emits INFORMATIONAL itself, so this is defensive, not
+  a behavior change for any current result. Loading an `adk eval` history file that contains the new status already
+  worked and is now covered by a test.
+- **CI:** the `bare-adk` matrix gains a `2.11.0` leg (the newest allowed release). `2.9.2` stays because branch
+  protection requires the `bare-adk (2.9.2)` check by name.
+
 - **Image and video input are now verified against the raw vendor pages, and the weekly check guards it.** 0.9.1
   priced image and video input at the text input rate on the strength of an earlier read through a summarizing
   fetch tool. Read directly (raw HTML / markdown, 2026-09-21) for every table model: where a Gemini page labels the

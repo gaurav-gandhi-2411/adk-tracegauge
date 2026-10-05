@@ -513,11 +513,23 @@ def _aggregate_eval_status(statuses: list[EvalStatus]) -> EvalStatus:
     literally nothing in the case could be priced does this report
     NOT_EVALUATED (in which case there is no real per-invocation data to
     lose).
+
+    ``EvalStatus.INFORMATIONAL`` (google-adk >= 2.10.0, "a value was computed and
+    reported, but the metric does not pass or fail") is handled explicitly: it never
+    overrides a real PASSED/FAILED, and a case whose invocations are ALL informational
+    reports INFORMATIONAL rather than being relabelled NOT_EVALUATED ("not evaluated at
+    all", which it is not). This evaluator never emits INFORMATIONAL itself -- every
+    status comes from ``_priced_result`` -- so today this branch is defensive, for a
+    subclass or a later change; it is looked up with ``getattr`` because the member does
+    not exist on the supported floor (2.6.0).
     """
     if any(status == EvalStatus.FAILED for status in statuses):
         return EvalStatus.FAILED
     if any(status == EvalStatus.PASSED for status in statuses):
         return EvalStatus.PASSED
+    informational = getattr(EvalStatus, "INFORMATIONAL", None)
+    if informational is not None and statuses and all(s == informational for s in statuses):
+        return informational  # type: ignore[no-any-return]
     return EvalStatus.NOT_EVALUATED
 
 
