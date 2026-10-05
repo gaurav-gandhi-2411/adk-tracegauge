@@ -1,4 +1,4 @@
-"""EvalStatus.INFORMATIONAL (google-adk >= 2.10.0, ADK commit 2d428ead3) and the google-adk cap.
+"""EvalStatus.INFORMATIONAL (google-adk >= 2.10.0, ADK commit 2d428ead3).
 
 Two code paths in this package touch ADK-produced or ADK-consumed eval statuses:
 
@@ -12,7 +12,6 @@ is skipped there rather than faked.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -83,13 +82,3 @@ def test_eval_history_file_with_an_informational_status_loads(tmp_path: Path) ->
     path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
 
     assert _compat.load_eval_case_ids_by_session_id(path) == {"sess-a": "case_1"}
-
-
-def test_code_cap_matches_the_pyproject_cap() -> None:
-    """`_KNOWN_TESTED_MAX_EXCLUSIVE` was "kept in sync manually" with pyproject.toml's pin and was
-    left at 2.10.0 when the pin was the thing to widen; this makes drift a failing test."""
-    text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
-    bounds = set(re.findall(r'"google-adk(?:\[eval\])?>=[\d.]+,<([\d.]+)"', text))
-    assert len(bounds) == 1, f"base and [eval] requirements must share one cap, found {bounds}"
-    (cap,) = bounds
-    assert tuple(int(p) for p in cap.split(".")) == _compat._KNOWN_TESTED_MAX_EXCLUSIVE

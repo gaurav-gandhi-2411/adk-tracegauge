@@ -75,6 +75,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins import BasePlugin
 
+from . import _compat
 from ._store import DEFAULT_USAGE_STORE, CapturedCall, UsageStore
 
 if TYPE_CHECKING:
@@ -168,6 +169,7 @@ class TraceGaugeUsagePlugin(BasePlugin):
 
     def __init__(self, store: UsageStore | None = None, name: str = "trace_gauge_usage") -> None:
         super().__init__(name=name)
+        _compat.warn_once_if_adk_untested()
         self._store = store if store is not None else DEFAULT_USAGE_STORE
 
     async def before_run_callback(self, *, invocation_context: InvocationContext) -> None:
