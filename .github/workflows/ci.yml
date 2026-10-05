@@ -186,8 +186,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor of the supported range, and the newest release verified against it.
-        google-adk: ["2.6.0", "2.9.2"]
+        # The floor of the supported range, the newest release verified against it (2.11.0; the cap
+        # is <2.12.0), and 2.9.2: kept because branch protection requires the `bare-adk (2.9.2)`
+        # check by name, so dropping it would leave that required check forever pending.
+        google-adk: ["2.6.0", "2.9.2", "2.11.0"]
     steps:
       - uses: actions/checkout@v7
 

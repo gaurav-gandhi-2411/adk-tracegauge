@@ -56,16 +56,17 @@ keywords = [
 dependencies = [
     # Base install = bare google-adk (48 distributions, ~70-85 s cold with pip, measured 2026-09-21).
     # Everything except the `adk eval` integration works on it: the plugin, `report`, `snapshot`,
-    # `check`, `quickstart` and CostEfficiencyEvaluator (verified on google-adk 2.6.0 and 2.9.2 by
+    # `check`, `quickstart` and CostEfficiencyEvaluator (verified on google-adk 2.6.0, 2.9.2 and 2.11.0 by
     # the `bare-adk` CI job). The `[eval]` extra below is only needed to register the metric for
     # `adk eval` / AgentEvaluator.
-    # <2.10.0: the full 470-test suite passes clean on every release in [2.7.1, 2.9.2]
-    # (2.7.1, 2.8.0, 2.9.0, 2.9.1, 2.9.2 -- each in its own venv, 2026-09-20; 2.9.2 is
-    # the newest on PyPI as of that date), no code changes required. Capped at the next
-    # minor after the newest verified release rather than left open, because the
+    # <2.12.0: the full 644-test suite passes clean on 2.10.0 and 2.11.0, and 640 pass with 4 skipped
+    # on 2.9.2 (the 4 need EvalStatus.INFORMATIONAL, new in 2.10.0), each in its own venv,
+    # 2026-10-05; 2.11.0 is the newest on PyPI as of that date. The bare-adk smoke passes on 2.6.0,
+    # 2.9.2 and 2.11.0. The earlier 470-test run covered [2.7.1, 2.9.2] on 2026-09-20. Capped at
+    # the next minor after the newest verified release rather than left open, because the
     # MetricEvaluatorRegistry this package registers into is @experimental (no SemVer
     # guarantee) -- widen again only after re-running the suite against the new release.
-    "google-adk>=2.6.0,<2.10.0",
+    "google-adk>=2.6.0,<2.12.0",
     # tracegauge dependency removed, Phase 4 R5: the only things this package
     # ever used from it (tes.cost.compute_session_cost/compute_turn_cost's
     # arithmetic, plus the tes._digest.SessionDigest/TurnDigest dataclasses
@@ -80,7 +81,7 @@ dependencies = [
 # including the Vertex AI eval facade, which needs pandas/jinja2/rouge-score/tabulate/gepa --
 # gated behind google-adk's [eval] extra (61 more distributions, ~645 MB, ~5 min cold with pip).
 # adk-tracegauge itself uses none of them; see adk_tracegauge/__init__.py.
-eval = ["google-adk[eval]>=2.6.0,<2.10.0"]
+eval = ["google-adk[eval]>=2.6.0,<2.12.0"]
 
 [dependency-groups]
 dev = [
