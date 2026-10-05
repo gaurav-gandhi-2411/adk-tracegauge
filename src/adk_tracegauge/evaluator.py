@@ -139,6 +139,7 @@ from google.adk.evaluation.evaluator import (
 )
 from pydantic import ValidationError
 
+from . import _compat
 from ._adapter import build_session_digest, price_digest, unknown_model_message
 from ._cost import SessionCost, SessionDigest
 from ._pricing import LOCAL_MODEL_KEY, STALE_THRESHOLD_DAYS, load_gemini_prices, resolve_model
@@ -741,6 +742,7 @@ class CostEfficiencyEvaluator(Evaluator):
     criterion_type: ClassVar[type[CostThresholdCriterion]] = CostThresholdCriterion
 
     def __init__(self, *, eval_metric: EvalMetric, store: UsageStore | None = None) -> None:
+        _compat.warn_once_if_adk_untested()
         self._eval_metric = eval_metric
         self._store = store if store is not None else DEFAULT_USAGE_STORE
         self._threshold_usd = _resolve_threshold_usd(eval_metric)
