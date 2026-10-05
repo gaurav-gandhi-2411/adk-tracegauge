@@ -7,6 +7,26 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
+## [0.9.3] — 2026-10-05
+
+Removes the `google-adk` upper bound (`google-adk>=2.6.0`), so a newer google-adk can never again be silently downgraded by installing adk-tracegauge. Tested range: `>=2.6.0,<2.12.0`; newer versions log one soft line at first use (#100). No pricing changed.
+
+### Changed
+
+- **The `google-adk` upper bound is removed: `google-adk>=2.6.0` (base and `[eval]`).** The `<2.12.0` cap of 0.9.2
+  would have bitten again within weeks (ADK shipped 2.10.0 and 2.11.0 in about three weeks), and the cap's only
+  observed effect was pip silently *downgrading* google-adk for anyone already on a newer release (0.9.1, reproduced
+  with real pip). What guards compatibility is not the cap: the daily `pypi-canary` already ran the full suite
+  against the newest, uncapped google-adk and was green on 2.11.0 the whole time. `uv.lock` regenerated; only the
+  two project `requires-dist` specifiers changed. **Tested range for 0.9.3: `>=2.6.0,<2.12.0`** (full suite on 2.9.2,
+  2.10.0, 2.11.0; `bare-adk` smoke on 2.6.0, 2.9.2, 2.11.0).
+- **A soft untested-version notice replaces the hard cap.** `_compat.warn_once_if_adk_untested()` logs exactly one
+  line per process (logger `adk_tracegauge`) when the installed google-adk is outside the tested range, from the
+  first use of `TraceGaugeUsagePlugin`, `CostEfficiencyEvaluator` or the CLI. It uses `logging`, not `warnings`, so
+  `python -W error` cannot turn it into a failure, and it never raises. It is not called from per-LLM-call callbacks
+  or at import time. `tests/test_adk_tested_range.py` fails if `_KNOWN_TESTED_MAX_EXCLUSIVE` drifts from the newest
+  `bare-adk` CI matrix leg, so widening the tested range requires a CI leg that exercises it.
+
 ## [0.9.2] — 2026-10-05
 
 Fixes an install break: with google-adk 2.10.0 and 2.11.0 out, `pip install adk-tracegauge` 0.9.1 into an environment that already had a current google-adk silently downgraded it to 2.9.2. The pin is now `>=2.6.0,<2.12.0`, verified on 2.9.2, 2.10.0 and 2.11.0 (#95). No pricing changed.
