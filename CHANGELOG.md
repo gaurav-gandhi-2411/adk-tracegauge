@@ -7,7 +7,9 @@ invented — see each entry's linked PRs. Every entry states what changed and,
 where relevant, *why* (per this project's honest-documentation convention —
 see `CONTRIBUTING.md`).
 
-## [Unreleased]
+## [0.9.2] — 2026-10-05
+
+Fixes an install break: with google-adk 2.10.0 and 2.11.0 out, `pip install adk-tracegauge` 0.9.1 into an environment that already had a current google-adk silently downgraded it to 2.9.2. The pin is now `>=2.6.0,<2.12.0`, verified on 2.9.2, 2.10.0 and 2.11.0 (#95). No pricing changed.
 
 ### Changed
 
