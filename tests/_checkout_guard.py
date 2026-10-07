@@ -19,14 +19,20 @@ from pathlib import Path
 
 import pytest
 
-_PROBE = "import adk_tracegauge; print(adk_tracegauge.__file__)"
+# find_spec LOCATES the package without executing it. Importing it (the first version of this
+# probe) runs google-adk's whole import chain: 17-26 s warm and over the old 120 s timeout on a
+# cold venv, where the guard then crashed the session with a raw TimeoutExpired.
+_PROBE = (
+    "import importlib.util as u; s = u.find_spec('adk_tracegauge'); "
+    "print(s.origin if s is not None and s.origin else '')"
+)
 
 
 def installed_package_file(python: str = sys.executable) -> Path | None:
-    """The ``adk_tracegauge/__init__.py`` a fresh subprocess of ``python`` imports, or None.
+    """The ``adk_tracegauge/__init__.py`` a fresh subprocess of ``python`` would import, or None.
 
     ``-I`` ignores the working directory and PYTHON* variables, so only the environment's own
-    installation can answer. None means the package is not importable there at all.
+    installation can answer. None means the package is not installed there at all.
     """
     proc = subprocess.run(  # noqa: S603 -- fixed argv, no shell, no user input
         [python, "-I", "-W", "ignore", "-c", _PROBE],
@@ -46,7 +52,16 @@ def enforce(
 ) -> None:
     """Exit the pytest session, with an actionable message, if the install is not this checkout's."""
     src = (repo_root / "src").resolve()
-    found = probe()
+    try:
+        found = probe()
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # fail closed with a message, not an INTERNALERROR traceback: "could not check" is not "fine"
+        pytest.exit(
+            f"could not determine which adk_tracegauge the test interpreter ({sys.executable}) "
+            f"would import: {type(exc).__name__}: {exc}.\n"
+            f"Check that interpreter works, then from {repo_root} run:  uv pip install -e .",
+            returncode=4,
+        )
     if found is not None and found.resolve().is_relative_to(src):
         return
     where = f"resolves to {found.resolve()}" if found is not None else "is not importable at all"
