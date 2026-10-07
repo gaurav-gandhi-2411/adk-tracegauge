@@ -1,0 +1,102 @@
+name: Tested-range bump
+
+# Keeps `_compat._KNOWN_TESTED_MAX_EXCLUSIVE` honest without a human noticing first. When the daily
+# `PyPI canary` run PASSES on a google-adk release at or above the tested max, this opens a PR that
+# moves the max to the next minor, adds a `bare-adk` CI leg for that release, and updates the README
+# and troubleshooting bound (scripts/bump_tested_range.py; tests/test_adk_tested_range.py fails if
+# those places disagree). It NEVER merges: the PR goes through merge_gate.py and the normal checks.
+#
+# Why the CI dispatch: a PR opened with GITHUB_TOKEN does not trigger `pull_request` workflows, so
+# without it the PR would sit with no checks forever. `workflow_dispatch` is exempt from that rule,
+# and the check runs it creates on the branch's head commit carry the same names branch protection
+# requires.
+#
+# Why a data file: a run with GITHUB_TOKEN cannot push edits to anything under .github/workflows/,
+# so the bare-adk legs live in .github/tested-adk-legs.json (ci.yml reads it) and this only edits
+# source, docs and that data file, on a new branch. One attempt per google-adk version.
+
+on:
+  workflow_run:
+    workflows: ["PyPI canary (latest google-adk)"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      adk_version:
+        description: "google-adk X.Y.Z that passed (explicit; used for a dry run or a manual bump)"
+        required: true
+      dry_run:
+        description: "Only report what would change; open no branch or PR"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: tested-range-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    # a red or cancelled canary must never move the range
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the bump branch
+      pull-requests: write # open the PR
+      actions: write # dispatch ci.yml on that branch; also read the canary run's log
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EVENT: ${{ github.event_name }}
+      CANARY_RUN_ID: ${{ github.event.workflow_run.id }}
+      CANARY_URL: ${{ github.event.workflow_run.html_url }}
+      INPUT_VERSION: ${{ inputs.adk_version }}
+      INPUT_DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Decide whether the range needs to move
+        id: plan
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            python scripts/bump_tested_range.py --version "$INPUT_VERSION" --write \
+              --body-file "$RUNNER_TEMP/pr_body.md"
+          else
+            gh run view "$CANARY_RUN_ID" --repo "$REPO" --log > "$RUNNER_TEMP/canary.log"
+            python scripts/bump_tested_range.py --canary-log "$RUNNER_TEMP/canary.log" \
+              --canary-url "$CANARY_URL" --write --body-file "$RUNNER_TEMP/pr_body.md"
+          fi
+
+      - name: Show the diff
+        if: steps.plan.outputs.changed == 'true'
+        run: git --no-pager diff --stat && git --no-pager diff
+
+      - name: Open the PR and dispatch its CI
+        if: steps.plan.outputs.changed == 'true' && !(env.EVENT == 'workflow_dispatch' && env.INPUT_DRY_RUN == 'true')
+        env:
+          ADK_VERSION: ${{ steps.plan.outputs.adk_version }}
+          NEW_MAX: ${{ steps.plan.outputs.new_max }}
+        run: |
+          set -euo pipefail
+          branch="chore/tested-range-${ADK_VERSION}"
+          # one attempt per release: any PR (open, merged or closed) for this branch ends the matter,
+          # so a closed PR is not re-opened every day by the next green canary
+          if [ -n "$(gh pr list --repo "$REPO" --head "$branch" --state all --json number --jq '.[].number')" ]; then
+            echo "a PR for $branch already exists; nothing to do"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add src/adk_tracegauge/_compat.py .github/tested-adk-legs.json README.md docs/troubleshooting.md
+          git commit -m "chore(compat): tested google-adk range moves to <${NEW_MAX} (canary passed on ${ADK_VERSION})"
+          git push origin "$branch"
+          gh pr create --repo "$REPO" --base main --head "$branch" \
+            --title "chore(compat): tested google-adk range moves to <${NEW_MAX} (canary passed on ${ADK_VERSION})" \
+            --body-file "$RUNNER_TEMP/pr_body.md"
+          gh workflow run ci.yml --repo "$REPO" --ref "$branch"
