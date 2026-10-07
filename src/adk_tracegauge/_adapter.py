@@ -60,6 +60,7 @@ from ._pricing import (
     effective_prices,
     is_local_model,
     known_model_keys,
+    load_gemini_prices,
     resolve_model_for_call,
 )
 from ._store import CapturedCall
@@ -197,12 +198,20 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         # publishes one rate for text/image/video input (README, "Known limitations").
         audio = min(final_call.audio_prompt_token_count, final_call.prompt_token_count)
         audio_cached = min(final_call.audio_cached_token_count, audio)
+        # 0.10.0: audio is priced only when this entry publishes BOTH an audio input rate and an
+        # audio cached rate (verified against the vendor page); every other model keeps the
+        # fail-closed flag below.
+        entry = load_gemini_prices()["models"][resolved.model_key]
+        audio_priced = (
+            "audio_input_usd_per_mtok" in entry and "audio_cached_input_usd_per_mtok" in entry
+        )
         non_text_out = 0
         for modality, count in final_call.non_text_output_tokens:
             output_by_modality[modality] = output_by_modality.get(modality, 0) + count
             non_text_out += count
         non_text_out = min(non_text_out, final_call.candidates_token_count)
-        audio_tokens += audio
+        if not audio_priced:
+            audio_tokens += audio
         # Server-side tool tokens (Google Search grounding, code execution) are not part of
         # prompt_token_count (total = prompt + candidates + thoughts + tool_use), so leaving
         # them out is just not adding them.
@@ -230,6 +239,8 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
                 cache_read=max(0, final_call.cached_content_token_count - audio_cached),
                 cache_creation=0,
                 model=resolved.model_key,
+                audio_input=audio if audio_priced else 0,
+                audio_cache_read=audio_cached if audio_priced else 0,
             )
         )
         # LL2: the group's own terminator call's agent_name -- a streamed

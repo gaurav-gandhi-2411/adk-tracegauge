@@ -154,6 +154,11 @@ class TurnDigest:
     cache_read: int
     cache_creation: int = 0
     model: str = ""
+    audio_input: int = 0
+    """Audio input tokens (0.10.0). Priced at the entry's published audio rate; the adapter only
+    puts tokens here when the entry has one, otherwise they stay out and are flagged."""
+    audio_cache_read: int = 0
+    """The cached subset of ``audio_input``, priced at the entry's published audio cached rate."""
 
 
 @dataclass
@@ -193,6 +198,7 @@ class TurnCost:
     cache_creation_cost: float
     output_cost: float
     total_usd: float
+    audio_cost: float = 0.0
 
 
 @dataclass
@@ -303,7 +309,15 @@ def compute_turn_cost(
     cache_read_cost = turn.cache_read * cached_rate / 1_000_000
     cache_creation_cost = turn.cache_creation * (input_rate * write_mult) / 1_000_000
     output_cost = turn.token_count_output * output_rate / 1_000_000
-    total = fresh_cost + cache_read_cost + cache_creation_cost + output_cost
+    audio_cost = 0.0
+    if turn.audio_input:
+        audio_rate: float = entry["audio_input_usd_per_mtok"]
+        audio_cached_rate: float = entry.get("audio_cached_input_usd_per_mtok", audio_rate)
+        audio_cached = min(turn.audio_cache_read, turn.audio_input)
+        audio_cost = (
+            (turn.audio_input - audio_cached) * audio_rate + audio_cached * audio_cached_rate
+        ) / 1_000_000
+    total = fresh_cost + cache_read_cost + cache_creation_cost + output_cost + audio_cost
 
     return TurnCost(
         turn_index=turn.turn_index,
@@ -316,6 +330,7 @@ def compute_turn_cost(
         cache_creation_cost=cache_creation_cost,
         output_cost=output_cost,
         total_usd=total,
+        audio_cost=audio_cost,
     )
 
 
