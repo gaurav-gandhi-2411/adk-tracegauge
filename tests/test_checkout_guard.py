@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from _checkout_guard import enforce, installed_package_file
+from _checkout_guard import _PROBE, enforce, installed_package_file
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -59,3 +61,35 @@ def test_a_missing_interpreter_raises_instead_of_passing_the_guard_silently(tmp_
 
     with pytest.raises(FileNotFoundError):
         installed_package_file(str(bogus))
+
+
+def test_a_probe_that_cannot_answer_exits_with_a_message_not_a_traceback():
+    def hung() -> Path | None:
+        raise subprocess.TimeoutExpired(cmd="probe", timeout=1)
+
+    with pytest.raises(pytest.exit.Exception) as excinfo:
+        enforce(_REPO, probe=hung)
+
+    assert "could not determine which adk_tracegauge" in str(excinfo.value)
+    assert "TimeoutExpired" in str(excinfo.value)
+    assert excinfo.value.returncode == 4
+
+
+def test_the_probe_locates_the_package_without_executing_it(tmp_path):
+    # A package whose import explodes: importing it (the first version of the probe) would fail,
+    # find_spec only locates it. PYTHONPATH is used here on purpose (no -I) to plant it.
+    pkg = tmp_path / "adk_tracegauge"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("raise RuntimeError('imported')\n", encoding="utf-8")
+
+    proc = subprocess.run(  # noqa: S603 -- fixed argv
+        [sys.executable, "-c", _PROBE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert Path(proc.stdout.strip()) == pkg / "__init__.py"
