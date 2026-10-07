@@ -181,15 +181,32 @@ jobs:
   # catch a new top-level import of an eval-only dependency, nor a break specific to the 2.6.0 floor.
   # This job installs the built wheel next to an exact google-adk release with pandas absent and runs
   # the package's whole base surface: import, plugin, evaluator class, every CLI subcommand.
+  # The legs live in .github/tested-adk-legs.json, not in this file, so that tested-range-bump.yml
+  # can add the newest one: a workflow run with the default token cannot edit files under
+  # .github/workflows/. Job names are unchanged ("bare-adk (2.9.2)" ...), so the required checks
+  # still match. If this job fails, bare-adk is skipped and its required checks stay unmet.
+  adk-legs:
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.legs.outputs.legs }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the google-adk legs
+        id: legs
+        run: |
+          echo "legs=$(python3 -c "import json; print(json.dumps(json.load(open('.github/tested-adk-legs.json'))['bare_adk_legs']))")" >> "$GITHUB_OUTPUT"
+
   bare-adk:
+    needs: adk-legs
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # The floor of the supported range, the newest release verified against it (2.11.0; the cap
-        # is <2.12.0; see _compat._KNOWN_TESTED_MAX_EXCLUSIVE), and 2.9.2: kept because branch protection requires the `bare-adk (2.9.2)`
-        # check by name, so dropping it would leave that required check forever pending.
-        google-adk: ["2.6.0", "2.9.2", "2.11.0"]
+        # The floor of the supported range, the newest release verified against it, and 2.9.2:
+        # kept because branch protection requires the `bare-adk (2.9.2)` check by name, so dropping
+        # it would leave that required check forever pending. The list, and why the newest leg is
+        # the newest, is in .github/tested-adk-legs.json (see _compat._KNOWN_TESTED_MAX_EXCLUSIVE).
+        google-adk: ${{ fromJSON(needs.adk-legs.outputs.legs) }}
     steps:
       - uses: actions/checkout@v7
 
