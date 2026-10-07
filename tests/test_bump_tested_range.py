@@ -299,6 +299,20 @@ def test_the_workflow_never_stages_a_workflow_file_and_never_merges():
     assert "gh pr merge" not in _WORKFLOW and "--auto" not in _WORKFLOW
 
 
-def test_the_workflow_dispatches_ci_because_a_bot_opened_pr_gets_no_checks():
-    assert "gh workflow run ci.yml" in _WORKFLOW
-    assert "actions: write" in _WORKFLOW
+def test_the_workflow_does_not_dispatch_ci_and_asks_for_no_write_access_to_actions():
+    # A workflow_dispatch of ci.yml on the bot's branch makes check runs that never reach the PR's
+    # check rollup (merge_gate.py gate 2 sees them as absent) and doubles CI cost; the owner step
+    # that works is close-and-reopen (see the workflow header). Only read access is needed, to
+    # fetch the canary run's log.
+    assert "gh workflow run" not in _WORKFLOW
+    assert "actions: write" not in _WORKFLOW
+    assert "actions: read" in _WORKFLOW
+
+
+def test_the_pr_body_tells_the_merger_ci_has_not_run_and_which_leg_is_not_required():
+    from scripts.bump_tested_range import pr_body
+
+    body = pr_body("2.12.0", "2.12.0", "2.13.0", "https://example.invalid/run")
+
+    assert "CI has not run on this PR" in body and "close and reopen" in body
+    assert "`bare-adk (2.12.0)` is green" in body and "not a required check" in body
