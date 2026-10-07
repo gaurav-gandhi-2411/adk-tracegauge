@@ -69,15 +69,31 @@ def new_max_exclusive(tested: Version) -> Version:
     return (tested[0], tested[1] + 1, 0)
 
 
+_PAYLOAD = re.compile(r"\d{4}-\d\d-\d\dT[\d:.]+Z (.*)$")
+_REPORT_COMMAND = "print('google-adk', m.version('google-adk'))"
+
+
 def canary_version_from_log(log: str) -> str:
-    """The google-adk version a canary run installed: the last ``google-adk X.Y.Z`` line printed by
-    its report step. ``gh run view --log`` prefixes each line with job, step and timestamp."""
-    found = [
-        m[1]
-        for line in log.splitlines()
-        if "Report the installed google-adk version" in line
-        and (m := _LOG_LINE.search(line.rstrip()))
-    ]
+    """The google-adk version a canary run installed, from ``gh run view --log`` output.
+
+    The canary's "Report the installed google-adk version" step runs a one-line python command that
+    prints ``google-adk X.Y.Z``. In a real log (checked against run 37622818750) every step is labelled
+    ``UNKNOWN STEP``, so the step NAME cannot be used. What is reliable is the command echo
+    (``##[group]Run python -c "... print('google-adk', m.version('google-adk'))"``) followed by the
+    bare ``google-adk X.Y.Z`` output line; the first such line after that echo is the answer.
+    A line labelled with the step name (the form the API gives for some runs) is accepted too."""
+    found: list[str] = []
+    armed = False
+    for line in log.splitlines():
+        m = _PAYLOAD.search(line)
+        payload = (m.group(1) if m else line).strip()
+        if "##[group]Run" in payload:
+            armed = _REPORT_COMMAND in payload
+            continue
+        named = "Report the installed google-adk version" in line
+        if (armed or named) and (v := _LOG_LINE.fullmatch(payload)):
+            found.append(v[1])
+            armed = False
     if not found:
         raise ValueError("no `google-adk X.Y.Z` line from the canary's report step in the log")
     return found[-1]
@@ -187,9 +203,11 @@ def pr_body(tested: str, old_max: str, new_max: str, canary_url: str) -> str:
         "## Changes\n`_compat.py` constant; `.github/tested-adk-legs.json` (the bare-adk legs); "
         "README tested-range line and lists; `docs/troubleshooting.md` bound. "
         "`tests/test_adk_tested_range.py` fails if these disagree.\n\n"
-        "## Testing\nThe PR's CI is dispatched by the workflow (a PR opened with the workflow token "
-        f"does not trigger `pull_request` runs), including the new `bare-adk ({tested})` leg. "
-        "UNVERIFIED until that run is green.\n\n"
+        "## Testing\n**CI has not run on this PR.** A pull request opened by the Actions bot gets no "
+        "usable CI (its `pull_request` run ends as `action_required` or `startup_failure`). To start "
+        "it: close and reopen this PR as a maintainer. Then confirm "
+        f"**`bare-adk ({tested})` is green**: it is the point of the bump, and it is not a required "
+        "check, so `merge_gate.py` will not look at it. UNVERIFIED until then.\n\n"
         "## Screenshots\nn/a (no UI path).\n\n"
         "## Risk & rollback\nThe tested range is a claim, not a pin (no upper bound on the "
         "dependency): a wrong bump only silences one log line. Revert = close the PR. After merging, "
