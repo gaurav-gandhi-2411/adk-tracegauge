@@ -50,7 +50,8 @@ Three things happen here before any TurnDigest is built, all fail-closed:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ._cost import SessionCost, SessionDigest, TurnDigest, compute_session_cost
@@ -60,6 +61,7 @@ from ._pricing import (
     effective_prices,
     is_local_model,
     known_model_keys,
+    load_gemini_prices,
     resolve_model_for_call,
 )
 from ._store import CapturedCall
@@ -91,6 +93,38 @@ class UnpricedComponent:
         return d
 
 
+GROUNDING_FREE_ALLOWANCE_ENV_VAR = "ADK_TRACEGAUGE_GROUNDING_FREE_ALLOWANCE"
+"""Set to 1/true/yes/on to assert the caller is inside Google's free grounding allowance: the fee
+is then priced at $0 and the assumption is printed. An explicit, printed assertion, never a
+default (same shape as ``ADK_TRACEGAUGE_ASSUME_LOCAL``)."""
+
+UPPER_BOUND_LABEL = "upper bound (grounding priced at paid rate; free allowance not observable)"
+"""The exact text printed beside a total that includes a paid-rate grounding fee."""
+
+
+def _free_allowance_asserted() -> bool:
+    return os.environ.get(GROUNDING_FREE_ALLOWANCE_ENV_VAR, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+@dataclass(frozen=True)
+class Fee:
+    """A per-call vendor fee priced on top of a turn's tokens (Google Search grounding on the
+    Gemini API). ``turn_index`` joins it to ``digest.turns``; ``agent_name`` is the grounded
+    call's agent so per-agent attribution still sums to the total."""
+
+    turn_index: int
+    agent_name: str
+    usd: float
+    source: str = "google_search"
+    paid_rate: bool = True
+    """False when the fee was asserted to be inside the free allowance (priced at $0)."""
+
+
 @dataclass
 class AdaptResult:
     """A ready-to-price digest, or the specific reason pricing was refused."""
@@ -103,6 +137,10 @@ class AdaptResult:
     the digest does not price: a grounding fee, audio input tokens, non-text output tokens. The
     digest prices everything else; a caller must treat its total as incomplete (see
     ``UnpricedComponent``)."""
+    fees: tuple[Fee, ...] = ()
+    """Grounding fees this adaptation could price (Gemini API, Google Search, a price-table entry with a verified ``grounding.google_search`` row). Everything else stays in ``unpriced_components``."""
+    assumptions: tuple[str, ...] = ()
+    """One sentence per assumption baked into a priced figure; printed wherever the figure is."""
     agent_names_by_turn: tuple[str, ...] = ()
     """LL2: one entry per ``digest.turns`` entry, same order, same length
     (indexed by ``turn_index``) -- the agent_name of the CapturedCall that
@@ -118,6 +156,11 @@ class AdaptResult:
     @property
     def ok(self) -> bool:
         return self.digest is not None
+
+    @property
+    def is_upper_bound(self) -> bool:
+        """True when a grounding fee was priced at the paid rate: the real total is at most this figure."""
+        return any(f.paid_rate for f in self.fees)
 
 
 def _group_streaming_calls(
@@ -180,6 +223,8 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
     output_by_modality: dict[str, int] = {}
     grounded_calls: dict[str, int] = {}
     grounding_queries = 0
+    fees: list[Fee] = []
+    folded_tool_use = 0
 
     for index, group in enumerate(groups):
         # The non-partial terminator carries each real call's true, complete
@@ -197,28 +242,65 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
         # publishes one rate for text/image/video input (README, "Known limitations").
         audio = min(final_call.audio_prompt_token_count, final_call.prompt_token_count)
         audio_cached = min(final_call.audio_cached_token_count, audio)
+        # 0.10.0: audio is priced only when this entry publishes BOTH an audio input rate and an
+        # audio cached rate (verified against the vendor page); every other model keeps the
+        # fail-closed flag below.
+        entry = load_gemini_prices()["models"][resolved.model_key]
+        audio_priced = (
+            "audio_input_usd_per_mtok" in entry and "audio_cached_input_usd_per_mtok" in entry
+        )
         non_text_out = 0
         for modality, count in final_call.non_text_output_tokens:
             output_by_modality[modality] = output_by_modality.get(modality, 0) + count
             non_text_out += count
         non_text_out = min(non_text_out, final_call.candidates_token_count)
-        audio_tokens += audio
+        if not audio_priced:
+            audio_tokens += audio
         # Server-side tool tokens (Google Search grounding, code execution) are not part of
         # prompt_token_count (total = prompt + candidates + thoughts + tool_use), so leaving
         # them out is just not adding them.
-        tool_use_tokens += final_call.tool_use_prompt_token_count
         # A streamed call's grounding metadata may sit on any of its chunks, not only the last.
         group_sources = {s for c in group for s in c.grounding_sources}
+        # 0.10.0: price a Google Search grounding fee ONLY when every condition holds -- the
+        # backend positively reported the Gemini API (fail closed: unknown and Vertex stay
+        # flagged), and this model's table entry carries a verified per-prompt rate.
+        backend = "vertex" if any(c.backend == "vertex" for c in group) else final_call.backend
+        search_rule = entry.get("grounding", {}).get("google_search")
+        search_priced = (
+            "google_search" in group_sources
+            and backend == "gemini_api"
+            and search_rule is not None
+            and search_rule.get("unit") == "per_grounded_prompt"
+        )
+        extra_input = 0
+        if search_priced:
+            free = _free_allowance_asserted()
+            fees.append(
+                Fee(
+                    turn_index=index,
+                    agent_name=final_call.agent_name,
+                    usd=0.0 if free else search_rule["usd_per_1k"] / 1000,
+                    paid_rate=not free,
+                )
+            )
+            # The upper-bound framing already tolerates a charge Google might waive, so the
+            # call's tool-use tokens are priced at the input rate here and ONLY here.
+            extra_input = final_call.tool_use_prompt_token_count
+            folded_tool_use += extra_input
+        else:
+            tool_use_tokens += final_call.tool_use_prompt_token_count
         for source in group_sources:
+            if source == "google_search" and search_priced:
+                continue
             grounded_calls[source] = grounded_calls.get(source, 0) + 1
-        if "google_search" in group_sources:
+        if "google_search" in group_sources and not search_priced:
             grounding_queries += max(c.grounding_queries for c in group)
 
         turns.append(
             TurnDigest(
                 turn_index=index,
                 role="ai",
-                token_count_input=final_call.prompt_token_count - audio,
+                token_count_input=final_call.prompt_token_count - audio + extra_input,
                 # thoughts_token_count ("thinking" tokens) is billed as
                 # output per Gemini's pricing pages -- folded in here so it
                 # isn't silently undercounted (Phase 2 W1 P0 finding).
@@ -230,6 +312,8 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
                 cache_read=max(0, final_call.cached_content_token_count - audio_cached),
                 cache_creation=0,
                 model=resolved.model_key,
+                audio_input=audio if audio_priced else 0,
+                audio_cache_read=audio_cached if audio_priced else 0,
             )
         )
         # LL2: the group's own terminator call's agent_name -- a streamed
@@ -316,15 +400,39 @@ def build_session_digest(invocation_id: str, calls: list[CapturedCall]) -> Adapt
             )
         )
 
+    assumptions: list[str] = []
+    if fees:
+        n = len(fees)
+        if any(f.paid_rate for f in fees):
+            assumptions.append(
+                f"Google Search grounding priced at the paid rate on {n} call(s) "
+                "($35 / 1,000 grounded prompts); the free allowance (1,500 requests/day) is not "
+                "observable from a plugin, so the total is an upper bound"
+            )
+        else:
+            assumptions.append(
+                f"grounding priced at $0 because {GROUNDING_FREE_ALLOWANCE_ENV_VAR} asserts this "
+                "run is inside the free allowance"
+            )
+        if folded_tool_use:
+            assumptions.append(
+                f"{folded_tool_use:,} tool-use prompt token(s) on grounded calls priced at the "
+                "input rate (Google does not say whether Gemini API grounding bills them)"
+            )
+
     digest = SessionDigest(session_id=invocation_id, turns=turns)
     return AdaptResult(
         digest=digest,
+        fees=tuple(fees),
+        assumptions=tuple(assumptions),
         unpriced_components=tuple(unpriced),
         agent_names_by_turn=tuple(agent_names),
     )
 
 
-def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
+def price_digest(
+    digest: SessionDigest, *, prices: dict[str, Any], fees: tuple[Fee, ...] = ()
+) -> SessionCost:
     """The single sanctioned call site for ``_cost.compute_session_cost`` in
     this package -- every caller that needs a priced SessionDigest
     (``evaluator.py``'s per-invocation eval result, ``snapshot.py``'s
@@ -360,7 +468,28 @@ def price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCos
     this single sanctioned call site, rather than relying on every caller
     to remember to call ``effective_prices`` themselves.
     """
-    return compute_session_cost(digest, prices=effective_prices(prices))
+    cost = compute_session_cost(digest, prices=effective_prices(prices))
+    if not fees:
+        return cost
+    # Fees are per-call vendor charges, not token arithmetic: they ride on the matching turn so
+    # per-agent attribution (which sums turn totals) still adds up to the invocation total.
+    fee_by_turn: dict[int, float] = {}
+    for fee in fees:
+        fee_by_turn[fee.turn_index] = fee_by_turn.get(fee.turn_index, 0.0) + fee.usd
+    turn_costs = [
+        replace(
+            tc,
+            fee_cost=fee_by_turn.get(tc.turn_index, 0.0),
+            total_usd=tc.total_usd + fee_by_turn.get(tc.turn_index, 0.0),
+        )
+        for tc in cost.turn_costs
+    ]
+    return replace(
+        cost,
+        turn_costs=turn_costs,
+        total_usd=sum(tc.total_usd for tc in turn_costs),
+        fees_usd=sum(fee_by_turn.values()),
+    )
 
 
 def unknown_model_message(model_version: str) -> str:
@@ -411,7 +540,10 @@ def unknown_model_message(model_version: str) -> str:
 
 
 __all__ = [
+    "GROUNDING_FREE_ALLOWANCE_ENV_VAR",
+    "UPPER_BOUND_LABEL",
     "AdaptResult",
+    "Fee",
     "UnpricedComponent",
     "build_session_digest",
     "price_digest",

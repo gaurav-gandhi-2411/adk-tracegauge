@@ -19,15 +19,22 @@ from unittest.mock import patch
 
 import pytest
 from scripts.check_price_table_vs_vendor import (
+    ANTHROPIC_DEPRECATIONS_URL,
     ANTHROPIC_MD_URL,
+    GOOGLE_DEPRECATIONS_URL,
     GOOGLE_HTML_URL,
+    OPENAI_DEPRECATIONS_URL,
     OPENAI_MD_URL,
     FetchError,
     Rate,
     audit,
+    audit_deprecations,
     main,
+    parse_anthropic_deprecations,
     parse_anthropic_markdown,
+    parse_google_deprecations,
     parse_google_html,
+    parse_openai_deprecations,
     parse_openai_markdown,
 )
 
@@ -105,7 +112,12 @@ _PRICES = {
         "gpt-5.1": {"input_usd_per_mtok": 1.25, "output_usd_per_mtok": 10.0},
         "gemini-2.5-pro": {"input_usd_per_mtok": 1.25, "output_usd_per_mtok": 10.0},
         "gemini-2.5-pro-long-context": {"input_usd_per_mtok": 2.5, "output_usd_per_mtok": 15.0},
-        "gemini-2.5-flash-lite": {"input_usd_per_mtok": 0.10, "output_usd_per_mtok": 0.40},
+        "gemini-2.5-flash-lite": {
+            "input_usd_per_mtok": 0.10,
+            "output_usd_per_mtok": 0.40,
+            "audio_input_usd_per_mtok": 0.30,
+            "audio_cached_input_usd_per_mtok": 0.03,
+        },
         "gemini-3.6-flash": {
             "input_usd_per_mtok": 0.75,
             "output_usd_per_mtok": 3.75,
@@ -121,6 +133,28 @@ _PRICES = {
         "__local_zero_cost__": {"input_usd_per_mtok": 0.0, "output_usd_per_mtok": 0.0},
     },
 }
+
+
+_OPENAI_DEP_MD = """# Deprecations
+
+### 2026-10-01: Example
+
+| Shutdown date | Model / system | Recommended replacement |
+| ------------- | -------------- | ----------------------- |
+| Apr 1, 2027   | `gpt-6-sol`    | `gpt-7`                 |
+| October 23, 2026 | `o1-2024-12-17` \\| `o1` | `gpt-5.6-sol`        |
+"""
+
+_ANTHROPIC_DEP_MD = """## Deprecation history
+
+| Retirement date | Deprecated model | Replacement |
+| --- | --- | --- |
+| August 5, 2026 | `claude-opus-4-1-20250805` | `claude-opus-4-8` |
+"""
+
+_GOOGLE_DEP_HTML = """<table><tr><th>Model</th><th>Release date</th><th>Shutdown date</th><th>Recommended replacement</th></tr>
+<tr><td>gemini-2.5-pro</td><td>June 17, 2025</td><td>No shutdown date announced</td><td></td></tr>
+<tr><td>gemini-3.1-flash-lite</td><td>May 7, 2026</td><td>May 7, 2027</td><td>gemini-3.5-flash-lite</td></tr></table>"""
 
 
 def _vendor():
@@ -372,6 +406,9 @@ def _fake_fetch(url):
         ANTHROPIC_MD_URL: _ANTHROPIC_MD,
         OPENAI_MD_URL: _OPENAI_MD,
         GOOGLE_HTML_URL: _GOOGLE_HTML,
+        OPENAI_DEPRECATIONS_URL: _OPENAI_DEP_MD,
+        ANTHROPIC_DEPRECATIONS_URL: _ANTHROPIC_DEP_MD,
+        GOOGLE_DEPRECATIONS_URL: _GOOGLE_DEP_HTML,
     }[url]
 
 
@@ -462,3 +499,189 @@ def test_the_recorded_pages_still_verify_with_the_split_guard_in_place():
     rows = _audit()
     assert rows["gemini-2.5-flash-lite"].status == "VERIFIED"
     assert rows["gemini-2.5-pro"].status == "VERIFIED"
+
+
+# --- 0.10.0: per-entry cached rate, audio, grounding, deprecations ---------------------------
+
+
+def test_the_entrys_own_cached_rate_must_equal_the_vendors():
+    ok = _mutated(lambda p: p["models"]["gpt-5.1"].update(cached_input_usd_per_mtok=0.125))
+    assert ok["gpt-5.1"].status == "VERIFIED"
+    bad = _mutated(lambda p: p["models"]["gpt-5.1"].update(cached_input_usd_per_mtok=0.25))
+    assert bad["gpt-5.1"].status == "MISMATCH"
+    assert any("cached: ours $0.25 vs vendor $0.125" in d for d in bad["gpt-5.1"].detail)
+
+
+def test_a_per_entry_cached_rate_off_the_global_multiplier_is_checked_against_the_page():
+    # gpt-4o-style 0.5x entry: the page says 0.125 (0.1x) for gpt-5.1, so 0.625 is a mismatch even
+    # though it is a "valid" ratio for some other model.
+    bad = _mutated(lambda p: p["models"]["gpt-5.1"].update(cached_input_usd_per_mtok=0.625))
+    assert bad["gpt-5.1"].status == "MISMATCH"
+
+
+def test_google_audio_rates_are_parsed_and_all_modality_cells_are_not_audio():
+    model = parse_google_html(_GOOGLE_HTML, "gemini-2.5-flash-lite")
+    assert model is not None and (model.audio_input, model.audio_cached) == (0.30, 0.03)
+    pro = parse_google_html(_GOOGLE_HTML, "gemini-2.5-pro")
+    assert pro is not None and pro.audio_input is None
+    all_modalities = _GOOGLE_HTML.replace(
+        "$0.10 (text / image / video)<br>$0.30 (audio)", "$0.10 (text / image / video / audio)"
+    )
+    flat = parse_google_html(all_modalities, "gemini-2.5-flash-lite")
+    assert flat is not None and flat.audio_input is None
+
+
+def test_an_audio_rate_the_page_publishes_but_the_entry_lacks_is_a_mismatch():
+    def drop(p):
+        del p["models"]["gemini-2.5-flash-lite"]["audio_input_usd_per_mtok"]
+
+    row = _mutated(drop)["gemini-2.5-flash-lite"]
+    assert row.status == "MISMATCH" and "audio input" in row.detail[0]
+
+
+def test_a_wrong_audio_rate_is_a_mismatch():
+    row = _mutated(
+        lambda p: p["models"]["gemini-2.5-flash-lite"].update(audio_input_usd_per_mtok=0.10)
+    )["gemini-2.5-flash-lite"]
+    assert row.status == "MISMATCH"
+
+
+_GROUNDING_ROW = (
+    "<tr><td>Grounding with Google Search</td><td>1,500 RPD (free)</td>"
+    "<td>1,500 RPD (free), then $35 / 1,000 grounded prompts</td></tr>"
+)
+
+
+def _with_grounding(html: str, row: str = _GROUNDING_ROW) -> str:
+    marker = "<tr><td>Context caching price</td><td>Not available</td><td>$0.125"
+    return html.replace(marker, row + marker, 1)
+
+
+def test_the_grounding_row_is_parsed_unit_rate_and_allowance():
+    model = parse_google_html(_with_grounding(_GOOGLE_HTML), "gemini-2.5-pro")
+    assert model is not None and model.grounding == ("per_grounded_prompt", 35.0, "1,500")
+    per_query = _GROUNDING_ROW.replace(
+        "then $35 / 1,000 grounded prompts", "then $14 per 1,000 requests."
+    ).replace("1,500 RPD (free)", "5,000 free search requests per month")
+    model = parse_google_html(_with_grounding(_GOOGLE_HTML, per_query), "gemini-2.5-pro")
+    assert model is not None and model.grounding == ("per_search_query", 14.0, "5,000")
+
+
+_GROUNDING_OURS = {
+    "unit": "per_grounded_prompt",
+    "usd_per_1k": 35.0,
+    "free_allowance": "1,500 RPD free, then $35 / 1,000 grounded prompts",
+}
+
+
+def test_grounding_verifies_mismatches_and_must_be_carried():
+    html = _with_grounding(_GOOGLE_HTML)
+    an, op, _ = _vendor()
+
+    def run(mutate):
+        prices = copy.deepcopy(_PRICES)
+        mutate(prices)
+        return {r.key: r for r in audit(prices, an, op, html)}["gemini-2.5-pro"]
+
+    ok = run(
+        lambda p: p["models"]["gemini-2.5-pro"].update(grounding={"google_search": _GROUNDING_OURS})
+    )
+    assert ok.status == "VERIFIED"
+    wrong_rate = run(
+        lambda p: p["models"]["gemini-2.5-pro"].update(
+            grounding={"google_search": {**_GROUNDING_OURS, "usd_per_1k": 25.0}}
+        )
+    )
+    assert wrong_rate.status == "MISMATCH"
+    wrong_unit = run(
+        lambda p: p["models"]["gemini-2.5-pro"].update(
+            grounding={"google_search": {**_GROUNDING_OURS, "unit": "per_search_query"}}
+        )
+    )
+    assert wrong_unit.status == "MISMATCH"
+    missing = run(lambda p: None)  # the page lists a fee the entry does not carry
+    assert missing.status == "MISMATCH" and "no grounding block" in missing.detail[0]
+
+
+def test_a_grounding_block_the_page_no_longer_has_is_a_mismatch():
+    row = _mutated(
+        lambda p: p["models"]["gemini-2.5-pro"].update(grounding={"google_search": _GROUNDING_OURS})
+    )["gemini-2.5-pro"]
+    assert row.status == "MISMATCH"
+
+
+def test_o_series_keys_are_mapped_to_openai_not_refused_as_unmapped():
+    openai_md = _OPENAI_MD.replace(
+        "| gpt-5.1 | $1.25 | $0.125 | - | $10.00 | - | - | - | - |",
+        "| gpt-5.1 | $1.25 | $0.125 | - | $10.00 | - | - | - | - |\n"
+        "| o3 | $2.00 | $0.50 | - | $8.00 | - | - | - | - |",
+        1,
+    )
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["o3"] = {
+        "input_usd_per_mtok": 2.0,
+        "output_usd_per_mtok": 8.0,
+        "cached_input_usd_per_mtok": 0.5,
+    }
+    an, _, g = _vendor()
+    rows = {r.key: r for r in audit(prices, an, parse_openai_markdown(openai_md), g)}
+    assert rows["o3"].status == "VERIFIED"
+
+
+def test_deprecation_parsers_read_exact_names_and_the_shutdown_column_only():
+    openai = parse_openai_deprecations(_OPENAI_DEP_MD)
+    assert openai["gpt-6-sol"] == date(2027, 4, 1)
+    assert openai["o1"] == date(2026, 10, 23) and openai["o1-2024-12-17"] == date(2026, 10, 23)
+    assert parse_anthropic_deprecations(_ANTHROPIC_DEP_MD) == {
+        "claude-opus-4-1-20250805": date(2026, 8, 5)
+    }
+    google = parse_google_deprecations(_GOOGLE_DEP_HTML)
+    assert google == {"gemini-2.5-pro": None, "gemini-3.1-flash-lite": date(2027, 5, 7)}
+
+
+def _dep_audit(prices, today=date(2026, 10, 7)):
+    return {
+        r.key: r
+        for r in audit_deprecations(
+            prices,
+            parse_openai_deprecations(_OPENAI_DEP_MD),
+            parse_anthropic_deprecations(_ANTHROPIC_DEP_MD),
+            parse_google_deprecations(_GOOGLE_DEP_HTML),
+            today=today,
+        )
+    }
+
+
+def test_a_vendor_listed_shutdown_the_entry_does_not_carry_is_a_mismatch():
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["o1"] = {"input_usd_per_mtok": 15.0, "output_usd_per_mtok": 60.0}
+    rows = _dep_audit(prices)
+    assert rows["o1 (deprecation)"].status == "MISMATCH"
+    prices["models"]["o1"]["deprecation"] = {"shutdown_on": "2026-10-23"}
+    assert _dep_audit(prices)["o1 (deprecation)"].status == "VERIFIED"
+
+
+def test_a_passed_shutdown_on_a_non_retired_entry_is_a_mismatch_until_marked_retired():
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["o1"] = {
+        "input_usd_per_mtok": 15.0,
+        "output_usd_per_mtok": 60.0,
+        "deprecation": {"shutdown_on": "2026-10-23"},
+    }
+    rows = _dep_audit(prices, today=date(2026, 10, 24))
+    assert rows["o1 (deprecation)"].status == "MISMATCH"
+    assert "has passed" in rows["o1 (deprecation)"].detail[-1]
+    prices["models"]["o1"]["retired"] = True
+    assert "o1 (deprecation)" not in _dep_audit(prices, today=date(2026, 10, 24))
+
+
+def test_a_recorded_deprecation_the_page_no_longer_lists_is_a_mismatch():
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["gemini-2.5-pro"]["deprecation"] = {"shutdown_on": "2027-01-01"}
+    # the page lists gemini-2.5-pro with "No shutdown date announced"
+    assert _dep_audit(prices)["gemini-2.5-pro (deprecation)"].status == "MISMATCH"
+
+
+def test_an_unfetched_deprecation_page_is_unverified_for_entries_of_that_vendor():
+    rows = audit_deprecations(_PRICES, None, {}, {}, today=date(2026, 10, 7))
+    assert {r.status for r in rows} == {"UNVERIFIED"}

@@ -386,6 +386,19 @@ def effective_prices(prices: dict[str, Any] | None = None) -> dict[str, Any]:
         new_entry = dict(entry)
         new_entry["input_usd_per_mtok"] = input_rate
         new_entry["output_usd_per_mtok"] = output_rate
+        # A promo entry's cached rate follows the same switch as its input rate (0.10.0): past
+        # promo_until the standard_rate's own cached rate applies; a standard_rate without one
+        # drops the stale promo figure so the global multiplier derives it from the new input rate.
+        standard_rate = entry.get("standard_rate")
+        if (
+            entry.get("promo_until")
+            and standard_rate
+            and input_rate == standard_rate["input_usd_per_mtok"]
+        ):
+            if "cached_input_usd_per_mtok" in standard_rate:
+                new_entry["cached_input_usd_per_mtok"] = standard_rate["cached_input_usd_per_mtok"]
+            else:
+                new_entry.pop("cached_input_usd_per_mtok", None)
         effective_models[model_key] = new_entry
 
     effective = dict(prices)
@@ -569,6 +582,30 @@ def known_model_keys(prices: dict[str, Any] | None = None) -> list[str]:
     return sorted(prices["models"].keys())
 
 
+def _today() -> date:
+    # Its own function so a test can move "today" through the CLI without patching ``date``.
+    return date.today()
+
+
+def is_retired(entry: dict[str, Any], today: date | None = None) -> bool:
+    """True once the vendor has retired the model: the entry is marked ``"retired": true``, or its
+    ``retired_on`` date has arrived.
+
+    The date form exists so a shutdown the vendor has already announced takes effect on its day
+    without a table edit: the vendor's pricing page drops the model, so from then on the rate can
+    only be "the last one the vendor published" and the weekly check can no longer re-verify it.
+    An unparseable ``retired_on`` is NOT retired (the entry stays under full verification)."""
+    if entry.get("retired"):
+        return True
+    raw = entry.get("retired_on")
+    if not raw:
+        return False
+    try:
+        return date.fromisoformat(str(raw)) <= (today or _today())
+    except ValueError:
+        return False
+
+
 __all__ = [
     "ASSUME_LOCAL_ENV_VAR",
     "LOCAL_MODEL_KEY",
@@ -578,6 +615,7 @@ __all__ = [
     "effective_prices",
     "is_local_model",
     "is_local_model_asserted",
+    "is_retired",
     "known_model_keys",
     "load_gemini_prices",
     "resolve_model",

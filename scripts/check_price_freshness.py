@@ -48,6 +48,7 @@ if str(_SRC) not in sys.path:
 from adk_tracegauge._pricing import (  # noqa: E402
     PROMO_EXPIRY_WARNING_DAYS,
     STALE_THRESHOLD_DAYS,
+    is_retired,
     load_gemini_prices,
 )
 
@@ -76,7 +77,10 @@ def _check_staleness(
             # Synthetic entries (e.g. the zero-cost local-model entry) have no vendor page, so
             # a fetch date on them cannot go stale in any meaningful sense.
             continue
-        if entry.get("retired"):
+        if is_retired(entry, today):
+            # (``retired: true``, or a ``retired_on`` date that has arrived -- a model the vendor
+            # shut down on its announced day cannot be re-fetched, so its fetched_on must not
+            # turn the release gate red 30 days later.)
             # Retired entries are exempt by design: the vendor no longer
             # changes pricing for a model that can't be resolved/priced by
             # anyone, so "is this stale" doesn't apply -- the entry is kept

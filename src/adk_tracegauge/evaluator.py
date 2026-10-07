@@ -140,7 +140,13 @@ from google.adk.evaluation.evaluator import (
 from pydantic import ValidationError
 
 from . import _compat
-from ._adapter import build_session_digest, price_digest, unknown_model_message
+from ._adapter import (
+    UPPER_BOUND_LABEL,
+    Fee,
+    build_session_digest,
+    price_digest,
+    unknown_model_message,
+)
 from ._cost import SessionCost, SessionDigest
 from ._pricing import LOCAL_MODEL_KEY, STALE_THRESHOLD_DAYS, load_gemini_prices, resolve_model
 from ._store import DEFAULT_USAGE_STORE, UsageStore
@@ -249,7 +255,9 @@ def _unpriced_component_result(
     )
 
 
-def _price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCost:
+def _price_digest(
+    digest: SessionDigest, *, prices: dict[str, Any], fees: tuple[Fee, ...] = ()
+) -> SessionCost:
     """Evaluator-local alias for ``_adapter.price_digest`` -- kept as its own
     name (rather than calling ``_adapter.price_digest`` inline at each call
     site below) purely so existing callers of this exact symbol
@@ -263,7 +271,7 @@ def _price_digest(digest: SessionDigest, *, prices: dict[str, Any]) -> SessionCo
     ``tracegauge`` dependency -- living in ``_adapter.py`` so ``snapshot.py``
     (Phase 2 W4) can share it instead of duplicating the same wrapper).
     """
-    return price_digest(digest, prices=prices)
+    return price_digest(digest, prices=prices, fees=fees)
 
 
 def _promo_unknown_rate_warning(session_cost: SessionCost) -> str | None:
@@ -331,8 +339,10 @@ def _priced_result(
     *,
     threshold_usd: float,
     agent_names_by_turn: tuple[str, ...] = (),
+    fees: tuple[Fee, ...] = (),
+    assumptions: tuple[str, ...] = (),
 ) -> PerInvocationResult:
-    session_cost = _price_digest(digest, prices=load_gemini_prices())
+    session_cost = _price_digest(digest, prices=load_gemini_prices(), fees=fees)
 
     # The actual PASSED/FAILED verdict -- computed here, directly, never via
     # ADK's built-in score>=threshold helper (wrong direction for a
@@ -393,6 +403,10 @@ def _priced_result(
             f"cache_read=${turn_cost.cache_read_cost:.6f} "
             f"output=${turn_cost.output_cost:.6f} total=${turn_cost.total_usd:.6f}"
         )
+        if turn_cost.audio_cost:
+            line += f" audio=${turn_cost.audio_cost:.6f} (included in total)"
+        if turn_cost.fee_cost:
+            line += f" grounding_fee=${turn_cost.fee_cost:.6f} (included in total)"
         if turn_cost.model_key == LOCAL_MODEL_KEY:
             # Explicit, named, auditable per Phase 2 W3's requirement --
             # never silently a $0.00 line indistinguishable from a genuinely
@@ -414,6 +428,9 @@ def _priced_result(
                     "standard rate applied automatically)"
                 )
         breakdown_lines.append(line)
+    breakdown_lines.extend(f"ASSUMPTION: {a}" for a in assumptions)
+    if any(f.paid_rate for f in fees):
+        breakdown_lines.append(f"cost is an {UPPER_BOUND_LABEL}")
     if session_cost.approximate:
         breakdown_lines.append(
             f"WARNING: approximate -- {'; '.join(session_cost.approximate_reasons)}"
@@ -836,6 +853,8 @@ class CostEfficiencyEvaluator(Evaluator):
                     digest,
                     threshold_usd=self._threshold_usd,
                     agent_names_by_turn=adapted.agent_names_by_turn,
+                    fees=adapted.fees,
+                    assumptions=adapted.assumptions,
                 )
             )
 

@@ -18,9 +18,17 @@ listed under "NOT included in the total" -- the total is then a lower bound, nev
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
-from ._pricing import LOCAL_MODEL_KEY, is_local_model, load_gemini_prices, resolve_model
+from ._adapter import UPPER_BOUND_LABEL
+from ._pricing import (
+    LOCAL_MODEL_KEY,
+    is_local_model,
+    is_retired,
+    load_gemini_prices,
+    resolve_model,
+)
 from .snapshot import Snapshot, SnapshotRecord
 
 
@@ -69,15 +77,28 @@ def incomplete_records(snapshot: Snapshot) -> list[SnapshotRecord]:
     return [r for r in snapshot.records if r.unpriced_components]
 
 
+def grounding_fee_total(snapshot: Snapshot) -> float:
+    """The part of ``priced_total_usd`` that is a priced grounding fee."""
+    return sum(rec.grounding_fee_usd for rec in snapshot.records)
+
+
+def total_is_upper_bound(snapshot: Snapshot) -> bool:
+    """True when any grounding fee in the total was priced at the paid rate (the free allowance is
+    not observable), so the true total is at most ``priced_total_usd``. Independent of
+    ``total_is_complete``: a total can be complete (nothing left out) and still an upper bound."""
+    return any(rec.is_upper_bound for rec in snapshot.records)
+
+
 def total_is_complete(snapshot: Snapshot) -> bool:
     """True only when nothing is unknown AND no priced invocation leaves a billed component out."""
     return not snapshot.skipped and not incomplete_records(snapshot)
 
 
-def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
+def unverifiable_pricing(snapshot: Snapshot, today: date | None = None) -> list[dict[str, str]]:
     """Priced invocations whose rate the weekly vendor check cannot verify against a live page,
     one entry per distinct model: a retired model (the vendor page no longer lists it, so the
-    table holds the last rate it published) and a local model (priced $0.00 because the caller
+    table holds the last rate it published; retired from its ``retired_on`` date, see
+    ``is_retired``) and a local model (priced $0.00 because the caller
     asserted it is local; no vendor rate exists). Everything else in the table is re-verified
     against the vendor's own page, so this list is empty for it -- a price shown without a note
     here is one the check covers."""
@@ -97,11 +118,14 @@ def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
             if resolved is None or resolved.model_key == LOCAL_MODEL_KEY:
                 continue
             entry = prices["models"][resolved.model_key]
-            if entry.get("retired"):
+            if is_retired(entry, today):
+                last_listed = entry.get("vendor_page_last_listed")
                 found.setdefault(
                     model,
                     f"retired {entry.get('retired_on', '')}".strip()
-                    + "; the rate is the last one the vendor published and cannot be "
+                    + "; priced at last published rate"
+                    + (f" (the vendor page last listed it {last_listed})" if last_listed else "")
+                    + ": the rate is the last one the vendor published and cannot be "
                     "re-verified against a live page",
                 )
     return [{"model": m, "reason": r} for m, r in found.items()]
@@ -147,6 +171,9 @@ def to_json_dict(snapshot: Snapshot, source: str) -> dict[str, Any]:
                 "cost_by_agent": dict(r.cost_by_agent),
                 "unpriced_components": [dict(c) for c in r.unpriced_components],
                 "is_complete": not r.unpriced_components,
+                "grounding_fee_usd": r.grounding_fee_usd,
+                "is_upper_bound": r.is_upper_bound,
+                "assumptions": list(r.assumptions),
             }
         )
     for s in snapshot.skipped:
@@ -168,6 +195,10 @@ def to_json_dict(snapshot: Snapshot, source: str) -> dict[str, Any]:
         "n_unknown": len(snapshot.skipped),
         "total_usd_priced": priced_total_usd(snapshot),
         "total_is_complete": total_is_complete(snapshot),
+        "total_is_upper_bound": total_is_upper_bound(snapshot),
+        "grounding_fee_usd": grounding_fee_total(snapshot),
+        "total_excluding_grounding_usd": priced_total_usd(snapshot) - grounding_fee_total(snapshot),
+        "assumptions": sorted({a for rec in snapshot.records for a in rec.assumptions}),
         "n_incomplete": len(incomplete_records(snapshot)),
         "unpriced_components": _unpriced_summary(snapshot),
         "tokens_input_priced": sum(r.tokens_input for r in snapshot.records),
@@ -202,7 +233,8 @@ def render_text(snapshot: Snapshot, source: str) -> str:
         ]
         if show_cache:
             row.append(f"{r.tokens_cache_read:,}")
-        row.append(_usd(r.cost_usd) + (" *" if r.unpriced_components else ""))
+        marker = (" *" if r.unpriced_components else "") + (" ~" if r.grounding_fee_usd else "")
+        row.append(_usd(r.cost_usd) + marker)
         rows.append(row)
     unknown_notes: list[str] = []
     for s in snapshot.skipped:
@@ -246,11 +278,18 @@ def render_text(snapshot: Snapshot, source: str) -> str:
         )
     else:
         lines.append(f"  total: {_usd(total)} across {n_priced} invocation(s)")
+    if total_is_upper_bound(snapshot):
+        lines[-1] += f" -- {UPPER_BOUND_LABEL}"
     lines.append(f"  tokens (priced invocations): {tok_in:,} in / {tok_out:,} out")
     if unknown_notes:
         lines.append("")
         lines.append("  Unknown invocations were NOT priced (no guessed rate is ever used):")
         lines.extend(unknown_notes)
+    assumptions = sorted({a for rec in snapshot.records for a in rec.assumptions})
+    if assumptions:
+        lines.append("")
+        lines.append("  Assumptions in this total (rows marked ~ include a priced grounding fee):")
+        lines.extend(f"    {a}" for a in assumptions)
     if incomplete:
         lines.append("")
         lines.append("  NOT included in the total (billed by the vendor, not priced here):")
@@ -295,6 +334,8 @@ __all__ = [
     "priced_total_usd",
     "render_text",
     "total_is_complete",
+    "total_is_upper_bound",
+    "grounding_fee_total",
     "to_json_dict",
     "agent_totals",
     "unverifiable_pricing",

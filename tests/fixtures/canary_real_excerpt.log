@@ -1,0 +1,27 @@
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8150438Z shell: /usr/bin/bash -e {0}
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8150586Z env:
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8150746Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8150998Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.16/x64/lib/pkgconfig
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8151244Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8151470Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8151688Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8151909Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.16/x64/lib
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8152139Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8152379Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8152555Z ##[endgroup]
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8548121Z adk-tracegauge 0.9.3
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8625463Z ##[group]Run python -c "import importlib.metadata as m; print('google-adk', m.version('google-adk'))"
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8625871Z [36;1mpython -c "import importlib.metadata as m; print('google-adk', m.version('google-adk'))"[0m
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8679160Z shell: /usr/bin/bash -e {0}
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8679308Z env:
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8679476Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8679735Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.16/x64/lib/pkgconfig
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8679988Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8680219Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8680448Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.16/x64
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8680675Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.16/x64/lib
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8681043Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8681289Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+canary	UNKNOWN STEP	2026-10-07T12:42:33.8681470Z ##[endgroup]
+canary	UNKNOWN STEP	2026-10-07T12:42:33.9072903Z google-adk 2.11.0
+canary	UNKNOWN STEP	2026-10-07T12:42:33.9148342Z ##[group]Run pytest tests/ -v --override-ini="pythonpath=. scripts"

@@ -11,6 +11,57 @@ see `CONTRIBUTING.md`).
 
 ### Changed
 
+- **A vendor shutdown takes effect on its announced day, without a table edit.** `gpt-4.1-nano`, `o1`, `o3-mini` and
+  `o4-mini` are shut down by OpenAI on 2026-10-23; their entries now carry `retired_on` and
+  `vendor_page_last_listed` (the last date the vendor page showed the rate), and a new `is_retired(entry, today)` treats
+  an entry as retired from `retired_on`. From that date `adk-tracegauge report` marks their invocations as "priced at
+  last published rate" (the figure is unchanged), the weekly vendor check SKIPs a row the page has dropped instead of
+  failing it, and the 30-day freshness gate stops counting their `fetched_on`. While the page still lists a retired
+  model, or lists a moved shutdown date, it is still verified and a mismatch still fails, so a postponed shutdown is not
+  hidden. The hand-set `"retired": true` flag works as before.
+
+## [0.10.0] — 2026-10-07
+
+Closes five pricing gaps in the cost figure, each only where a vendor publishes the price: per-model cached rates (and the older OpenAI families they unblock), audio input, the Google Search grounding fee on the Gemini API (reported as an upper bound), and vendor shutdown tracking. On the 15-case cost-correctness suite the candidate scored 11 PASS / 4 INCOMPLETE / 0 FAIL against 6 / 9 / 0 for 0.9.1, matching the outcome pre-registered before implementation (suite scorecard `2026-10-07_adk-tracegauge_main-921ac68_0.10.0-candidate_15cases.md`; the suite harness change made while scoring is disclosed there and in #106).
+
+### Added (0.10.0 pricing gaps)
+
+- **Per-entry cached-input rates replace the one global 0.1x multiplier.** Every priced entry now carries
+  `cached_input_usd_per_mtok`, read from the raw vendor page (2026-10-07) and re-checked weekly. The old global
+  multiplier was right for Gemini, Claude and GPT-5.x and wrong for the older OpenAI families, which is why they were
+  absent. Added `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` (0.5x cached), `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `o3`,
+  `o4-mini` (0.25x). A custom price table without the field falls back to the multiplier as before. The weekly vendor
+  check now compares each entry's own cached rate and maps the o-series keys, which a `gpt-` prefix test had left
+  unmapped.
+- **Vendor deprecation tracking.** Entries record `deprecation` {shutdown_on, replacement, source_url, checked_on}
+  (gpt-4.1-nano, o1, o3-mini, o4-mini: 2026-10-23; gpt-5.1: 2027-04-01; gemini-3.1-flash-lite: 2027-05-07). The weekly
+  checker compares them to the OpenAI, Anthropic and Gemini deprecation pages by exact model name and fails once a
+  recorded shutdown has passed on an entry not marked retired.
+- **Audio input is priced** where the page publishes both an audio and an audio-cached rate (gemini-2.5-flash,
+  2.5-flash-lite, 3.1-flash-lite); every other model keeps the `audio_input_tokens` flag. Suite case A1: $0.001310.
+  The weekly check verifies the audio rates and reports MISMATCH if a page publishes one the entry lacks.
+- **Backend capture and the grounding rate rows.** The plugin records which backend served a grounded call
+  (`api_client.vertexai`, or `traffic_type` for Vertex) and the price table carries the Google Search grounding row
+  ($35 / 1,000 grounded prompts on Gemini 2.5; $14 / 1,000 requests on 3.x, which is not priced), re-verified weekly.
+  Nothing is priced from this yet: it is the groundwork for the grounding fee.
+- **Google Search grounding fee, Gemini API only, Gemini 2.5 models.** One $35/1,000 fee per grounded model call,
+  attributed to the calling agent. Totals that include it are marked as an upper bound
+  (`upper bound (grounding priced at paid rate; free allowance not observable)`, `~` rows, `total_is_upper_bound`,
+  `grounding_fee_usd`, `total_excluding_grounding_usd` in `--json`); the call's tool-use tokens are priced at the input
+  rate on that path only, and the assumption is printed. `ADK_TRACEGAUGE_GROUNDING_FREE_ALLOWANCE=1` prices the fee at
+  $0 and says so. Unreadable or Vertex backends, Gemini 3.x, Maps and Vertex AI Search stay flagged (fail closed).
+  Snapshot schema 4 -> 5 (additive; v1-v4 files still read).
+
+### What did not work / limits (0.10.0)
+
+- The cost-correctness suite's replay model was a bare `BaseLlm` with no `api_client`, so a tool that fails closed on an
+  unreadable backend could not be scored on grounding at all. The suite now replays `gemini-*` models through ADK's
+  `Gemini` class (suite commit `72ca8da`); results of older tool versions did not move.
+- Gemini 3.x grounding (per query, $14/1,000), Maps and Vertex are not priced: no captures exist for 3.x (it needs a
+  paid tier) and Vertex's billing condition is unverified.
+
+### Changed
+
 - **CI runs the full test suite on the google-adk floor.** New `full-suite-floor (2.6.0)` job: locked environment with the `[eval]` extra, then `google-adk[eval]==2.6.0` pinned in it, then all of `tests/` (656 passed, 4 skipped that need `EvalStatus.INFORMATIONAL`, 0 failed when run this way on 2026-10-05). Until now the floor only had the `bare-adk` smoke test; the full suite ran only on the lockfile's google-adk.
 
 ### Added

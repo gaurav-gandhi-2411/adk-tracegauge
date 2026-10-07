@@ -34,10 +34,18 @@ Vendor pages (verified live 2026-09-20):
 - Google: server-rendered HTML, ``<h2 id="MODEL">`` then a ``pricing-table``; parsed with
   ``html.parser`` (not regex) so ``&lt;=`` and nested markup survive.
 
+0.10.0 verifies more rate classes, each per entry against the raw page:
+- the entry's OWN cached-input rate (``cached_input_usd_per_mtok``), not a global multiplier;
+- vendor shutdown dates (OpenAI, Anthropic, Gemini deprecation pages), matched by exact model
+  name only: an alias-vs-snapshot match is ambiguous, so it is not guessed;
+- Gemini audio input / audio cached rates;
+- the Google Search grounding row (unit, $/1k, free allowance).
+
 NOT modelled by the table, therefore not verified (stated, not hidden; see README "Known
 limitations"): explicit-cache STORAGE fees (Gemini: $1.00-$4.50 per 1M tokens per hour -- not
 derivable from per-call usage), cache-WRITE surcharges (Anthropic 1.25x/2x, OpenAI cache writes),
-audio-input rates, OpenAI/Anthropic long-context tiers, Batch/Flex/Priority tiers.
+OpenAI/Anthropic long-context tiers, Batch/Flex/Priority tiers.
+Maps grounding and Vertex-backend pricing are not covered either.
 
 Zero-cost: plain HTTP GET via stdlib only.
 """
@@ -57,7 +65,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from adk_tracegauge._pricing import load_gemini_prices  # noqa: E402
+from adk_tracegauge._pricing import is_retired, load_gemini_prices  # noqa: E402
 
 _USER_AGENT = "Mozilla/5.0 (compatible; adk-tracegauge-price-vendor-check/1.0)"
 _TIMEOUT_SECONDS = 20
@@ -65,6 +73,15 @@ _TIMEOUT_SECONDS = 20
 ANTHROPIC_MD_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 GOOGLE_HTML_URL = "https://ai.google.dev/gemini-api/docs/pricing"
 OPENAI_MD_URL = "https://developers.openai.com/api/docs/pricing.md"
+OPENAI_DEPRECATIONS_URL = "https://developers.openai.com/api/docs/deprecations.md"
+ANTHROPIC_DEPRECATIONS_URL = (
+    "https://platform.claude.com/docs/en/about-claude/model-deprecations.md"
+)
+GOOGLE_DEPRECATIONS_URL = "https://ai.google.dev/gemini-api/docs/deprecations"
+
+#: OpenAI o-series keys: they do not start with "gpt-", so a prefix test alone leaves them
+#: unmapped (UNVERIFIED), which is how a new family silently stays unchecked.
+OPENAI_O_SERIES = frozenset({"o1", "o3", "o3-mini", "o4-mini"})
 
 #: Entries that cannot be verified against a live page, each with the reason printed in its row.
 #: ``retired: true`` entries in the JSON are skipped the same way (reason read from the entry).
@@ -127,6 +144,9 @@ class GoogleModel:
     after_promo: Rate | None = None  # ...and this rate applies afterwards
     storage_usd_per_mtok_hour: float | None = None  # explicit-cache storage; parsed, never priced
     image_video_split: bool = False  # the input row prices image or video apart from text
+    audio_input: float | None = None  # a SEPARATE audio input rate, only when the page lists one
+    audio_cached: float | None = None
+    grounding: tuple[str, float, str] | None = None  # (unit, usd per 1k, free-allowance count)
 
 
 @dataclass
@@ -293,9 +313,17 @@ class _Cell:
     promo_until: date | None = None
     storage: float | None = None
     image_video_split: bool = False
+    audio: float | None = None
 
 
 _MODALITY_GROUP_RE = re.compile(r"\$[\d.]+\s*\(([^)]*)\)")
+_AUDIO_RE = re.compile(r"\$([\d.]+)\s*\(audio\)")
+"""A price group labelled exactly ``(audio)``. ``(text / image / video / audio)`` is one rate for
+every modality and deliberately does NOT match: there is no separate audio rate to price."""
+_GROUNDING_RE = re.compile(
+    r"\$([\d.]+)\s*(?:/|per)\s*1,000\s*(grounded prompts?|search (?:queries|requests)|requests)"
+)
+_ALLOWANCE_RE = re.compile(r"([\d,]+)\s*(?:RPD|free search requests per month)")
 
 
 def _image_video_split(text: str) -> bool:
@@ -310,7 +338,16 @@ def _image_video_split(text: str) -> bool:
 def _parse_cell(text: str) -> _Cell | None:
     split = _image_video_split(text)
     cell = _parse_cell_prices(text)
-    return None if cell is None else replace(cell, image_video_split=split)
+    audio = _AUDIO_RE.search(text)
+    return (
+        None
+        if cell is None
+        else replace(
+            cell,
+            image_video_split=split,
+            audio=float(audio.group(1)) if audio else None,
+        )
+    )
 
 
 def _parse_cell_prices(text: str) -> _Cell | None:
@@ -352,6 +389,14 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
     if "Input price" not in cells or "Output price" not in cells:
         return None
     i, o, c = cells["Input price"], cells["Output price"], cells.get("Context caching price")
+    grounding = None
+    for label, text in parser.rows.items():
+        if label.startswith("Grounding with Google Search"):
+            g = _GROUNDING_RE.search(text)
+            if g:
+                unit = "per_grounded_prompt" if "prompt" in g.group(2) else "per_search_query"
+                a = _ALLOWANCE_RE.search(text)
+                grounding = (unit, float(g.group(1)), a.group(1) if a else "")
     return GoogleModel(
         standard=Rate(i.standard, o.standard, c.standard if c else None),
         long_context=(
@@ -367,6 +412,9 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
         ),
         storage_usd_per_mtok_hour=c.storage if c else None,
         image_video_split=i.image_video_split,
+        audio_input=i.audio,
+        audio_cached=c.audio if c else None,
+        grounding=grounding,
     )
 
 
@@ -385,16 +433,21 @@ def _compare(
     key: str, entry: dict[str, object], vendor: Rate, cache_mult: float, tier_note: str = ""
 ) -> AuditRow:
     ours = Rate(float(entry["input_usd_per_mtok"]), float(entry["output_usd_per_mtok"]))  # type: ignore[arg-type]
-    row = AuditRow(
-        key, "VERIFIED", _fmt(Rate(ours.input, ours.output, ours.input * cache_mult)), _fmt(vendor)
-    )
+    ours_cached_raw = entry.get("cached_input_usd_per_mtok")
+    ours_cached = float(ours_cached_raw) if ours_cached_raw is not None else ours.input * cache_mult  # type: ignore[arg-type]
+    row = AuditRow(key, "VERIFIED", _fmt(Rate(ours.input, ours.output, ours_cached)), _fmt(vendor))
     if not _same(ours.input, vendor.input):
         row.detail.append(f"input: ours ${ours.input:g} vs vendor ${vendor.input:g}")
     if not _same(ours.output, vendor.output):
         row.detail.append(f"output: ours ${ours.output:g} vs vendor ${vendor.output:g}")
     if row.detail:
         row.status = "MISMATCH"
-    if vendor.cached is None:
+    if ours_cached_raw is not None and vendor.cached is not None:
+        # 0.10.0: the entry's OWN cached rate must equal the vendor's published one exactly.
+        if not _same(ours_cached, vendor.cached):
+            row.detail.append(f"cached: ours ${ours_cached:g} vs vendor ${vendor.cached:g}")
+            row.status = "MISMATCH"
+    elif vendor.cached is None:
         row.detail.append(
             "cached rate: vendor publishes none, so the table's cached multiplier "
             "cannot be verified for this entry"
@@ -414,13 +467,35 @@ def _compare(
     return row
 
 
+def _retired_gone_row(key: str, entry: dict[str, object]) -> AuditRow:
+    """An entry whose ``retired_on`` has arrived AND whose vendor page no longer lists it: its rate
+    can only be the last one published, so there is nothing left to verify (not a failure)."""
+    last = entry.get("vendor_page_last_listed")
+    return AuditRow(
+        key,
+        "SKIPPED",
+        "-",
+        "-",
+        [
+            f"retired {entry.get('retired_on')}, no longer on the vendor's page"
+            + (f" (last listed {last})" if last else "")
+            + "; priced at last published rate"
+        ],
+    )
+
+
 def audit(
     prices: dict[str, object],
     anthropic: dict[str, Rate] | None,
     openai: dict[str, Rate] | None,
     google_html: str | None,
+    today: date | None = None,
 ) -> list[AuditRow]:
-    """One AuditRow per table entry. ``None`` for a vendor means its page could not be fetched."""
+    """One AuditRow per table entry. ``None`` for a vendor means its page could not be fetched.
+
+    An entry retired only by DATE (``retired_on`` has arrived, no ``retired`` flag) is skipped when
+    its page no longer lists it and verified as usual while the page still does, so a shutdown the
+    vendor postponed is not silently exempted."""
     models: dict[str, dict[str, object]] = prices["models"]  # type: ignore[assignment]
     cache_mult = float(prices["cache_multipliers"]["read"])  # type: ignore[index]
     rows: list[AuditRow] = []
@@ -429,6 +504,7 @@ def audit(
             reason = SKIP_ENTRIES.get(key) or f"retired {entry.get('retired_on', '')}".strip()
             rows.append(AuditRow(key, "SKIPPED", "-", "-", [reason]))
             continue
+        retired_by_date = is_retired(entry, today)
         if not isinstance(entry.get("input_usd_per_mtok"), (int, float)):
             rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["entry has no input rate"]))
             continue
@@ -440,7 +516,9 @@ def audit(
             found = anthropic.get(ANTHROPIC_MODEL_NAMES[key])
             if found is None:
                 rows.append(
-                    AuditRow(
+                    _retired_gone_row(key, entry)
+                    if retired_by_date
+                    else AuditRow(
                         key,
                         "UNVERIFIED",
                         "-",
@@ -458,7 +536,9 @@ def audit(
             model = parse_google_html(google_html, slug)
             if model is None:
                 rows.append(
-                    AuditRow(
+                    _retired_gone_row(key, entry)
+                    if retired_by_date
+                    else AuditRow(
                         key,
                         "UNVERIFIED",
                         "-",
@@ -494,16 +574,23 @@ def audit(
                         )
                     )
                     continue
-                rows.append(_compare(key, entry, model.long_context, cache_mult))
+                long_row = _compare(key, entry, model.long_context, cache_mult)
+                _audio_checks(long_row, entry, model)
+                _grounding_checks(long_row, entry, model)
+                rows.append(long_row)
             else:
                 rows.append(_gemini_row(key, entry, model, cache_mult))
-        elif key.startswith("gpt-"):
+        elif key.startswith("gpt-") or key in OPENAI_O_SERIES:
             if openai is None:
                 rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["OpenAI page not fetched"]))
                 continue
             found = openai.get(key)
             if found is None:
-                rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["not found on OpenAI's page"]))
+                rows.append(
+                    _retired_gone_row(key, entry)
+                    if retired_by_date
+                    else AuditRow(key, "UNVERIFIED", "-", "-", ["not found on OpenAI's page"])
+                )
                 continue
             rows.append(_compare(key, entry, found, cache_mult))
         else:
@@ -522,10 +609,66 @@ def audit(
     return rows
 
 
+def _audio_checks(row: AuditRow, entry: dict[str, object], model: GoogleModel) -> None:
+    """Audio input / audio cached rates (0.10.0)."""
+    for field_name, vendor_value, label in (
+        ("audio_input_usd_per_mtok", model.audio_input, "audio input"),
+        ("audio_cached_input_usd_per_mtok", model.audio_cached, "audio cached input"),
+    ):
+        ours = entry.get(field_name)
+        if vendor_value is None and ours is None:
+            continue
+        if vendor_value is None:
+            row.detail.append(f"{label}: entry carries ${ours} but the page lists no separate rate")
+            row.status = "MISMATCH"
+        elif ours is None:
+            row.detail.append(
+                f"{label}: page publishes ${vendor_value:g}/Mtok, the entry carries none (audio "
+                "would stay flagged for a model with a published rate)"
+            )
+            row.status = "MISMATCH"
+        elif not _same(float(ours), vendor_value):  # type: ignore[arg-type]
+            row.detail.append(f"{label}: ours ${ours} vs vendor ${vendor_value:g}")
+            row.status = "MISMATCH"
+
+
+def _grounding_checks(row: AuditRow, entry: dict[str, object], model: GoogleModel) -> None:
+    """The Google Search grounding row: unit, rate and free allowance (0.10.0)."""
+    grounding = entry.get("grounding")
+    ours_g = grounding.get("google_search") if isinstance(grounding, dict) else None
+    if model.grounding is None and ours_g is None:
+        return
+    if model.grounding is None:
+        row.detail.append("entry carries a grounding rate but the page has no parseable row")
+        row.status = "MISMATCH"
+        return
+    unit, per_1k, allowance = model.grounding
+    if not isinstance(ours_g, dict):
+        row.detail.append(
+            f"grounding: page lists ${per_1k:g}/1k ({unit}); the entry carries no grounding block"
+        )
+        row.status = "MISMATCH"
+        return
+    if ours_g.get("unit") != unit or not _same(float(ours_g.get("usd_per_1k", -1)), per_1k):
+        row.detail.append(
+            f"grounding: ours {ours_g.get('unit')} ${ours_g.get('usd_per_1k')}/1k vs vendor "
+            f"{unit} ${per_1k:g}/1k"
+        )
+        row.status = "MISMATCH"
+    if allowance and allowance not in str(ours_g.get("free_allowance", "")):
+        row.detail.append(
+            f"grounding free allowance: page says {allowance}, ours "
+            f"'{ours_g.get('free_allowance')}'"
+        )
+        row.status = "MISMATCH"
+
+
 def _gemini_row(
     key: str, entry: dict[str, object], model: GoogleModel, cache_mult: float
 ) -> AuditRow:
     row = _compare(key, entry, model.standard, cache_mult)
+    _audio_checks(row, entry, model)
+    _grounding_checks(row, entry, model)
     promo_until = entry.get("promo_until")
     std = entry.get("standard_rate")
     if promo_until or std:
@@ -548,6 +691,17 @@ def _gemini_row(
                     f"in ${model.after_promo.input:g} / out ${model.after_promo.output:g}"
                 )
                 row.status = "MISMATCH"
+            ours_std_cached = std_dict.get("cached_input_usd_per_mtok")
+            if (
+                ours_std_cached is not None
+                and model.after_promo.cached is not None
+                and not _same(float(ours_std_cached), model.after_promo.cached)
+            ):
+                row.detail.append(
+                    f"standard_rate cached: ours ${ours_std_cached} vs vendor after promo "
+                    f"${model.after_promo.cached:g}"
+                )
+                row.status = "MISMATCH"
     elif model.promo_until is not None:
         row.detail.append(
             f"Google lists a promo through {model.promo_until.isoformat()} the entry does not carry"
@@ -558,6 +712,173 @@ def _gemini_row(
             f"explicit-cache storage ${model.storage_usd_per_mtok_hour:g}/Mtok/hour is NOT priced"
         )
     return row
+
+
+class _HtmlRows(HTMLParser):
+    """Every table row of a page as a list of cell texts (used for the Gemini deprecations page)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._cells: list[str] = []
+        self._buf: list[str] = []
+        self._in_cell = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("td", "th"):
+            self._in_cell, self._buf = True, []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self._in_cell:
+            self._cells.append(re.sub(r"\s+", " ", "".join(self._buf)).strip())
+            self._in_cell = False
+        elif tag == "tr":
+            if self._cells:
+                self.rows.append(self._cells)
+            self._cells = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cell:
+            self._buf.append(data)
+
+
+def _any_date(text: str) -> date | None:
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_openai_deprecations(md: str) -> dict[str, date]:
+    """{exact model name: shutdown date} from every table whose header starts with 'Shutdown date'
+    (the first column). Every backticked name in the model cell counts, aliases and snapshots alike.
+    Empty dict (a parse failure) if no such table exists."""
+    found: dict[str, date] = {}
+    in_table = False
+    for line in md.splitlines():
+        if not line.strip().startswith("|"):
+            in_table = False
+            continue
+        # a cell may hold several names separated by an ESCAPED pipe (`a` \\| `b`)
+        cells = _table_cells(line.replace("\\|", ","))
+        if cells[0].lower().startswith("shutdown date"):
+            in_table = True
+            continue
+        if not in_table or len(cells) < 2:
+            continue
+        when = _any_date(cells[0])
+        if when is None:
+            continue
+        for name in re.findall(r"`([^`]+)`", cells[1]):
+            found.setdefault(name, when)
+    return found
+
+
+def parse_anthropic_deprecations(md: str) -> dict[str, date]:
+    """{exact API model name: retirement date} for models whose status is not 'Active', from the
+    'Model status' table, plus the dated rows of the deprecation-history tables."""
+    found: dict[str, date] = {}
+    for line in md.splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = _table_cells(line)
+        if len(cells) >= 2 and (when := _any_date(cells[0])) is not None:
+            for name in re.findall(r"`([^`]+)`", cells[1]):
+                found.setdefault(name, when)
+    return found
+
+
+def parse_google_deprecations(html: str) -> dict[str, date | None]:
+    """{exact model name: shutdown date, or None for 'No shutdown date announced'}, read from the
+    'Shutdown date' column of every deprecations table (never the release-date column)."""
+    parser = _HtmlRows()
+    parser.feed(html)
+    found: dict[str, date | None] = {}
+    col: int | None = None
+    for cells in parser.rows:
+        if cells and cells[0] == "Model":
+            col = next((i for i, c in enumerate(cells) if c.lower().startswith("shutdown")), None)
+            continue
+        if col is None or len(cells) <= col or not re.fullmatch(r"gemini-[\w.\-]+", cells[0]):
+            continue
+        found.setdefault(cells[0], _any_date(cells[col]))
+    return found
+
+
+def audit_deprecations(
+    prices: dict[str, object],
+    openai: dict[str, date | None] | None,
+    anthropic: dict[str, date | None] | None,
+    google: dict[str, date | None] | None,
+    today: date | None = None,
+) -> list[AuditRow]:
+    """One row per entry whose vendor page lists a shutdown date for its EXACT key, or whose entry
+    records a ``deprecation`` the page no longer lists. A vendor-listed date must be carried by the
+    entry (MISMATCH otherwise), and a passed shutdown on a non-retired entry is a MISMATCH."""
+    today = today or date.today()
+    models: dict[str, dict[str, object]] = prices["models"]  # type: ignore[assignment]
+    rows: list[AuditRow] = []
+    for key, entry in models.items():
+        if key in SKIP_ENTRIES or entry.get("retired"):
+            continue
+        if key in ANTHROPIC_MODEL_NAMES:
+            listing, vendor_name = anthropic, "Anthropic"
+        elif key.startswith("gemini-"):
+            listing, vendor_name = google, "Google"
+        elif key.startswith("gpt-") or key in OPENAI_O_SERIES:
+            listing, vendor_name = openai, "OpenAI"
+        else:
+            continue
+        if listing is None:
+            rows.append(
+                AuditRow(
+                    f"{key} (deprecation)",
+                    "UNVERIFIED",
+                    "-",
+                    "-",
+                    [f"{vendor_name} page not fetched"],
+                )
+            )
+            continue
+        listed = listing.get(key)
+        dep = entry.get("deprecation")
+        ours = dep.get("shutdown_on") if isinstance(dep, dict) else None
+        if listed is None and ours is None:
+            continue  # not listed, or listed with no shutdown announced, and we record none
+        row = AuditRow(
+            f"{key} (deprecation)",
+            "VERIFIED",
+            str(ours),
+            listed.isoformat() if listed else "-",
+        )
+        # Retired by DATE (``retired_on`` has arrived): the vendor dropping the row is the expected
+        # end state, not drift. A still-listed row with a DIFFERENT date (a postponed or moved
+        # shutdown) is still a MISMATCH, so the date-based exemption cannot hide that.
+        retired = is_retired(entry, today)
+        if listed is None and retired:
+            row.detail.append(
+                f"retired {entry.get('retired_on')}: the {vendor_name} page no longer lists '{key}'"
+            )
+        elif listed is None:
+            row.status = "MISMATCH"
+            row.detail.append(
+                f"entry records shutdown {ours} but the {vendor_name} page lists none for '{key}'"
+            )
+        elif ours != listed.isoformat():
+            row.status = "MISMATCH"
+            row.detail.append(f"shutdown_on: ours {ours} vs vendor {listed.isoformat()}")
+        if listed is not None and listed < today and not retired:
+            row.status = "MISMATCH"
+            row.detail.append(
+                f"vendor shutdown {listed.isoformat()} has passed and the entry is not marked "
+                "retired -- mark it retired (retired/retired_on/retired_source)"
+            )
+        if row.status == "VERIFIED":
+            row.detail.append(f"shutdown {ours}, listed by {vendor_name}")
+        rows.append(row)
+    return rows
 
 
 def _print_table(rows: list[AuditRow]) -> None:
@@ -597,6 +918,26 @@ def main() -> int:
         google_html = None
 
     rows = audit(prices, anthropic, openai, google_html)
+
+    def deprecations(url: str, parse, what: str):  # type: ignore[no-untyped-def]
+        try:
+            body = _fetch(url)
+            parsed = parse(body)
+            if not parsed:
+                raise FetchError(f"{url}: {what} not found")
+            return parsed
+        except FetchError as e:
+            errors.append(str(e))
+            return None
+
+    rows += audit_deprecations(
+        prices,
+        deprecations(OPENAI_DEPRECATIONS_URL, parse_openai_deprecations, "'Shutdown date' tables"),
+        deprecations(
+            ANTHROPIC_DEPRECATIONS_URL, parse_anthropic_deprecations, "deprecation history"
+        ),
+        deprecations(GOOGLE_DEPRECATIONS_URL, parse_google_deprecations, "model rows"),
+    )
     _print_table(rows)
 
     counts: dict[str, int] = {}

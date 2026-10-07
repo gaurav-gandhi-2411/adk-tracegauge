@@ -181,15 +181,32 @@ jobs:
   # catch a new top-level import of an eval-only dependency, nor a break specific to the 2.6.0 floor.
   # This job installs the built wheel next to an exact google-adk release with pandas absent and runs
   # the package's whole base surface: import, plugin, evaluator class, every CLI subcommand.
+  # The legs live in .github/tested-adk-legs.json, not in this file, so that tested-range-bump.yml
+  # can add the newest one: a workflow run with the default token cannot edit files under
+  # .github/workflows/. Job names are unchanged ("bare-adk (2.9.2)" ...), so the required checks
+  # still match. If this job fails, bare-adk is skipped and its required checks stay unmet.
+  adk-legs:
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.legs.outputs.legs }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the google-adk legs
+        id: legs
+        run: |
+          echo "legs=$(python3 -c "import json; print(json.dumps(json.load(open('.github/tested-adk-legs.json'))['bare_adk_legs']))")" >> "$GITHUB_OUTPUT"
+
   bare-adk:
+    needs: adk-legs
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # The floor of the supported range, the newest release verified against it (2.11.0; the cap
-        # is <2.12.0; see _compat._KNOWN_TESTED_MAX_EXCLUSIVE), and 2.9.2: kept because branch protection requires the `bare-adk (2.9.2)`
-        # check by name, so dropping it would leave that required check forever pending.
-        google-adk: ["2.6.0", "2.9.2", "2.11.0"]
+        # The floor of the supported range, the newest release verified against it, and 2.9.2:
+        # kept because branch protection requires the `bare-adk (2.9.2)` check by name, so dropping
+        # it would leave that required check forever pending. The list, and why the newest leg is
+        # the newest, is in .github/tested-adk-legs.json (see _compat._KNOWN_TESTED_MAX_EXCLUSIVE).
+        google-adk: ${{ fromJSON(needs.adk-legs.outputs.legs) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -215,6 +232,25 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           "${{ runner.temp }}/bare-venv/bin/python" "$GITHUB_WORKSPACE/scripts/bare_install_smoke.py"
+
+  # One check that is red if ANY bare-adk leg is red (or the legs could not be read). The individual
+  # legs are required by name, but a leg that tested-range-bump.yml adds later is not, and
+  # merge_gate.py then calls a PR whose new leg FAILS eligible (found on the first real bump PR,
+  # 2026-10-08: all 10 required checks green, bare-adk (2.12.4) red, gate "eligible"). This name is
+  # stable, so it can be a required check that covers every leg, present and future.
+  bare-adk-all:
+    name: bare-adk (every leg)
+    if: ${{ always() }}
+    needs: [adk-legs, bare-adk]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every leg in .github/tested-adk-legs.json passed
+        env:
+          LEGS_RESULT: ${{ needs.adk-legs.result }}
+          BARE_RESULT: ${{ needs.bare-adk.result }}
+        run: |
+          echo "adk-legs: $LEGS_RESULT; bare-adk (all legs): $BARE_RESULT"
+          [ "$LEGS_RESULT" = "success" ] && [ "$BARE_RESULT" = "success" ]
 
   # The full test suite on the google-adk FLOOR. `lint-and-test` runs the suite on whatever the lockfile
   # pins (2.9.2) and `bare-adk` only smoke-tests the base surface on 2.6.0, so a break that only the
