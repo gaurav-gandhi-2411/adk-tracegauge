@@ -11,6 +11,7 @@ installs and exercises each release on every PR, and `bare-adk (<newest>)` is a 
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -38,11 +39,20 @@ def _set_adk_version(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
 
 
 def _bare_adk_matrix_versions() -> list[tuple[int, ...]]:
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    job = text.split("\n  bare-adk:\n", 1)[1]
-    m = re.search(r"google-adk:\s*\[([^\]]+)\]", job)
-    assert m, "bare-adk matrix has no `google-adk: [...]` list"
-    return [tuple(int(p) for p in v.strip().strip("\"'").split(".")) for v in m.group(1).split(",")]
+    # The legs live in a data file so tested-range-bump.yml can add one (a run with the default
+    # token cannot edit .github/workflows/). Guard the link, or this test would silently measure a
+    # file CI no longer reads.
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = ci.split("\n  bare-adk:\n", 1)[1]
+    assert "google-adk: ${{ fromJSON(needs.adk-legs.outputs.legs) }}" in job, (
+        "ci.yml's bare-adk matrix no longer reads .github/tested-adk-legs.json"
+    )
+    assert (
+        ".github/tested-adk-legs.json"
+        in ci.split("\n  adk-legs:\n", 1)[1].split("\n  bare-adk:\n")[0]
+    )
+    data = json.loads((ROOT / ".github" / "tested-adk-legs.json").read_text(encoding="utf-8"))
+    return [tuple(int(p) for p in v.split(".")) for v in data["bare_adk_legs"]]
 
 
 def test_tested_max_is_the_next_minor_after_the_newest_bare_adk_matrix_leg() -> None:
