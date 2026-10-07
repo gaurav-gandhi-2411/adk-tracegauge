@@ -77,6 +77,8 @@ class CapturedCall:
     flag instead of saying only "grounding". ``grounding_queries`` counts Google Search queries
     when ADK reports them."""
     grounding_queries: int = 0
+    backend: str = ""
+    """``gemini_api`` only when ADK's own client positively reported the Gemini API (``api_client.vertexai`` False); ``vertex`` when it reported Vertex or ``usage_metadata.traffic_type`` was set (a Vertex-only field); empty when it could not be read. Fail closed: only ``gemini_api`` lets ``_adapter`` price a grounding fee."""
 
     @property
     def grounded(self) -> bool:

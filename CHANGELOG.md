@@ -25,6 +25,10 @@ see `CONTRIBUTING.md`).
 - **Audio input is priced** where the page publishes both an audio and an audio-cached rate (gemini-2.5-flash,
   2.5-flash-lite, 3.1-flash-lite); every other model keeps the `audio_input_tokens` flag. Suite case A1: $0.001310.
   The weekly check verifies the audio rates and reports MISMATCH if a page publishes one the entry lacks.
+- **Backend capture and the grounding rate rows.** The plugin records which backend served a grounded call
+  (`api_client.vertexai`, or `traffic_type` for Vertex) and the price table carries the Google Search grounding row
+  ($35 / 1,000 grounded prompts on Gemini 2.5; $14 / 1,000 requests on 3.x, which is not priced), re-verified weekly.
+  Nothing is priced from this yet: it is the groundwork for the grounding fee.
 
 ### Changed
 

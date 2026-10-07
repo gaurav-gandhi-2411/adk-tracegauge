@@ -546,6 +546,70 @@ def test_a_wrong_audio_rate_is_a_mismatch():
     assert row.status == "MISMATCH"
 
 
+_GROUNDING_ROW = (
+    "<tr><td>Grounding with Google Search</td><td>1,500 RPD (free)</td>"
+    "<td>1,500 RPD (free), then $35 / 1,000 grounded prompts</td></tr>"
+)
+
+
+def _with_grounding(html: str, row: str = _GROUNDING_ROW) -> str:
+    marker = "<tr><td>Context caching price</td><td>Not available</td><td>$0.125"
+    return html.replace(marker, row + marker, 1)
+
+
+def test_the_grounding_row_is_parsed_unit_rate_and_allowance():
+    model = parse_google_html(_with_grounding(_GOOGLE_HTML), "gemini-2.5-pro")
+    assert model is not None and model.grounding == ("per_grounded_prompt", 35.0, "1,500")
+    per_query = _GROUNDING_ROW.replace(
+        "then $35 / 1,000 grounded prompts", "then $14 per 1,000 requests."
+    ).replace("1,500 RPD (free)", "5,000 free search requests per month")
+    model = parse_google_html(_with_grounding(_GOOGLE_HTML, per_query), "gemini-2.5-pro")
+    assert model is not None and model.grounding == ("per_search_query", 14.0, "5,000")
+
+
+_GROUNDING_OURS = {
+    "unit": "per_grounded_prompt",
+    "usd_per_1k": 35.0,
+    "free_allowance": "1,500 RPD free, then $35 / 1,000 grounded prompts",
+}
+
+
+def test_grounding_verifies_mismatches_and_must_be_carried():
+    html = _with_grounding(_GOOGLE_HTML)
+    an, op, _ = _vendor()
+
+    def run(mutate):
+        prices = copy.deepcopy(_PRICES)
+        mutate(prices)
+        return {r.key: r for r in audit(prices, an, op, html)}["gemini-2.5-pro"]
+
+    ok = run(
+        lambda p: p["models"]["gemini-2.5-pro"].update(grounding={"google_search": _GROUNDING_OURS})
+    )
+    assert ok.status == "VERIFIED"
+    wrong_rate = run(
+        lambda p: p["models"]["gemini-2.5-pro"].update(
+            grounding={"google_search": {**_GROUNDING_OURS, "usd_per_1k": 25.0}}
+        )
+    )
+    assert wrong_rate.status == "MISMATCH"
+    wrong_unit = run(
+        lambda p: p["models"]["gemini-2.5-pro"].update(
+            grounding={"google_search": {**_GROUNDING_OURS, "unit": "per_search_query"}}
+        )
+    )
+    assert wrong_unit.status == "MISMATCH"
+    missing = run(lambda p: None)  # the page lists a fee the entry does not carry
+    assert missing.status == "MISMATCH" and "no grounding block" in missing.detail[0]
+
+
+def test_a_grounding_block_the_page_no_longer_has_is_a_mismatch():
+    row = _mutated(
+        lambda p: p["models"]["gemini-2.5-pro"].update(grounding={"google_search": _GROUNDING_OURS})
+    )["gemini-2.5-pro"]
+    assert row.status == "MISMATCH"
+
+
 def test_o_series_keys_are_mapped_to_openai_not_refused_as_unmapped():
     openai_md = _OPENAI_MD.replace(
         "| gpt-5.1 | $1.25 | $0.125 | - | $10.00 | - | - | - | - |",
