@@ -6,10 +6,12 @@ name: Tested-range bump
 # and troubleshooting bound (scripts/bump_tested_range.py; tests/test_adk_tested_range.py fails if
 # those places disagree). It NEVER merges: the PR goes through merge_gate.py and the normal checks.
 #
-# Why the CI dispatch: a PR opened with GITHUB_TOKEN does not trigger `pull_request` workflows, so
-# without it the PR would sit with no checks forever. `workflow_dispatch` is exempt from that rule,
-# and the check runs it creates on the branch's head commit carry the same names branch protection
-# requires.
+# CI does NOT start on the PR this opens, and one owner step is needed (found by running this for
+# real, 2026-10-08, PR #121): a `pull_request` run whose actor is the Actions bot ends as
+# `action_required` or `startup_failure`, and a `workflow_dispatch` of ci.yml on the branch makes
+# check runs that do not appear in the PR's check rollup (so merge_gate.py gate 2 sees them as
+# absent). Closing and reopening the PR as a maintainer starts a normal CI run. The new
+# `bare-adk (<version>)` leg is not a required check: confirm it is green before merging.
 #
 # Why a data file: a run with GITHUB_TOKEN cannot push edits to anything under .github/workflows/,
 # so the bare-adk legs live in .github/tested-adk-legs.json (ci.yml reads it) and this only edits
@@ -43,7 +45,7 @@ jobs:
     permissions:
       contents: write # push the bump branch
       pull-requests: write # open the PR
-      actions: write # dispatch ci.yml on that branch; also read the canary run's log
+      actions: read # read the canary run's log
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -77,7 +79,7 @@ jobs:
         if: steps.plan.outputs.changed == 'true'
         run: git --no-pager diff --stat && git --no-pager diff
 
-      - name: Open the PR and dispatch its CI
+      - name: Open the PR
         if: steps.plan.outputs.changed == 'true' && !(env.EVENT == 'workflow_dispatch' && env.INPUT_DRY_RUN == 'true')
         env:
           ADK_VERSION: ${{ steps.plan.outputs.adk_version }}
@@ -99,4 +101,3 @@ jobs:
           gh pr create --repo "$REPO" --base main --head "$branch" \
             --title "chore(compat): tested google-adk range moves to <${NEW_MAX} (canary passed on ${ADK_VERSION})" \
             --body-file "$RUNNER_TEMP/pr_body.md"
-          gh workflow run ci.yml --repo "$REPO" --ref "$branch"
