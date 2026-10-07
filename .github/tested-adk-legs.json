@@ -1,4 +1,4 @@
 {
   "_comment": "The google-adk releases CI's bare-adk job installs. min = the floor; max = the newest release verified, and _compat._KNOWN_TESTED_MAX_EXCLUSIVE is the next minor after it (tests/test_adk_tested_range.py fails otherwise). 2.9.2 stays because branch protection requires the `bare-adk (2.9.2)` check by name. Edited by scripts/bump_tested_range.py when the daily canary passes on a newer release.",
-  "bare_adk_legs": ["2.6.0", "2.9.2", "2.11.0"]
+  "bare_adk_legs": ["2.6.0", "2.9.2", "2.11.0", "2.12.4"]
 }
