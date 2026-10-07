@@ -159,8 +159,11 @@ from ._adapter import build_session_digest, price_digest
 from ._pricing import load_gemini_prices
 from ._store import UsageStore
 
-SNAPSHOT_SCHEMA_VERSION = 4
-"""Bumped 3->4 for ``unpriced_components`` (see module docstring): a v1-v3 file reads back with
+SNAPSHOT_SCHEMA_VERSION = 5
+"""Bumped 4->5 (0.10.0) for ``assumptions``, ``grounding_fee_usd`` and ``is_upper_bound``: a
+v1-v4 file reads back with ``[]`` / 0.0 / False, i.e. it never priced a grounding fee.
+
+Bumped 3->4 for ``unpriced_components`` (see module docstring): a v1-v3 file reads back with
 ``[]`` and simply never flagged anything. Older text follows.
 
 Bumped 2->3 in LL2 for the new ``cost_by_agent`` field (see module
@@ -178,7 +181,7 @@ agent_name contribute to no key at all, see module docstring) -- and to make
 a genuinely-unknown future version (4+) fail loudly via the explicit version
 check below rather than silently misparsing new fields this version of
 adk-tracegauge doesn't know about."""
-_READABLE_SCHEMA_VERSIONS = (1, 2, 3, 4)
+_READABLE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
 
 
 @dataclass(frozen=True)
@@ -219,6 +222,15 @@ class SnapshotRecord:
     """Vendor-billed parts of this invocation that ``cost_usd`` leaves out, one
     ``{"component", "detail", "tokens"}`` dict each (see module docstring). Non-empty means
     ``cost_usd`` is a lower bound. Defaults to ``[]`` so a v1-v3 file still deserializes."""
+    assumptions: list[str] = field(default_factory=list)
+    """One sentence per assumption baked into ``cost_usd`` (a grounding fee priced at the paid
+    rate, tool-use tokens priced as input). Defaults to ``[]`` so a v1-v4 file still
+    deserializes."""
+    grounding_fee_usd: float = 0.0
+    """The part of ``cost_usd`` that is a priced grounding fee (already included in it)."""
+    is_upper_bound: bool = False
+    """True when ``grounding_fee_usd`` was priced at the paid rate: the true cost is at most
+    ``cost_usd``."""
 
 
 @dataclass(frozen=True)
@@ -425,7 +437,7 @@ def build_snapshot(
 
         digest = adapted.digest
         assert digest is not None  # adapted.ok guarantees this; narrows for mypy.
-        session_cost = price_digest(digest, prices=prices)
+        session_cost = price_digest(digest, prices=prices, fees=adapted.fees)
         session_id = store.session_id(invocation_id)
 
         # LL2: group each turn's priced cost by the agent that made it.
@@ -462,6 +474,9 @@ def build_snapshot(
                 ),
                 cost_by_agent=cost_by_agent,
                 unpriced_components=[c.as_dict() for c in adapted.unpriced_components],
+                assumptions=list(adapted.assumptions),
+                grounding_fee_usd=session_cost.fees_usd,
+                is_upper_bound=adapted.is_upper_bound,
             )
         )
 

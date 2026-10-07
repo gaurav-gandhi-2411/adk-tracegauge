@@ -338,7 +338,7 @@ async def test_flags_survive_the_snapshot_file_and_a_v3_file_reads_back_complete
 
     reread = read_snapshot(path)
 
-    assert reread.schema_version == 4
+    assert reread.schema_version == 5
     assert [c["component"] for c in reread.records[0].unpriced_components] == ["grounding_fee"]
 
     raw = json.loads(path.read_text(encoding="utf-8"))

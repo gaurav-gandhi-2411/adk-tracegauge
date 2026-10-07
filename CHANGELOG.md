@@ -29,6 +29,21 @@ see `CONTRIBUTING.md`).
   (`api_client.vertexai`, or `traffic_type` for Vertex) and the price table carries the Google Search grounding row
   ($35 / 1,000 grounded prompts on Gemini 2.5; $14 / 1,000 requests on 3.x, which is not priced), re-verified weekly.
   Nothing is priced from this yet: it is the groundwork for the grounding fee.
+- **Google Search grounding fee, Gemini API only, Gemini 2.5 models.** One $35/1,000 fee per grounded model call,
+  attributed to the calling agent. Totals that include it are marked as an upper bound
+  (`upper bound (grounding priced at paid rate; free allowance not observable)`, `~` rows, `total_is_upper_bound`,
+  `grounding_fee_usd`, `total_excluding_grounding_usd` in `--json`); the call's tool-use tokens are priced at the input
+  rate on that path only, and the assumption is printed. `ADK_TRACEGAUGE_GROUNDING_FREE_ALLOWANCE=1` prices the fee at
+  $0 and says so. Unreadable or Vertex backends, Gemini 3.x, Maps and Vertex AI Search stay flagged (fail closed).
+  Snapshot schema 4 -> 5 (additive; v1-v4 files still read).
+
+### What did not work / limits (0.10.0)
+
+- The cost-correctness suite's replay model was a bare `BaseLlm` with no `api_client`, so a tool that fails closed on an
+  unreadable backend could not be scored on grounding at all. The suite now replays `gemini-*` models through ADK's
+  `Gemini` class (suite commit `72ca8da`); results of older tool versions did not move.
+- Gemini 3.x grounding (per query, $14/1,000), Maps and Vertex are not priced: no captures exist for 3.x (it needs a
+  paid tier) and Vertex's billing condition is unverified.
 
 ### Changed
 

@@ -199,6 +199,8 @@ class TurnCost:
     output_cost: float
     total_usd: float
     audio_cost: float = 0.0
+    fee_cost: float = 0.0
+    """A per-call vendor fee (Google Search grounding) added by ``_adapter.price_digest``, never by this module's token arithmetic; ``total_usd`` already includes it."""
 
 
 @dataclass
@@ -213,6 +215,7 @@ class SessionCost:
     approximate: bool
     approximate_reasons: list[str]
     ai_turn_count: int
+    fees_usd: float = 0.0
 
 
 def _resolve_model_key(model_str: str, prices: dict[str, Any]) -> tuple[str | None, bool, str]:
