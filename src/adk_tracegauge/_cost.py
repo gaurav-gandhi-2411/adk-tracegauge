@@ -288,14 +288,19 @@ def compute_turn_cost(
 
     input_rate: float = prices["models"][model_key]["input_usd_per_mtok"]
     output_rate: float = prices["models"][model_key]["output_usd_per_mtok"]
+    entry: dict[str, Any] = prices["models"][model_key]
     cache_mult: dict[str, float] = prices["cache_multipliers"]
+    # 0.10.0: a per-entry cached rate verified against the vendor page wins over the global
+    # multiplier (gpt-4o is 0.5x, gpt-4.1 0.25x); the multiplier stays only as the fallback for
+    # custom tables that do not carry one.
+    cached_rate: float = entry.get("cached_input_usd_per_mtok", input_rate * cache_mult["read"])
 
     write_mult = cache_mult["write_1hr"] if cache_duration == "1hr" else cache_mult["write_5min"]
 
     fresh_tokens = max(0, turn.token_count_input - turn.cache_read - turn.cache_creation)
 
     fresh_cost = fresh_tokens * input_rate / 1_000_000
-    cache_read_cost = turn.cache_read * (input_rate * cache_mult["read"]) / 1_000_000
+    cache_read_cost = turn.cache_read * cached_rate / 1_000_000
     cache_creation_cost = turn.cache_creation * (input_rate * write_mult) / 1_000_000
     output_cost = turn.token_count_output * output_rate / 1_000_000
     total = fresh_cost + cache_read_cost + cache_creation_cost + output_cost
