@@ -112,7 +112,12 @@ _PRICES = {
         "gpt-5.1": {"input_usd_per_mtok": 1.25, "output_usd_per_mtok": 10.0},
         "gemini-2.5-pro": {"input_usd_per_mtok": 1.25, "output_usd_per_mtok": 10.0},
         "gemini-2.5-pro-long-context": {"input_usd_per_mtok": 2.5, "output_usd_per_mtok": 15.0},
-        "gemini-2.5-flash-lite": {"input_usd_per_mtok": 0.10, "output_usd_per_mtok": 0.40},
+        "gemini-2.5-flash-lite": {
+            "input_usd_per_mtok": 0.10,
+            "output_usd_per_mtok": 0.40,
+            "audio_input_usd_per_mtok": 0.30,
+            "audio_cached_input_usd_per_mtok": 0.03,
+        },
         "gemini-3.6-flash": {
             "input_usd_per_mtok": 0.75,
             "output_usd_per_mtok": 3.75,
@@ -512,6 +517,33 @@ def test_a_per_entry_cached_rate_off_the_global_multiplier_is_checked_against_th
     # though it is a "valid" ratio for some other model.
     bad = _mutated(lambda p: p["models"]["gpt-5.1"].update(cached_input_usd_per_mtok=0.625))
     assert bad["gpt-5.1"].status == "MISMATCH"
+
+
+def test_google_audio_rates_are_parsed_and_all_modality_cells_are_not_audio():
+    model = parse_google_html(_GOOGLE_HTML, "gemini-2.5-flash-lite")
+    assert model is not None and (model.audio_input, model.audio_cached) == (0.30, 0.03)
+    pro = parse_google_html(_GOOGLE_HTML, "gemini-2.5-pro")
+    assert pro is not None and pro.audio_input is None
+    all_modalities = _GOOGLE_HTML.replace(
+        "$0.10 (text / image / video)<br>$0.30 (audio)", "$0.10 (text / image / video / audio)"
+    )
+    flat = parse_google_html(all_modalities, "gemini-2.5-flash-lite")
+    assert flat is not None and flat.audio_input is None
+
+
+def test_an_audio_rate_the_page_publishes_but_the_entry_lacks_is_a_mismatch():
+    def drop(p):
+        del p["models"]["gemini-2.5-flash-lite"]["audio_input_usd_per_mtok"]
+
+    row = _mutated(drop)["gemini-2.5-flash-lite"]
+    assert row.status == "MISMATCH" and "audio input" in row.detail[0]
+
+
+def test_a_wrong_audio_rate_is_a_mismatch():
+    row = _mutated(
+        lambda p: p["models"]["gemini-2.5-flash-lite"].update(audio_input_usd_per_mtok=0.10)
+    )["gemini-2.5-flash-lite"]
+    assert row.status == "MISMATCH"
 
 
 def test_o_series_keys_are_mapped_to_openai_not_refused_as_unmapped():

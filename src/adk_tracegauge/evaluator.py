@@ -393,6 +393,8 @@ def _priced_result(
             f"cache_read=${turn_cost.cache_read_cost:.6f} "
             f"output=${turn_cost.output_cost:.6f} total=${turn_cost.total_usd:.6f}"
         )
+        if turn_cost.audio_cost:
+            line += f" audio=${turn_cost.audio_cost:.6f} (included in total)"
         if turn_cost.model_key == LOCAL_MODEL_KEY:
             # Explicit, named, auditable per Phase 2 W3's requirement --
             # never silently a $0.00 line indistinguishable from a genuinely

@@ -176,16 +176,20 @@ async def test_a_plain_call_and_an_empty_grounding_object_are_not_flagged(mocker
 
 @pytest.mark.asyncio
 async def test_audio_input_is_left_out_and_flagged_never_priced_at_the_text_rate(mocker):
-    # 1,000 prompt tokens of which 400 audio. Text-rate pricing of all 1,000 would be $0.000800
-    # (the silent-wrong figure). Priced part: 600 x $0.30/M = $0.000180 + 200 x $2.50/M =
-    # $0.000500 -> $0.000680; the 400 audio tokens are reported as unpriced.
+    # gemini-3.5-flash publishes no separate audio rate, so audio stays flagged. 1,000 prompt
+    # tokens of which 400 audio. Priced part: 600 x $1.50/M = $0.000900 + 200 x $9.00/M =
+    # $0.001800 -> $0.002700; the 400 audio tokens are reported as unpriced.
     store = UsageStore()
-    await _capture(store, mocker, [_response(prompt_details=_details(text=600, audio=400))])
+    await _capture(
+        store,
+        mocker,
+        [_response(model="gemini-3.5-flash", prompt_details=_details(text=600, audio=400))],
+    )
 
     snap = build_snapshot(store)
 
     (record,) = snap.records
-    assert record.cost_usd == pytest.approx(0.00068)
+    assert record.cost_usd == pytest.approx(0.0027)
     assert record.tokens_input == 600
     (component,) = record.unpriced_components
     assert component["component"] == "audio_input_tokens"
@@ -196,11 +200,30 @@ async def test_audio_input_is_left_out_and_flagged_never_priced_at_the_text_rate
 
 
 @pytest.mark.asyncio
-async def test_cached_audio_tokens_are_removed_from_the_cache_read_too(mocker):
-    # 1,000 prompt: 400 audio, 600 text; 500 cached, 200 of them audio. Priced: 600 text-side
-    # input, of which 500 - 200 = 300 cached ($0.03/M) and 300 fresh ($0.30/M):
-    # 300 x 0.30/M = $0.000090; 300 x 0.03/M = $0.000009; 200 out x 2.50/M = $0.000500
-    # -> $0.000599.
+async def test_audio_input_is_priced_at_the_published_audio_rate_when_there_is_one(mocker):
+    # PRE-REGISTERED (suite case A1): gemini-2.5-flash, 200 text + 1,000 audio in, 100 out.
+    # 200 x $0.30/M + 1,000 x $1.00/M + 100 x $2.50/M = 0.00006 + 0.001 + 0.00025 = $0.001310.
+    store = UsageStore()
+    await _capture(
+        store,
+        mocker,
+        [_response(prompt=1200, output=100, prompt_details=_details(text=200, audio=1000))],
+    )
+
+    snap = build_snapshot(store)
+
+    (record,) = snap.records
+    assert record.cost_usd == pytest.approx(0.00131)
+    assert record.unpriced_components == []
+    assert total_is_complete(snap)
+
+
+@pytest.mark.asyncio
+async def test_cached_audio_is_priced_at_the_audio_cached_rate(mocker):
+    # 1,000 prompt: 400 audio, 600 text; 500 cached, 200 of them audio (gemini-2.5-flash).
+    # text: 300 fresh x 0.30/M = 0.00009, 300 cached x 0.03/M = 0.000009;
+    # audio: 200 fresh x 1.00/M = 0.0002, 200 cached x 0.10/M = 0.00002; out 200 x 2.50/M = 0.0005
+    # -> $0.000819.
     store = UsageStore()
     await _capture(
         store,
@@ -216,7 +239,33 @@ async def test_cached_audio_tokens_are_removed_from_the_cache_read_too(mocker):
 
     (record,) = build_snapshot(store).records
 
-    assert record.cost_usd == pytest.approx(0.000599)
+    assert record.cost_usd == pytest.approx(0.000819)
+    assert record.unpriced_components == []
+
+
+@pytest.mark.asyncio
+async def test_cached_audio_tokens_are_removed_from_the_cache_read_too(mocker):
+    # gemini-3.5-flash has no audio rate, so audio stays flagged and is removed from the cache
+    # read too. 1,000 prompt: 400 audio, 600 text; 500 cached, 200 of them audio. Priced: 300
+    # fresh x $1.50/M = 0.00045; 300 cached x $0.15/M = 0.000045; 200 out x $9.00/M = 0.0018
+    # -> $0.002295.
+    store = UsageStore()
+    await _capture(
+        store,
+        mocker,
+        [
+            _response(
+                model="gemini-3.5-flash",
+                cached=500,
+                prompt_details=_details(text=600, audio=400),
+                cache_details=_details(text=300, audio=200),
+            )
+        ],
+    )
+
+    (record,) = build_snapshot(store).records
+
+    assert record.cost_usd == pytest.approx(0.002295)
     assert record.tokens_cache_read == 300
 
 
@@ -305,7 +354,7 @@ async def test_flags_survive_the_snapshot_file_and_a_v3_file_reads_back_complete
     "kwargs",
     [
         {"grounding": _search(1)},
-        {"prompt_details": _details(text=600, audio=400)},
+        {"model": "gemini-3.5-flash", "prompt_details": _details(text=600, audio=400)},
         {"output_details": _details(text=100, image=100), "output": 200},
     ],
 )

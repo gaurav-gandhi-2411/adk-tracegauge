@@ -22,6 +22,9 @@ see `CONTRIBUTING.md`).
   (gpt-4.1-nano, o1, o3-mini, o4-mini: 2026-10-23; gpt-5.1: 2027-04-01; gemini-3.1-flash-lite: 2027-05-07). The weekly
   checker compares them to the OpenAI, Anthropic and Gemini deprecation pages by exact model name and fails once a
   recorded shutdown has passed on an entry not marked retired.
+- **Audio input is priced** where the page publishes both an audio and an audio-cached rate (gemini-2.5-flash,
+  2.5-flash-lite, 3.1-flash-lite); every other model keeps the `audio_input_tokens` flag. Suite case A1: $0.001310.
+  The weekly check verifies the audio rates and reports MISMATCH if a page publishes one the entry lacks.
 
 ### Changed
 
