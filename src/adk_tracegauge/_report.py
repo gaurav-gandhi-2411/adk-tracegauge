@@ -18,10 +18,17 @@ listed under "NOT included in the total" -- the total is then a lower bound, nev
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from ._adapter import UPPER_BOUND_LABEL
-from ._pricing import LOCAL_MODEL_KEY, is_local_model, load_gemini_prices, resolve_model
+from ._pricing import (
+    LOCAL_MODEL_KEY,
+    is_local_model,
+    is_retired,
+    load_gemini_prices,
+    resolve_model,
+)
 from .snapshot import Snapshot, SnapshotRecord
 
 
@@ -87,10 +94,11 @@ def total_is_complete(snapshot: Snapshot) -> bool:
     return not snapshot.skipped and not incomplete_records(snapshot)
 
 
-def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
+def unverifiable_pricing(snapshot: Snapshot, today: date | None = None) -> list[dict[str, str]]:
     """Priced invocations whose rate the weekly vendor check cannot verify against a live page,
     one entry per distinct model: a retired model (the vendor page no longer lists it, so the
-    table holds the last rate it published) and a local model (priced $0.00 because the caller
+    table holds the last rate it published; retired from its ``retired_on`` date, see
+    ``is_retired``) and a local model (priced $0.00 because the caller
     asserted it is local; no vendor rate exists). Everything else in the table is re-verified
     against the vendor's own page, so this list is empty for it -- a price shown without a note
     here is one the check covers."""
@@ -110,11 +118,14 @@ def unverifiable_pricing(snapshot: Snapshot) -> list[dict[str, str]]:
             if resolved is None or resolved.model_key == LOCAL_MODEL_KEY:
                 continue
             entry = prices["models"][resolved.model_key]
-            if entry.get("retired"):
+            if is_retired(entry, today):
+                last_listed = entry.get("vendor_page_last_listed")
                 found.setdefault(
                     model,
                     f"retired {entry.get('retired_on', '')}".strip()
-                    + "; the rate is the last one the vendor published and cannot be "
+                    + "; priced at last published rate"
+                    + (f" (the vendor page last listed it {last_listed})" if last_listed else "")
+                    + ": the rate is the last one the vendor published and cannot be "
                     "re-verified against a live page",
                 )
     return [{"model": m, "reason": r} for m, r in found.items()]

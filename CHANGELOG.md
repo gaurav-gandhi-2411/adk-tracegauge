@@ -9,6 +9,17 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- **A vendor shutdown takes effect on its announced day, without a table edit.** `gpt-4.1-nano`, `o1`, `o3-mini` and
+  `o4-mini` are shut down by OpenAI on 2026-10-23; their entries now carry `retired_on` and
+  `vendor_page_last_listed` (the last date the vendor page showed the rate), and a new `is_retired(entry, today)` treats
+  an entry as retired from `retired_on`. From that date `adk-tracegauge report` marks their invocations as "priced at
+  last published rate" (the figure is unchanged), the weekly vendor check SKIPs a row the page has dropped instead of
+  failing it, and the 30-day freshness gate stops counting their `fetched_on`. While the page still lists a retired
+  model, or lists a moved shutdown date, it is still verified and a mismatch still fails, so a postponed shutdown is not
+  hidden. The hand-set `"retired": true` flag works as before.
+
 ## [0.10.0] — 2026-10-07
 
 Closes five pricing gaps in the cost figure, each only where a vendor publishes the price: per-model cached rates (and the older OpenAI families they unblock), audio input, the Google Search grounding fee on the Gemini API (reported as an upper bound), and vendor shutdown tracking. On the 15-case cost-correctness suite the candidate scored 11 PASS / 4 INCOMPLETE / 0 FAIL against 6 / 9 / 0 for 0.9.1, matching the outcome pre-registered before implementation (suite scorecard `2026-10-07_adk-tracegauge_main-921ac68_0.10.0-candidate_15cases.md`; the suite harness change made while scoring is disclosed there and in #106).
