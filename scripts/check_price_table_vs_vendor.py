@@ -36,6 +36,8 @@ Vendor pages (verified live 2026-09-20):
 
 0.10.0 verifies more rate classes, each per entry against the raw page:
 - the entry's OWN cached-input rate (``cached_input_usd_per_mtok``), not a global multiplier;
+- vendor shutdown dates (OpenAI, Anthropic, Gemini deprecation pages), matched by exact model
+  name only: an alias-vs-snapshot match is ambiguous, so it is not guessed;
 
 NOT modelled by the table, therefore not verified (stated, not hidden; see README "Known
 limitations"): explicit-cache STORAGE fees (Gemini: $1.00-$4.50 per 1M tokens per hour -- not
@@ -68,6 +70,11 @@ _TIMEOUT_SECONDS = 20
 ANTHROPIC_MD_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 GOOGLE_HTML_URL = "https://ai.google.dev/gemini-api/docs/pricing"
 OPENAI_MD_URL = "https://developers.openai.com/api/docs/pricing.md"
+OPENAI_DEPRECATIONS_URL = "https://developers.openai.com/api/docs/deprecations.md"
+ANTHROPIC_DEPRECATIONS_URL = (
+    "https://platform.claude.com/docs/en/about-claude/model-deprecations.md"
+)
+GOOGLE_DEPRECATIONS_URL = "https://ai.google.dev/gemini-api/docs/deprecations"
 
 #: OpenAI o-series keys: they do not start with "gpt-", so a prefix test alone leaves them
 #: unmapped (UNVERIFIED), which is how a new family silently stays unchecked.
@@ -583,6 +590,165 @@ def _gemini_row(
     return row
 
 
+class _HtmlRows(HTMLParser):
+    """Every table row of a page as a list of cell texts (used for the Gemini deprecations page)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._cells: list[str] = []
+        self._buf: list[str] = []
+        self._in_cell = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("td", "th"):
+            self._in_cell, self._buf = True, []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self._in_cell:
+            self._cells.append(re.sub(r"\s+", " ", "".join(self._buf)).strip())
+            self._in_cell = False
+        elif tag == "tr":
+            if self._cells:
+                self.rows.append(self._cells)
+            self._cells = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cell:
+            self._buf.append(data)
+
+
+def _any_date(text: str) -> date | None:
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_openai_deprecations(md: str) -> dict[str, date]:
+    """{exact model name: shutdown date} from every table whose header starts with 'Shutdown date'
+    (the first column). Every backticked name in the model cell counts, aliases and snapshots alike.
+    Empty dict (a parse failure) if no such table exists."""
+    found: dict[str, date] = {}
+    in_table = False
+    for line in md.splitlines():
+        if not line.strip().startswith("|"):
+            in_table = False
+            continue
+        # a cell may hold several names separated by an ESCAPED pipe (`a` \\| `b`)
+        cells = _table_cells(line.replace("\\|", ","))
+        if cells[0].lower().startswith("shutdown date"):
+            in_table = True
+            continue
+        if not in_table or len(cells) < 2:
+            continue
+        when = _any_date(cells[0])
+        if when is None:
+            continue
+        for name in re.findall(r"`([^`]+)`", cells[1]):
+            found.setdefault(name, when)
+    return found
+
+
+def parse_anthropic_deprecations(md: str) -> dict[str, date]:
+    """{exact API model name: retirement date} for models whose status is not 'Active', from the
+    'Model status' table, plus the dated rows of the deprecation-history tables."""
+    found: dict[str, date] = {}
+    for line in md.splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = _table_cells(line)
+        if len(cells) >= 2 and (when := _any_date(cells[0])) is not None:
+            for name in re.findall(r"`([^`]+)`", cells[1]):
+                found.setdefault(name, when)
+    return found
+
+
+def parse_google_deprecations(html: str) -> dict[str, date | None]:
+    """{exact model name: shutdown date, or None for 'No shutdown date announced'}, read from the
+    'Shutdown date' column of every deprecations table (never the release-date column)."""
+    parser = _HtmlRows()
+    parser.feed(html)
+    found: dict[str, date | None] = {}
+    col: int | None = None
+    for cells in parser.rows:
+        if cells and cells[0] == "Model":
+            col = next((i for i, c in enumerate(cells) if c.lower().startswith("shutdown")), None)
+            continue
+        if col is None or len(cells) <= col or not re.fullmatch(r"gemini-[\w.\-]+", cells[0]):
+            continue
+        found.setdefault(cells[0], _any_date(cells[col]))
+    return found
+
+
+def audit_deprecations(
+    prices: dict[str, object],
+    openai: dict[str, date | None] | None,
+    anthropic: dict[str, date | None] | None,
+    google: dict[str, date | None] | None,
+    today: date | None = None,
+) -> list[AuditRow]:
+    """One row per entry whose vendor page lists a shutdown date for its EXACT key, or whose entry
+    records a ``deprecation`` the page no longer lists. A vendor-listed date must be carried by the
+    entry (MISMATCH otherwise), and a passed shutdown on a non-retired entry is a MISMATCH."""
+    today = today or date.today()
+    models: dict[str, dict[str, object]] = prices["models"]  # type: ignore[assignment]
+    rows: list[AuditRow] = []
+    for key, entry in models.items():
+        if key in SKIP_ENTRIES or entry.get("retired"):
+            continue
+        if key in ANTHROPIC_MODEL_NAMES:
+            listing, vendor_name = anthropic, "Anthropic"
+        elif key.startswith("gemini-"):
+            listing, vendor_name = google, "Google"
+        elif key.startswith("gpt-") or key in OPENAI_O_SERIES:
+            listing, vendor_name = openai, "OpenAI"
+        else:
+            continue
+        if listing is None:
+            rows.append(
+                AuditRow(
+                    f"{key} (deprecation)",
+                    "UNVERIFIED",
+                    "-",
+                    "-",
+                    [f"{vendor_name} page not fetched"],
+                )
+            )
+            continue
+        listed = listing.get(key)
+        dep = entry.get("deprecation")
+        ours = dep.get("shutdown_on") if isinstance(dep, dict) else None
+        if listed is None and ours is None:
+            continue  # not listed, or listed with no shutdown announced, and we record none
+        row = AuditRow(
+            f"{key} (deprecation)",
+            "VERIFIED",
+            str(ours),
+            listed.isoformat() if listed else "-",
+        )
+        if listed is None:
+            row.status = "MISMATCH"
+            row.detail.append(
+                f"entry records shutdown {ours} but the {vendor_name} page lists none for '{key}'"
+            )
+        elif ours != listed.isoformat():
+            row.status = "MISMATCH"
+            row.detail.append(f"shutdown_on: ours {ours} vs vendor {listed.isoformat()}")
+        if listed is not None and listed < today:
+            row.status = "MISMATCH"
+            row.detail.append(
+                f"vendor shutdown {listed.isoformat()} has passed and the entry is not marked "
+                "retired -- mark it retired (retired/retired_on/retired_source)"
+            )
+        if row.status == "VERIFIED":
+            row.detail.append(f"shutdown {ours}, listed by {vendor_name}")
+        rows.append(row)
+    return rows
+
+
 def _print_table(rows: list[AuditRow]) -> None:
     print(f"{'entry':<38} {'status':<11} detail")
     print("-" * 110)
@@ -620,6 +786,26 @@ def main() -> int:
         google_html = None
 
     rows = audit(prices, anthropic, openai, google_html)
+
+    def deprecations(url: str, parse, what: str):  # type: ignore[no-untyped-def]
+        try:
+            body = _fetch(url)
+            parsed = parse(body)
+            if not parsed:
+                raise FetchError(f"{url}: {what} not found")
+            return parsed
+        except FetchError as e:
+            errors.append(str(e))
+            return None
+
+    rows += audit_deprecations(
+        prices,
+        deprecations(OPENAI_DEPRECATIONS_URL, parse_openai_deprecations, "'Shutdown date' tables"),
+        deprecations(
+            ANTHROPIC_DEPRECATIONS_URL, parse_anthropic_deprecations, "deprecation history"
+        ),
+        deprecations(GOOGLE_DEPRECATIONS_URL, parse_google_deprecations, "model rows"),
+    )
     _print_table(rows)
 
     counts: dict[str, int] = {}
