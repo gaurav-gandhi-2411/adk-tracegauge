@@ -24,3 +24,15 @@ regression and stops the release. Grounded totals carry the label
 ## Not priced (stay flagged)
 Gemini 3.x grounding, Vertex grounding, any model with no published audio rate (audio stays flagged),
 Maps grounding.
+
+## Amendment (written after implementation, before the final scoring run)
+
+The table above assumed the suite's replay model lets a tool read the backend. It does not: the replay
+model was a bare `BaseLlm` with no `api_client`. A tool that prices a grounding fee only after positively
+identifying the Gemini API backend (the design's fail-closed rule) therefore cannot be scored on G1, G1r
+and G3r whatever it does. Result of the dev build against the UNMODIFIED suite (suite `eac41ec`), recorded
+before the suite was touched: **8 PASS / 7 INCOMPLETE / 0 FAIL** (A1 and M1 pass; every grounding case
+stays flagged). The suite harness is changed so `gemini-*` replay models subclass ADK's own `Gemini`
+class (suite `72ca8da`). That change was checked to move no existing result (adk-tracegauge 0.9.1 stays
+6 / 9 / 0, adk-finops 0.6.1 stays 4 / 5 / 6) and is disclosed in the scorecard. The expectations above are
+unchanged.
