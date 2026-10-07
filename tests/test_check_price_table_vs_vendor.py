@@ -462,3 +462,39 @@ def test_the_recorded_pages_still_verify_with_the_split_guard_in_place():
     rows = _audit()
     assert rows["gemini-2.5-flash-lite"].status == "VERIFIED"
     assert rows["gemini-2.5-pro"].status == "VERIFIED"
+
+
+# --- 0.10.0: per-entry cached rate, audio, grounding, deprecations ---------------------------
+
+
+def test_the_entrys_own_cached_rate_must_equal_the_vendors():
+    ok = _mutated(lambda p: p["models"]["gpt-5.1"].update(cached_input_usd_per_mtok=0.125))
+    assert ok["gpt-5.1"].status == "VERIFIED"
+    bad = _mutated(lambda p: p["models"]["gpt-5.1"].update(cached_input_usd_per_mtok=0.25))
+    assert bad["gpt-5.1"].status == "MISMATCH"
+    assert any("cached: ours $0.25 vs vendor $0.125" in d for d in bad["gpt-5.1"].detail)
+
+
+def test_a_per_entry_cached_rate_off_the_global_multiplier_is_checked_against_the_page():
+    # gpt-4o-style 0.5x entry: the page says 0.125 (0.1x) for gpt-5.1, so 0.625 is a mismatch even
+    # though it is a "valid" ratio for some other model.
+    bad = _mutated(lambda p: p["models"]["gpt-5.1"].update(cached_input_usd_per_mtok=0.625))
+    assert bad["gpt-5.1"].status == "MISMATCH"
+
+
+def test_o_series_keys_are_mapped_to_openai_not_refused_as_unmapped():
+    openai_md = _OPENAI_MD.replace(
+        "| gpt-5.1 | $1.25 | $0.125 | - | $10.00 | - | - | - | - |",
+        "| gpt-5.1 | $1.25 | $0.125 | - | $10.00 | - | - | - | - |\n"
+        "| o3 | $2.00 | $0.50 | - | $8.00 | - | - | - | - |",
+        1,
+    )
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["o3"] = {
+        "input_usd_per_mtok": 2.0,
+        "output_usd_per_mtok": 8.0,
+        "cached_input_usd_per_mtok": 0.5,
+    }
+    an, _, g = _vendor()
+    rows = {r.key: r for r in audit(prices, an, parse_openai_markdown(openai_md), g)}
+    assert rows["o3"].status == "VERIFIED"

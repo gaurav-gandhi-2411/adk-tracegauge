@@ -9,6 +9,16 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+### Added (0.10.0 pricing gaps)
+
+- **Per-entry cached-input rates replace the one global 0.1x multiplier.** Every priced entry now carries
+  `cached_input_usd_per_mtok`, read from the raw vendor page (2026-10-07) and re-checked weekly. The old global
+  multiplier was right for Gemini, Claude and GPT-5.x and wrong for the older OpenAI families, which is why they were
+  absent. Added `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` (0.5x cached), `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `o3`,
+  `o4-mini` (0.25x). A custom price table without the field falls back to the multiplier as before. The weekly vendor
+  check now compares each entry's own cached rate and maps the o-series keys, which a `gpt-` prefix test had left
+  unmapped.
+
 ### Changed
 
 - **CI runs the full test suite on the google-adk floor.** New `full-suite-floor (2.6.0)` job: locked environment with the `[eval]` extra, then `google-adk[eval]==2.6.0` pinned in it, then all of `tests/` (656 passed, 4 skipped that need `EvalStatus.INFORMATIONAL`, 0 failed when run this way on 2026-10-05). Until now the floor only had the `bare-adk` smoke test; the full suite ran only on the lockfile's google-adk.

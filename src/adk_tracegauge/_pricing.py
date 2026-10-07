@@ -386,6 +386,19 @@ def effective_prices(prices: dict[str, Any] | None = None) -> dict[str, Any]:
         new_entry = dict(entry)
         new_entry["input_usd_per_mtok"] = input_rate
         new_entry["output_usd_per_mtok"] = output_rate
+        # A promo entry's cached rate follows the same switch as its input rate (0.10.0): past
+        # promo_until the standard_rate's own cached rate applies; a standard_rate without one
+        # drops the stale promo figure so the global multiplier derives it from the new input rate.
+        standard_rate = entry.get("standard_rate")
+        if (
+            entry.get("promo_until")
+            and standard_rate
+            and input_rate == standard_rate["input_usd_per_mtok"]
+        ):
+            if "cached_input_usd_per_mtok" in standard_rate:
+                new_entry["cached_input_usd_per_mtok"] = standard_rate["cached_input_usd_per_mtok"]
+            else:
+                new_entry.pop("cached_input_usd_per_mtok", None)
         effective_models[model_key] = new_entry
 
     effective = dict(prices)

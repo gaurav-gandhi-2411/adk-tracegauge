@@ -34,6 +34,9 @@ Vendor pages (verified live 2026-09-20):
 - Google: server-rendered HTML, ``<h2 id="MODEL">`` then a ``pricing-table``; parsed with
   ``html.parser`` (not regex) so ``&lt;=`` and nested markup survive.
 
+0.10.0 verifies more rate classes, each per entry against the raw page:
+- the entry's OWN cached-input rate (``cached_input_usd_per_mtok``), not a global multiplier;
+
 NOT modelled by the table, therefore not verified (stated, not hidden; see README "Known
 limitations"): explicit-cache STORAGE fees (Gemini: $1.00-$4.50 per 1M tokens per hour -- not
 derivable from per-call usage), cache-WRITE surcharges (Anthropic 1.25x/2x, OpenAI cache writes),
@@ -65,6 +68,10 @@ _TIMEOUT_SECONDS = 20
 ANTHROPIC_MD_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 GOOGLE_HTML_URL = "https://ai.google.dev/gemini-api/docs/pricing"
 OPENAI_MD_URL = "https://developers.openai.com/api/docs/pricing.md"
+
+#: OpenAI o-series keys: they do not start with "gpt-", so a prefix test alone leaves them
+#: unmapped (UNVERIFIED), which is how a new family silently stays unchecked.
+OPENAI_O_SERIES = frozenset({"o1", "o3", "o3-mini", "o4-mini"})
 
 #: Entries that cannot be verified against a live page, each with the reason printed in its row.
 #: ``retired: true`` entries in the JSON are skipped the same way (reason read from the entry).
@@ -385,16 +392,21 @@ def _compare(
     key: str, entry: dict[str, object], vendor: Rate, cache_mult: float, tier_note: str = ""
 ) -> AuditRow:
     ours = Rate(float(entry["input_usd_per_mtok"]), float(entry["output_usd_per_mtok"]))  # type: ignore[arg-type]
-    row = AuditRow(
-        key, "VERIFIED", _fmt(Rate(ours.input, ours.output, ours.input * cache_mult)), _fmt(vendor)
-    )
+    ours_cached_raw = entry.get("cached_input_usd_per_mtok")
+    ours_cached = float(ours_cached_raw) if ours_cached_raw is not None else ours.input * cache_mult  # type: ignore[arg-type]
+    row = AuditRow(key, "VERIFIED", _fmt(Rate(ours.input, ours.output, ours_cached)), _fmt(vendor))
     if not _same(ours.input, vendor.input):
         row.detail.append(f"input: ours ${ours.input:g} vs vendor ${vendor.input:g}")
     if not _same(ours.output, vendor.output):
         row.detail.append(f"output: ours ${ours.output:g} vs vendor ${vendor.output:g}")
     if row.detail:
         row.status = "MISMATCH"
-    if vendor.cached is None:
+    if ours_cached_raw is not None and vendor.cached is not None:
+        # 0.10.0: the entry's OWN cached rate must equal the vendor's published one exactly.
+        if not _same(ours_cached, vendor.cached):
+            row.detail.append(f"cached: ours ${ours_cached:g} vs vendor ${vendor.cached:g}")
+            row.status = "MISMATCH"
+    elif vendor.cached is None:
         row.detail.append(
             "cached rate: vendor publishes none, so the table's cached multiplier "
             "cannot be verified for this entry"
@@ -497,7 +509,7 @@ def audit(
                 rows.append(_compare(key, entry, model.long_context, cache_mult))
             else:
                 rows.append(_gemini_row(key, entry, model, cache_mult))
-        elif key.startswith("gpt-"):
+        elif key.startswith("gpt-") or key in OPENAI_O_SERIES:
             if openai is None:
                 rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["OpenAI page not fetched"]))
                 continue
@@ -546,6 +558,17 @@ def _gemini_row(
                 row.detail.append(
                     f"standard_rate: ours {std_dict} vs vendor after promo "
                     f"in ${model.after_promo.input:g} / out ${model.after_promo.output:g}"
+                )
+                row.status = "MISMATCH"
+            ours_std_cached = std_dict.get("cached_input_usd_per_mtok")
+            if (
+                ours_std_cached is not None
+                and model.after_promo.cached is not None
+                and not _same(float(ours_std_cached), model.after_promo.cached)
+            ):
+                row.detail.append(
+                    f"standard_rate cached: ours ${ours_std_cached} vs vendor after promo "
+                    f"${model.after_promo.cached:g}"
                 )
                 row.status = "MISMATCH"
     elif model.promo_until is not None:

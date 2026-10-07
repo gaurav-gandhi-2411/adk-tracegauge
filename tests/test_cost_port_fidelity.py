@@ -514,7 +514,17 @@ def test_fidelity_cases_cover_every_model_in_the_bundled_price_table():
     3-script harness -- build_cases in this repo venv, compute in a
     separate tracegauge scratch venv, diff -- to regenerate)."""
     covered_models = {turn_input["model"] for _, turn_input, _, _ in _TRACEGAUGE_FIDELITY_CASES}
-    bundled_models = set(load_gemini_prices()["models"].keys())
+    # 0.10.0: tracegauge's engine has ONE global 0.1x cache multiplier, so an entry whose own
+    # verified cached rate is off that ratio (gpt-4o 0.5x, gpt-4.1 0.25x) cannot be compared
+    # against it -- that divergence is exactly what per-entry cached rates fix. Those entries are
+    # covered by tests/test_per_entry_cached_rates.py instead.
+    off_ratio = {
+        k
+        for k, e in load_gemini_prices()["models"].items()
+        if "cached_input_usd_per_mtok" in e
+        and abs(e["cached_input_usd_per_mtok"] - 0.1 * e["input_usd_per_mtok"]) > 1e-9
+    }
+    bundled_models = set(load_gemini_prices()["models"].keys()) - off_ratio
     missing = bundled_models - covered_models
     assert not missing, (
         f"Price-table model(s) {sorted(missing)} have no live-tracegauge fidelity "

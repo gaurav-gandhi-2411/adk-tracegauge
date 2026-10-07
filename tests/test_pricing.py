@@ -63,7 +63,7 @@ def test_resolve_gemini_3_5_flash_lite_not_confused_with_3_5_flash():
 
 def test_resolve_unknown_model_returns_none_not_a_default():
     assert resolve_model("claude-sonnet-4-6") is None
-    assert resolve_model("gpt-4o") is None
+    assert resolve_model("gpt-3.5-turbo") is None
     assert resolve_model("totally-made-up-model-xyz") is None
 
 
@@ -253,15 +253,28 @@ def test_claude_and_gpt_rates_match_published_figures(
     assert resolved.output_usd_per_mtok == expected_output
 
 
-def test_gpt4_and_o_series_are_deliberately_not_priced():
-    # Legacy GPT-4/o-series models have a cache-read discount (0.25x-0.5x
-    # observed) that diverges from this table's shared global 0.1x
-    # cache_multipliers.read -- adding them would silently mis-price any
-    # cached call. Deliberately absent, not an oversight; register via
-    # ADK_TRACEGAUGE_PRICE_TABLE if you've confirmed your own rate.
-    assert resolve_model("gpt-4o") is None
-    assert resolve_model("gpt-4.1") is None
-    assert resolve_model("o1") is None
+@pytest.mark.parametrize(
+    ("key", "ratio"),
+    [
+        ("gpt-4o", 0.5),
+        ("gpt-4o-mini", 0.5),
+        ("o1", 0.5),
+        ("o3-mini", 0.5),
+        ("gpt-4.1", 0.25),
+        ("gpt-4.1-mini", 0.25),
+        ("gpt-4.1-nano", 0.25),
+        ("o3", 0.25),
+        ("o4-mini", 0.25),
+        ("gpt-5.1", 0.1),
+    ],
+)
+def test_gpt4_and_o_series_carry_their_own_published_cached_rate(key, ratio):
+    # 0.10.0: the legacy OpenAI families are priced, each with its own vendor-published cached
+    # rate (0.5x / 0.25x), instead of the old global 0.1x that would under-price a cached call
+    # by 2.5x-5x. Ratios read from developers.openai.com/api/docs/pricing.md, 2026-10-07.
+    entry = load_gemini_prices()["models"][key]
+    assert entry["cached_input_usd_per_mtok"] == pytest.approx(ratio * entry["input_usd_per_mtok"])
+    assert resolve_model(key) is not None
 
 
 @pytest.mark.parametrize(
