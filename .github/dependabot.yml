@@ -1,6 +1,14 @@
 version: 2
 updates:
   # Python — repo root (uv.lock present)
+  #
+  # litellm: deliberately NO `ignore`. litellm is transitive (adk-tracegauge[eval] -> google-adk[eval]
+  # -> google-cloud-aiplatform[evaluation], which caps it <1.86.0 on Python <3.14), so Dependabot's
+  # security update for GHSA-3cv6-jpf6-8222 (patched 1.88.6) cannot resolve and its job fails (three
+  # runs on 2026-10-05). GitHub's docs say `ignore` also applies to security-update pull requests, so an
+  # ignore would silence the one automatic signal that the patch became installable. The failing job is
+  # not a required check; leave it red. Upstream: googleapis/python-aiplatform#7201, tracked by the
+  # owner's weekly check, which also watches the cap itself. Remove this note when the cap lifts.
   - package-ecosystem: uv
     directory: /
     schedule:
