@@ -9,6 +9,10 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-07
+
+Closes five pricing gaps in the cost figure, each only where a vendor publishes the price: per-model cached rates (and the older OpenAI families they unblock), audio input, the Google Search grounding fee on the Gemini API (reported as an upper bound), and vendor shutdown tracking. On the 15-case cost-correctness suite the candidate scored 11 PASS / 4 INCOMPLETE / 0 FAIL against 6 / 9 / 0 for 0.9.1, matching the outcome pre-registered before implementation (suite scorecard `2026-10-07_adk-tracegauge_main-921ac68_0.10.0-candidate_15cases.md`; the suite harness change made while scoring is disclosed there and in #106).
+
 ### Added (0.10.0 pricing gaps)
 
 - **Per-entry cached-input rates replace the one global 0.1x multiplier.** Every priced entry now carries
