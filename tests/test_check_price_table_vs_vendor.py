@@ -19,15 +19,22 @@ from unittest.mock import patch
 
 import pytest
 from scripts.check_price_table_vs_vendor import (
+    ANTHROPIC_DEPRECATIONS_URL,
     ANTHROPIC_MD_URL,
+    GOOGLE_DEPRECATIONS_URL,
     GOOGLE_HTML_URL,
+    OPENAI_DEPRECATIONS_URL,
     OPENAI_MD_URL,
     FetchError,
     Rate,
     audit,
+    audit_deprecations,
     main,
+    parse_anthropic_deprecations,
     parse_anthropic_markdown,
+    parse_google_deprecations,
     parse_google_html,
+    parse_openai_deprecations,
     parse_openai_markdown,
 )
 
@@ -121,6 +128,28 @@ _PRICES = {
         "__local_zero_cost__": {"input_usd_per_mtok": 0.0, "output_usd_per_mtok": 0.0},
     },
 }
+
+
+_OPENAI_DEP_MD = """# Deprecations
+
+### 2026-10-01: Example
+
+| Shutdown date | Model / system | Recommended replacement |
+| ------------- | -------------- | ----------------------- |
+| Apr 1, 2027   | `gpt-6-sol`    | `gpt-7`                 |
+| October 23, 2026 | `o1-2024-12-17` \\| `o1` | `gpt-5.6-sol`        |
+"""
+
+_ANTHROPIC_DEP_MD = """## Deprecation history
+
+| Retirement date | Deprecated model | Replacement |
+| --- | --- | --- |
+| August 5, 2026 | `claude-opus-4-1-20250805` | `claude-opus-4-8` |
+"""
+
+_GOOGLE_DEP_HTML = """<table><tr><th>Model</th><th>Release date</th><th>Shutdown date</th><th>Recommended replacement</th></tr>
+<tr><td>gemini-2.5-pro</td><td>June 17, 2025</td><td>No shutdown date announced</td><td></td></tr>
+<tr><td>gemini-3.1-flash-lite</td><td>May 7, 2026</td><td>May 7, 2027</td><td>gemini-3.5-flash-lite</td></tr></table>"""
 
 
 def _vendor():
@@ -372,6 +401,9 @@ def _fake_fetch(url):
         ANTHROPIC_MD_URL: _ANTHROPIC_MD,
         OPENAI_MD_URL: _OPENAI_MD,
         GOOGLE_HTML_URL: _GOOGLE_HTML,
+        OPENAI_DEPRECATIONS_URL: _OPENAI_DEP_MD,
+        ANTHROPIC_DEPRECATIONS_URL: _ANTHROPIC_DEP_MD,
+        GOOGLE_DEPRECATIONS_URL: _GOOGLE_DEP_HTML,
     }[url]
 
 
@@ -498,3 +530,62 @@ def test_o_series_keys_are_mapped_to_openai_not_refused_as_unmapped():
     an, _, g = _vendor()
     rows = {r.key: r for r in audit(prices, an, parse_openai_markdown(openai_md), g)}
     assert rows["o3"].status == "VERIFIED"
+
+
+def test_deprecation_parsers_read_exact_names_and_the_shutdown_column_only():
+    openai = parse_openai_deprecations(_OPENAI_DEP_MD)
+    assert openai["gpt-6-sol"] == date(2027, 4, 1)
+    assert openai["o1"] == date(2026, 10, 23) and openai["o1-2024-12-17"] == date(2026, 10, 23)
+    assert parse_anthropic_deprecations(_ANTHROPIC_DEP_MD) == {
+        "claude-opus-4-1-20250805": date(2026, 8, 5)
+    }
+    google = parse_google_deprecations(_GOOGLE_DEP_HTML)
+    assert google == {"gemini-2.5-pro": None, "gemini-3.1-flash-lite": date(2027, 5, 7)}
+
+
+def _dep_audit(prices, today=date(2026, 10, 7)):
+    return {
+        r.key: r
+        for r in audit_deprecations(
+            prices,
+            parse_openai_deprecations(_OPENAI_DEP_MD),
+            parse_anthropic_deprecations(_ANTHROPIC_DEP_MD),
+            parse_google_deprecations(_GOOGLE_DEP_HTML),
+            today=today,
+        )
+    }
+
+
+def test_a_vendor_listed_shutdown_the_entry_does_not_carry_is_a_mismatch():
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["o1"] = {"input_usd_per_mtok": 15.0, "output_usd_per_mtok": 60.0}
+    rows = _dep_audit(prices)
+    assert rows["o1 (deprecation)"].status == "MISMATCH"
+    prices["models"]["o1"]["deprecation"] = {"shutdown_on": "2026-10-23"}
+    assert _dep_audit(prices)["o1 (deprecation)"].status == "VERIFIED"
+
+
+def test_a_passed_shutdown_on_a_non_retired_entry_is_a_mismatch_until_marked_retired():
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["o1"] = {
+        "input_usd_per_mtok": 15.0,
+        "output_usd_per_mtok": 60.0,
+        "deprecation": {"shutdown_on": "2026-10-23"},
+    }
+    rows = _dep_audit(prices, today=date(2026, 10, 24))
+    assert rows["o1 (deprecation)"].status == "MISMATCH"
+    assert "has passed" in rows["o1 (deprecation)"].detail[-1]
+    prices["models"]["o1"]["retired"] = True
+    assert "o1 (deprecation)" not in _dep_audit(prices, today=date(2026, 10, 24))
+
+
+def test_a_recorded_deprecation_the_page_no_longer_lists_is_a_mismatch():
+    prices = copy.deepcopy(_PRICES)
+    prices["models"]["gemini-2.5-pro"]["deprecation"] = {"shutdown_on": "2027-01-01"}
+    # the page lists gemini-2.5-pro with "No shutdown date announced"
+    assert _dep_audit(prices)["gemini-2.5-pro (deprecation)"].status == "MISMATCH"
+
+
+def test_an_unfetched_deprecation_page_is_unverified_for_entries_of_that_vendor():
+    rows = audit_deprecations(_PRICES, None, {}, {}, today=date(2026, 10, 7))
+    assert {r.status for r in rows} == {"UNVERIFIED"}

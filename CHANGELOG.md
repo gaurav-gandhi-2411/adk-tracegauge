@@ -18,6 +18,10 @@ see `CONTRIBUTING.md`).
   `o4-mini` (0.25x). A custom price table without the field falls back to the multiplier as before. The weekly vendor
   check now compares each entry's own cached rate and maps the o-series keys, which a `gpt-` prefix test had left
   unmapped.
+- **Vendor deprecation tracking.** Entries record `deprecation` {shutdown_on, replacement, source_url, checked_on}
+  (gpt-4.1-nano, o1, o3-mini, o4-mini: 2026-10-23; gpt-5.1: 2027-04-01; gemini-3.1-flash-lite: 2027-05-07). The weekly
+  checker compares them to the OpenAI, Anthropic and Gemini deprecation pages by exact model name and fails once a
+  recorded shutdown has passed on an entry not marked retired.
 
 ### Changed
 
