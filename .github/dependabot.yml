@@ -18,6 +18,14 @@ updates:
       - gaurav-gandhi-2411
     labels:
       - dependencies
+    ignore:
+      # litellm is only here transitively (adk-tracegauge[eval] -> google-adk[eval] ->
+      # google-cloud-aiplatform[evaluation]) and adk-tracegauge never imports it. That extra caps
+      # litellm below 1.86.0 on Python < 3.14, so the patched release for GHSA-3cv6-jpf6-8222
+      # (1.88.6) can never resolve here and every litellm update run fails. Not fixable in this
+      # repo; tracked upstream at googleapis/python-aiplatform#UPSTREAM_ISSUE_NUMBER and watched
+      # weekly by oss-contrib's weekly_check.py. Remove this entry once that cap is lifted.
+      - dependency-name: "litellm"
 
   # GitHub Actions — keep action versions current.
   # daily, not weekly: a newly-merged workflow job can introduce pins that are
