@@ -69,7 +69,7 @@ correctly shares and restores the same stack across the boundary.
 from __future__ import annotations
 
 import contextvars
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_response import LlmResponse
@@ -133,6 +133,27 @@ def _grounding(llm_response: LlmResponse) -> tuple[tuple[str, ...], int]:
     ):
         sources.add("unknown")
     return tuple(sorted(sources)), queries
+
+
+def _backend(callback_context: CallbackContext, usage: object) -> str:
+    """``gemini_api`` / ``vertex`` / ``""`` -- see ``CapturedCall.backend``.
+
+    ``traffic_type`` is documented "not supported in Gemini API", so a value implies Vertex (a
+    positive signal only). Otherwise the answer comes from ADK's own client
+    (``agent.canonical_model.api_client.vertexai``, read through ``_invocation_context`` because
+    nothing public exposes it); any failure to read it is "unknown", never a guess."""
+    if getattr(usage, "traffic_type", None):
+        return "vertex"
+    try:
+        agent: Any = callback_context._invocation_context.agent  # noqa: SLF001
+        vertexai = agent.canonical_model.api_client.vertexai
+    except Exception:  # noqa: BLE001 -- any ADK-internals drift means "cannot tell"
+        return ""
+    if vertexai is True:
+        return "vertex"
+    if vertexai is False:
+        return "gemini_api"
+    return ""
 
 
 class DoubleRegistrationError(RuntimeError):
@@ -247,6 +268,7 @@ class TraceGaugeUsagePlugin(BasePlugin):
                 ),
                 grounding_sources=grounding_sources,
                 grounding_queries=grounding_queries,
+                backend=_backend(callback_context, usage) if grounding_sources else "",
                 model_version=llm_response.model_version or "",
                 prompt_token_count=usage.prompt_token_count or 0,
                 candidates_token_count=usage.candidates_token_count or 0,

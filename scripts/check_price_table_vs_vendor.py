@@ -39,11 +39,13 @@ Vendor pages (verified live 2026-09-20):
 - vendor shutdown dates (OpenAI, Anthropic, Gemini deprecation pages), matched by exact model
   name only: an alias-vs-snapshot match is ambiguous, so it is not guessed;
 - Gemini audio input / audio cached rates;
+- the Google Search grounding row (unit, $/1k, free allowance).
 
 NOT modelled by the table, therefore not verified (stated, not hidden; see README "Known
 limitations"): explicit-cache STORAGE fees (Gemini: $1.00-$4.50 per 1M tokens per hour -- not
 derivable from per-call usage), cache-WRITE surcharges (Anthropic 1.25x/2x, OpenAI cache writes),
 OpenAI/Anthropic long-context tiers, Batch/Flex/Priority tiers.
+Maps grounding and Vertex-backend pricing are not covered either.
 
 Zero-cost: plain HTTP GET via stdlib only.
 """
@@ -144,6 +146,7 @@ class GoogleModel:
     image_video_split: bool = False  # the input row prices image or video apart from text
     audio_input: float | None = None  # a SEPARATE audio input rate, only when the page lists one
     audio_cached: float | None = None
+    grounding: tuple[str, float, str] | None = None  # (unit, usd per 1k, free-allowance count)
 
 
 @dataclass
@@ -317,6 +320,10 @@ _MODALITY_GROUP_RE = re.compile(r"\$[\d.]+\s*\(([^)]*)\)")
 _AUDIO_RE = re.compile(r"\$([\d.]+)\s*\(audio\)")
 """A price group labelled exactly ``(audio)``. ``(text / image / video / audio)`` is one rate for
 every modality and deliberately does NOT match: there is no separate audio rate to price."""
+_GROUNDING_RE = re.compile(
+    r"\$([\d.]+)\s*(?:/|per)\s*1,000\s*(grounded prompts?|search (?:queries|requests)|requests)"
+)
+_ALLOWANCE_RE = re.compile(r"([\d,]+)\s*(?:RPD|free search requests per month)")
 
 
 def _image_video_split(text: str) -> bool:
@@ -382,6 +389,14 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
     if "Input price" not in cells or "Output price" not in cells:
         return None
     i, o, c = cells["Input price"], cells["Output price"], cells.get("Context caching price")
+    grounding = None
+    for label, text in parser.rows.items():
+        if label.startswith("Grounding with Google Search"):
+            g = _GROUNDING_RE.search(text)
+            if g:
+                unit = "per_grounded_prompt" if "prompt" in g.group(2) else "per_search_query"
+                a = _ALLOWANCE_RE.search(text)
+                grounding = (unit, float(g.group(1)), a.group(1) if a else "")
     return GoogleModel(
         standard=Rate(i.standard, o.standard, c.standard if c else None),
         long_context=(
@@ -399,6 +414,7 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
         image_video_split=i.image_video_split,
         audio_input=i.audio,
         audio_cached=c.audio if c else None,
+        grounding=grounding,
     )
 
 
@@ -533,6 +549,7 @@ def audit(
                     continue
                 long_row = _compare(key, entry, model.long_context, cache_mult)
                 _audio_checks(long_row, entry, model)
+                _grounding_checks(long_row, entry, model)
                 rows.append(long_row)
             else:
                 rows.append(_gemini_row(key, entry, model, cache_mult))
@@ -584,11 +601,43 @@ def _audio_checks(row: AuditRow, entry: dict[str, object], model: GoogleModel) -
             row.status = "MISMATCH"
 
 
+def _grounding_checks(row: AuditRow, entry: dict[str, object], model: GoogleModel) -> None:
+    """The Google Search grounding row: unit, rate and free allowance (0.10.0)."""
+    grounding = entry.get("grounding")
+    ours_g = grounding.get("google_search") if isinstance(grounding, dict) else None
+    if model.grounding is None and ours_g is None:
+        return
+    if model.grounding is None:
+        row.detail.append("entry carries a grounding rate but the page has no parseable row")
+        row.status = "MISMATCH"
+        return
+    unit, per_1k, allowance = model.grounding
+    if not isinstance(ours_g, dict):
+        row.detail.append(
+            f"grounding: page lists ${per_1k:g}/1k ({unit}); the entry carries no grounding block"
+        )
+        row.status = "MISMATCH"
+        return
+    if ours_g.get("unit") != unit or not _same(float(ours_g.get("usd_per_1k", -1)), per_1k):
+        row.detail.append(
+            f"grounding: ours {ours_g.get('unit')} ${ours_g.get('usd_per_1k')}/1k vs vendor "
+            f"{unit} ${per_1k:g}/1k"
+        )
+        row.status = "MISMATCH"
+    if allowance and allowance not in str(ours_g.get("free_allowance", "")):
+        row.detail.append(
+            f"grounding free allowance: page says {allowance}, ours "
+            f"'{ours_g.get('free_allowance')}'"
+        )
+        row.status = "MISMATCH"
+
+
 def _gemini_row(
     key: str, entry: dict[str, object], model: GoogleModel, cache_mult: float
 ) -> AuditRow:
     row = _compare(key, entry, model.standard, cache_mult)
     _audio_checks(row, entry, model)
+    _grounding_checks(row, entry, model)
     promo_until = entry.get("promo_until")
     std = entry.get("standard_rate")
     if promo_until or std:
