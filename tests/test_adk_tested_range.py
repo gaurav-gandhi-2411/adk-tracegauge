@@ -63,6 +63,20 @@ def test_tested_max_is_the_next_minor_after_the_newest_bare_adk_matrix_leg() -> 
     )
 
 
+def test_one_job_aggregates_every_bare_adk_leg_so_a_future_leg_is_covered_by_a_required_check() -> (
+    None
+):
+    # A leg added later (by tested-range-bump.yml) is not a required check by name; this stable
+    # aggregate is, and it must go red when ANY leg does. If it is deleted or stops depending on the
+    # matrix job, a bump PR whose new leg fails is merge-gate eligible again.
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = ci.split("\n  bare-adk-all:\n", 1)[1].split("\n  full-suite-floor:", 1)[0]
+    assert "name: bare-adk (every leg)" in job
+    assert "if: ${{ always() }}" in job  # a skipped/failed matrix must not skip the verdict
+    assert "needs: [adk-legs, bare-adk]" in job
+    assert '[ "$LEGS_RESULT" = "success" ] && [ "$BARE_RESULT" = "success" ]' in job
+
+
 def test_tested_min_is_the_oldest_bare_adk_matrix_leg() -> None:
     assert min(_bare_adk_matrix_versions()) == _compat._KNOWN_TESTED_MIN
 

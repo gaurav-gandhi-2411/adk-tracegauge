@@ -233,6 +233,25 @@ jobs:
         run: |
           "${{ runner.temp }}/bare-venv/bin/python" "$GITHUB_WORKSPACE/scripts/bare_install_smoke.py"
 
+  # One check that is red if ANY bare-adk leg is red (or the legs could not be read). The individual
+  # legs are required by name, but a leg that tested-range-bump.yml adds later is not, and
+  # merge_gate.py then calls a PR whose new leg FAILS eligible (found on the first real bump PR,
+  # 2026-10-08: all 10 required checks green, bare-adk (2.12.4) red, gate "eligible"). This name is
+  # stable, so it can be a required check that covers every leg, present and future.
+  bare-adk-all:
+    name: bare-adk (every leg)
+    if: ${{ always() }}
+    needs: [adk-legs, bare-adk]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every leg in .github/tested-adk-legs.json passed
+        env:
+          LEGS_RESULT: ${{ needs.adk-legs.result }}
+          BARE_RESULT: ${{ needs.bare-adk.result }}
+        run: |
+          echo "adk-legs: $LEGS_RESULT; bare-adk (all legs): $BARE_RESULT"
+          [ "$LEGS_RESULT" = "success" ] && [ "$BARE_RESULT" = "success" ]
+
   # The full test suite on the google-adk FLOOR. `lint-and-test` runs the suite on whatever the lockfile
   # pins (2.9.2) and `bare-adk` only smoke-tests the base surface on 2.6.0, so a break that only the
   # real suite can see on the oldest supported ADK (a test that needs a newer ADK feature and does not
