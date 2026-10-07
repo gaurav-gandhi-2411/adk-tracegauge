@@ -65,7 +65,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from adk_tracegauge._pricing import load_gemini_prices  # noqa: E402
+from adk_tracegauge._pricing import is_retired, load_gemini_prices  # noqa: E402
 
 _USER_AGENT = "Mozilla/5.0 (compatible; adk-tracegauge-price-vendor-check/1.0)"
 _TIMEOUT_SECONDS = 20
@@ -467,13 +467,35 @@ def _compare(
     return row
 
 
+def _retired_gone_row(key: str, entry: dict[str, object]) -> AuditRow:
+    """An entry whose ``retired_on`` has arrived AND whose vendor page no longer lists it: its rate
+    can only be the last one published, so there is nothing left to verify (not a failure)."""
+    last = entry.get("vendor_page_last_listed")
+    return AuditRow(
+        key,
+        "SKIPPED",
+        "-",
+        "-",
+        [
+            f"retired {entry.get('retired_on')}, no longer on the vendor's page"
+            + (f" (last listed {last})" if last else "")
+            + "; priced at last published rate"
+        ],
+    )
+
+
 def audit(
     prices: dict[str, object],
     anthropic: dict[str, Rate] | None,
     openai: dict[str, Rate] | None,
     google_html: str | None,
+    today: date | None = None,
 ) -> list[AuditRow]:
-    """One AuditRow per table entry. ``None`` for a vendor means its page could not be fetched."""
+    """One AuditRow per table entry. ``None`` for a vendor means its page could not be fetched.
+
+    An entry retired only by DATE (``retired_on`` has arrived, no ``retired`` flag) is skipped when
+    its page no longer lists it and verified as usual while the page still does, so a shutdown the
+    vendor postponed is not silently exempted."""
     models: dict[str, dict[str, object]] = prices["models"]  # type: ignore[assignment]
     cache_mult = float(prices["cache_multipliers"]["read"])  # type: ignore[index]
     rows: list[AuditRow] = []
@@ -482,6 +504,7 @@ def audit(
             reason = SKIP_ENTRIES.get(key) or f"retired {entry.get('retired_on', '')}".strip()
             rows.append(AuditRow(key, "SKIPPED", "-", "-", [reason]))
             continue
+        retired_by_date = is_retired(entry, today)
         if not isinstance(entry.get("input_usd_per_mtok"), (int, float)):
             rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["entry has no input rate"]))
             continue
@@ -493,7 +516,9 @@ def audit(
             found = anthropic.get(ANTHROPIC_MODEL_NAMES[key])
             if found is None:
                 rows.append(
-                    AuditRow(
+                    _retired_gone_row(key, entry)
+                    if retired_by_date
+                    else AuditRow(
                         key,
                         "UNVERIFIED",
                         "-",
@@ -511,7 +536,9 @@ def audit(
             model = parse_google_html(google_html, slug)
             if model is None:
                 rows.append(
-                    AuditRow(
+                    _retired_gone_row(key, entry)
+                    if retired_by_date
+                    else AuditRow(
                         key,
                         "UNVERIFIED",
                         "-",
@@ -559,7 +586,11 @@ def audit(
                 continue
             found = openai.get(key)
             if found is None:
-                rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["not found on OpenAI's page"]))
+                rows.append(
+                    _retired_gone_row(key, entry)
+                    if retired_by_date
+                    else AuditRow(key, "UNVERIFIED", "-", "-", ["not found on OpenAI's page"])
+                )
                 continue
             rows.append(_compare(key, entry, found, cache_mult))
         else:
@@ -822,7 +853,15 @@ def audit_deprecations(
             str(ours),
             listed.isoformat() if listed else "-",
         )
-        if listed is None:
+        # Retired by DATE (``retired_on`` has arrived): the vendor dropping the row is the expected
+        # end state, not drift. A still-listed row with a DIFFERENT date (a postponed or moved
+        # shutdown) is still a MISMATCH, so the date-based exemption cannot hide that.
+        retired = is_retired(entry, today)
+        if listed is None and retired:
+            row.detail.append(
+                f"retired {entry.get('retired_on')}: the {vendor_name} page no longer lists '{key}'"
+            )
+        elif listed is None:
             row.status = "MISMATCH"
             row.detail.append(
                 f"entry records shutdown {ours} but the {vendor_name} page lists none for '{key}'"
@@ -830,7 +869,7 @@ def audit_deprecations(
         elif ours != listed.isoformat():
             row.status = "MISMATCH"
             row.detail.append(f"shutdown_on: ours {ours} vs vendor {listed.isoformat()}")
-        if listed is not None and listed < today:
+        if listed is not None and listed < today and not retired:
             row.status = "MISMATCH"
             row.detail.append(
                 f"vendor shutdown {listed.isoformat()} has passed and the entry is not marked "
