@@ -31,6 +31,7 @@ classifiers = [
     "Environment :: Console",
     "Natural Language :: English",
     "Operating System :: OS Independent",
+    "Typing :: Typed",
 ]
 # Terms someone would actually type to find this: the framework (adk / google-adk), the thing
 # measured (llm cost, token usage/cost), the verb (tracking, monitoring), the models it prices
@@ -121,7 +122,7 @@ include = ["adk_tracegauge*"]
 version = { attr = "adk_tracegauge.__version__" }
 
 [tool.setuptools.package-data]
-"adk_tracegauge" = ["data/gemini_prices.json"]
+"adk_tracegauge" = ["data/gemini_prices.json", "py.typed"]
 
 [tool.ruff]
 line-length = 100

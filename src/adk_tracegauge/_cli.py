@@ -133,6 +133,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
+from . import __version__
 from ._compat import load_eval_case_ids_by_session_id, load_expected_case_sizes
 from ._plugin import DoubleRegistrationError
 from ._regression import (
@@ -585,6 +586,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="adk-tracegauge",
         description="adk-tracegauge's CI cost-regression gate for ADK evals.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
