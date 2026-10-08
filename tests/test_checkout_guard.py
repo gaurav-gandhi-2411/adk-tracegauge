@@ -8,22 +8,28 @@ import sys
 from pathlib import Path
 
 import pytest
-from _checkout_guard import _PROBE, enforce, installed_package_file
+from _checkout_guard import (
+    _PROBE,
+    enforce,
+    in_process_package_file,
+    installed_package_file,
+)
 
 _REPO = Path(__file__).resolve().parent.parent
+_SRC_INIT = _REPO / "src" / "adk_tracegauge" / "__init__.py"
 
 
 def test_install_inside_this_checkout_is_accepted():
     inside = _REPO / "src" / "adk_tracegauge" / "__init__.py"
 
-    enforce(_REPO, probe=lambda: inside)  # must not raise
+    enforce(_REPO, probe=lambda: inside, in_process=lambda: inside)  # must not raise
 
 
 def test_install_from_another_checkout_exits_with_the_fix(tmp_path):
     stale = tmp_path / "older-checkout" / "src" / "adk_tracegauge" / "__init__.py"
 
     with pytest.raises(pytest.exit.Exception) as excinfo:
-        enforce(_REPO, probe=lambda: stale)
+        enforce(_REPO, probe=lambda: stale, in_process=lambda: _SRC_INIT)
 
     msg = str(excinfo.value)
     assert str(stale.resolve()) in msg  # says what it found
@@ -34,7 +40,7 @@ def test_install_from_another_checkout_exits_with_the_fix(tmp_path):
 
 def test_a_package_that_is_not_installed_exits_too():
     with pytest.raises(pytest.exit.Exception) as excinfo:
-        enforce(_REPO, probe=lambda: None)
+        enforce(_REPO, probe=lambda: None, in_process=lambda: _SRC_INIT)
 
     assert "not importable at all" in str(excinfo.value)
 
@@ -44,16 +50,37 @@ def test_a_sibling_directory_with_the_same_prefix_is_not_mistaken_for_this_check
     lookalike = _REPO / "src-old" / "adk_tracegauge" / "__init__.py"
 
     with pytest.raises(pytest.exit.Exception):
-        enforce(_REPO, probe=lambda: lookalike)
+        enforce(_REPO, probe=lambda: lookalike, in_process=lambda: _SRC_INIT)
 
 
-def test_the_real_probe_finds_this_checkouts_package_in_the_running_environment():
-    # Not mocked: a fresh subprocess of the interpreter running this suite. This is the same check
-    # the session-start hook made, so a stale venv would already have stopped the session.
+def test_an_installed_wheel_tested_on_purpose_is_accepted(tmp_path):
+    # release.yml's preflight-latest-adk drops src from pythonpath so the suite exercises the
+    # INSTALLED wheel; both views are then the same site-packages file and the guard must pass.
+    wheel = tmp_path / "site-packages" / "adk_tracegauge" / "__init__.py"
+
+    enforce(_REPO, probe=lambda: wheel, in_process=lambda: wheel)  # must not raise
+
+
+def test_in_process_import_of_the_checkout_with_a_stale_installed_copy_exits(tmp_path):
+    # The case the guard exists for: this process imports the checkout, a subprocess would not.
+    stale = tmp_path / "site-packages" / "adk_tracegauge" / "__init__.py"
+
+    with pytest.raises(pytest.exit.Exception) as excinfo:
+        enforce(_REPO, probe=lambda: stale, in_process=lambda: _SRC_INIT)
+
+    assert str(_SRC_INIT.parent.resolve()) in str(excinfo.value)
+    assert str(stale.resolve()) in str(excinfo.value)
+
+
+def test_the_real_views_agree_in_the_running_environment():
+    # Not mocked: a fresh subprocess of the interpreter running this suite against this process's
+    # own import. The session-start hook made the same comparison, so a disagreement would already
+    # have stopped the session. Holds for the editable checkout and for the preflight's wheel alike.
     found = installed_package_file(sys.executable)
+    mine = in_process_package_file()
 
-    assert found is not None
-    assert found.resolve().is_relative_to((_REPO / "src").resolve())
+    assert found is not None and mine is not None
+    assert found.resolve() == mine.resolve()
 
 
 def test_a_missing_interpreter_raises_instead_of_passing_the_guard_silently(tmp_path):
@@ -68,7 +95,7 @@ def test_a_probe_that_cannot_answer_exits_with_a_message_not_a_traceback():
         raise subprocess.TimeoutExpired(cmd="probe", timeout=1)
 
     with pytest.raises(pytest.exit.Exception) as excinfo:
-        enforce(_REPO, probe=hung)
+        enforce(_REPO, probe=hung, in_process=lambda: _SRC_INIT)
 
     assert "could not determine which adk_tracegauge" in str(excinfo.value)
     assert "TimeoutExpired" in str(excinfo.value)
