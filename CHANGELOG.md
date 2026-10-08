@@ -9,6 +9,8 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-10-08
+
 ### Added
 
 - **`adk-tracegauge --version`** prints `adk-tracegauge <version>` (and works without a subcommand). No published
