@@ -295,3 +295,32 @@ jobs:
 
       - name: Full test suite on google-adk ${{ matrix.google-adk }}
         run: uv run --no-sync pytest tests/ -v
+
+  # The README is the PyPI project page, and PyPI resolves a relative link (LICENSE, docs/x.md,
+  # assets/x.svg) against pypi.org, where it 404s. tracegauge 0.1.0-0.13.0 and adk-tracegauge
+  # 0.1.0rc1-0.7.0 shipped with 2-10 such links each (release-correctness audit, 2026-10-08), and a
+  # README edit is exactly the kind of change nothing else in CI looks at. This renders it with
+  # readme_renderer (the library PyPI uses) and fails on a relative link or a dead in-page anchor.
+  readme-pypi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the renderer PyPI uses
+        run: pip install "readme-renderer[md]==43.0"
+
+      - name: The README renders and has no link that is dead on pypi.org
+        run: python scripts/check_readme_pypi.py README.md
+
+      # Proves the check can still fail: a checker that quietly stopped finding anything would
+      # keep this job green forever.
+      - name: The check still rejects a known-bad README
+        run: |
+          if python scripts/check_readme_pypi.py tests/fixtures/readme_dead_links.md; then
+            echo "check_readme_pypi.py accepted a README with dead links"
+            exit 1
+          fi
