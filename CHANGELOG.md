@@ -9,6 +9,15 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **`adk-tracegauge --version`** prints `adk-tracegauge <version>` (and works without a subcommand). No published
+  version had it: the CLI exited 2 with "the following arguments are required: command".
+- **The package is typed (PEP 561).** `py.typed` ships in the wheel and the `Typing :: Typed` classifier is set, so a
+  consumer's `mypy`/`pyright` checks calls into `TraceGaugeUsagePlugin`, `CostEfficiencyEvaluator` and the rest of the
+  public API instead of reading them as untyped (before, `mypy` reported `module is installed, but missing library
+  stubs or py.typed marker`). `src/` was already `mypy --strict` clean in CI, so no annotations had to change.
+
 ### Changed
 
 - **A vendor shutdown takes effect on its announced day, without a table edit.** `gpt-4.1-nano`, `o1`, `o3-mini` and
