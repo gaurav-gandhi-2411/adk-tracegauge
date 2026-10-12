@@ -195,7 +195,7 @@ If you're mid-comparison across the 0.3.x → 0.4.0 upgrade: `adk-tracegauge che
 
 - **`score`**: raw cost in USD for the invocation, summed across every real model call within it (tool loops and sub-agent delegation can mean more than one model call per invocation). Not normalized, not calibrated, not a 0–1 quality score.
 - **`rationale`**: a per-call breakdown — model, fresh/cached/output token counts, and their individual dollar costs, plus `price_as_of=<date>` so the number's provenance travels with it.
-- **No calibrated efficiency bands.** tracegauge's own token-economy axis compares your numbers against a baseline built from 75 Claude Code sessions. That baseline is not used here, on purpose — applying a Claude-Code-derived baseline to ADK agent behavior would be an unvalidated transfer. This package reports raw counts and dollars only; set your own thresholds for what "too expensive" means for your agent, and let `adk-tracegauge check`'s bootstrap test decide what counts as a real regression rather than eyeballing a delta.
+- **No calibrated efficiency bands.** tracegauge's own token-economy axis compares your numbers against a baseline built from 71 Claude Code sessions. That baseline is not used here, on purpose — applying a Claude-Code-derived baseline to ADK agent behavior would be an unvalidated transfer. This package reports raw counts and dollars only; set your own thresholds for what "too expensive" means for your agent, and let `adk-tracegauge check`'s bootstrap test decide what counts as a real regression rather than eyeballing a delta.
 - **No trajectory-quality judging.** Out of scope — CC-specific tooling, unrelated to the cost story.
 
 ## Pricing: Gemini, Claude, GPT, and local models
