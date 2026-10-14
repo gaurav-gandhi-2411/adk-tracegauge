@@ -20,7 +20,7 @@ than guess.
 
 This package requires `google-adk[eval]>=2.6.0` with no upper bound (see
 `pyproject.toml`, "Compatibility risk" in the README); the tested range is
-`>=2.6.0,<2.12.0`. Installing a version below the floor, or one whose
+`>=2.6.0,<2.13.0`. Installing a version below the floor, or one whose
 internals have moved, breaks registration loudly, at `import adk_tracegauge`
 time — never a silent no-op or a subtly wrong result. A version merely
 *newer* than the tested range only logs one line at first use.
@@ -76,7 +76,7 @@ it predates this package's supported floor for unrelated reasons too.
 `adk-tracegauge`'s own dependency requirement resolve it for you — this error
 only happens when something else in your environment force-installs an
 out-of-range version afterward, e.g. `pip install google-adk==1.0.0`). If
-you're on a google-adk newer than `2.12.0` and something misbehaves, check
+you're on a google-adk newer than `2.13.0` and something misbehaves, check
 `.github/workflows/pypi-canary.yml`'s latest run first (it installs the
 *newest* `google-adk[eval]` daily and runs the full test suite) — if canary is
 green on your version, the problem is likely elsewhere; if it is red, that is
