@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from google.adk.events.event import Event
 
 _KNOWN_TESTED_MIN = (2, 6, 0)
-_KNOWN_TESTED_MAX_EXCLUSIVE = (2, 12, 0)
+_KNOWN_TESTED_MAX_EXCLUSIVE = (2, 13, 0)
 """Exclusive upper end of the google-adk range this release was tested against: the next minor
 after the newest release in CI's ``bare-adk`` matrix. NOT a dependency bound -- pyproject.toml has
 no upper bound on google-adk since 0.9.3, because a cap's only observed effect was pip silently
