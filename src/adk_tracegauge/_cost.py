@@ -2,7 +2,8 @@
 
 Through Phase 3, every real dollar figure this package ever reported was
 computed by an EXTERNAL dependency: the ``tracegauge`` PyPI package's
-``tes.cost.compute_session_cost``/``compute_turn_cost``, fed a
+``tes.cost.compute_session_cost``/``compute_turn_cost`` (``tracegauge.cost``
+since tracegauge 0.16, when its import package was renamed), fed a
 ``tes._digest.SessionDigest``/``TurnDigest`` this package built by hand
 (see ``_adapter.py``). Phase 4 R5's audit (5.1, full findings in
 ``PLAN.md``) found every one of the following was a REVERSE-ENGINEERED
@@ -29,8 +30,9 @@ contract:
   against the actually-INSTALLED package before this audit: ``tes/cost.py``
   and ``tes/_digest.py`` are dual-licensed (AGPL-3.0-only OR Apache-2.0) only
   as of the source carrying an explicit SPDX header -- confirmed present at
-  https://github.com/gaurav-gandhi-2411/token-efficiency-scorer HEAD
-  (commit ``b582c60565150015d4a9f3cc87bc64f19375e52a``) and in the
+  https://github.com/gaurav-gandhi-2411/tracegauge (then named
+  ``token-efficiency-scorer``) HEAD (commit
+  ``b582c60565150015d4a9f3cc87bc64f19375e52a``, still in that history) and in the
   ``tracegauge==0.10.1`` release's bundled ``LICENSE-APACHE``, but ABSENT
   (no per-file header, though still covered by the repo's overall README
   license note) from the ``tracegauge==0.10.0`` release actually resolved
@@ -112,12 +114,14 @@ roll up into ``SessionCost.approximate``/``approximate_reasons``, which
 
 Copyright and license note (Apache-2.0, `LICENSE` in this repository root):
 the arithmetic and dataclass shapes in this file originate from
-``tracegauge``'s ``tes/cost.py``/``tes/_digest.py`` (Copyright 2026 Gaurav
-Gandhi, https://github.com/gaurav-gandhi-2411/token-efficiency-scorer),
-which that repository's own source and README dual-license as
-AGPL-3.0-only OR Apache-2.0 at the licensor's option -- this file exercises
-the Apache-2.0 option, consistent with this package's own Apache-2.0
-license. Both packages share the same author; this port is not a
+``tracegauge``'s ``tes/cost.py``/``tes/_digest.py`` (``tracegauge/cost.py``
+and ``tracegauge/_digest.py`` since tracegauge 0.16; Copyright 2026 Gaurav
+Gandhi, https://github.com/gaurav-gandhi-2411/tracegauge, formerly
+``token-efficiency-scorer``), which at port time (tracegauge 0.10.x) that
+repository's own source and README dual-licensed as AGPL-3.0-only OR
+Apache-2.0 at the licensor's option -- this file exercises the Apache-2.0
+option, consistent with this package's own Apache-2.0 license. tracegauge
+itself has been Apache-2.0 since 0.16.0 (2026-10-17). Both packages share the same author; this port is not a
 third-party incorporation, but the license note is recorded here anyway
 since Apache-2.0 requires it for a derivative file, and because it's the
 finding (5.1/5.4) that motivated checking this in the first place.
