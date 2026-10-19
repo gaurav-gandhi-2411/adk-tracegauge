@@ -309,7 +309,7 @@ def test_cost_module_no_longer_imports_the_external_tracegauge_package():
 
     src_dir = Path(__file__).parent.parent / "src" / "adk_tracegauge"
     offending: list[tuple[Path, int, str]] = []
-    pattern = re.compile(r"^\s*(from tes\b|import tes\b)")
+    pattern = re.compile(r"^\s*(from|import) (tes|tracegauge)\b")
     for path in src_dir.rglob("*.py"):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if pattern.match(line):
