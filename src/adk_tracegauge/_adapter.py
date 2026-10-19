@@ -9,7 +9,8 @@ whole invocation.
 
 Through Phase 3, ``_cost``'s digest/cost types and arithmetic were an
 external dependency (the ``tracegauge`` PyPI package's ``tes._digest``/
-``tes.cost``). Phase 4 R5 ported the arithmetic in-house and removed that
+``tes.cost``, named ``tracegauge._digest``/``tracegauge.cost`` since
+tracegauge 0.16). Phase 4 R5 ported the arithmetic in-house and removed that
 dependency entirely -- see ``_cost.py``'s module docstring for the full
 audit findings and rationale.
 

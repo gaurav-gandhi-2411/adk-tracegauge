@@ -8,7 +8,8 @@ integration, plus a synthetic zero-cost entry for local/self-hosted models
 renamed -- Phase 2 W3 broadened scope, not the file); every symbol here now
 covers all three real providers plus the local-model case. This module is
 deliberately independent of ``_cost._resolve_model_key`` (through Phase 3,
-an external dependency, tracegauge's own ``tes.cost._resolve_model`` --
+an external dependency, tracegauge's own ``tes.cost._resolve_model``
+(``tracegauge.cost`` since tracegauge 0.16) --
 ported in-house Phase 4 R5, see ``_cost.py``'s module docstring), which
 silently defaults to a fallback model rate on no match. That was the right
 call for tracegauge's own original problem (best-effort scoring of
@@ -54,8 +55,9 @@ code:
   "what should this real call cost", which is correctly the zero-cost entry
   for the same string.
 - **Custom price registration via ``ADK_TRACEGAUGE_PRICE_TABLE``.** Mirrors
-  tracegauge's own ``TES_PRICE_TABLE`` env-var override pattern (see
-  ``tes.cost.load_price_table``) for consistency. Points at a JSON file with
+  tracegauge's own env-var override pattern (``TES_PRICE_TABLE``, named
+  ``TRACEGAUGE_PRICE_TABLE`` since tracegauge 0.16; see
+  ``load_price_table`` in its ``cost`` module) for consistency. Points at a JSON file with
   the same schema as the bundled table (``models``, ``model_patterns``,
   ``cache_multipliers``, ``default_model``) to add or replace entries --
   e.g. a self-hosted model behind a paid gateway, or a Bedrock/Azure-routed
@@ -366,7 +368,7 @@ def effective_prices(prices: dict[str, Any] | None = None) -> dict[str, Any]:
     which calls this internally -- Phase 3 B2), because that arithmetic
     reads prices["models"][key]["input_usd_per_mtok"] straight off whatever
     dict it's given (ported unchanged from tracegauge's own tes/cost.py,
-    Phase 4 R5 -- see _cost.py's module docstring) with zero knowledge of
+    now tracegauge/cost.py, Phase 4 R5 -- see _cost.py's module docstring) with zero knowledge of
     promo_until/standard_rate -- the automatic promo-expiry switch has to
     happen here, before the dict is handed over, not inside the arithmetic
     itself.

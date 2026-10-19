@@ -71,7 +71,8 @@ dependencies = [
     "google-adk>=2.6.0",
     # tracegauge dependency removed, Phase 4 R5: the only things this package
     # ever used from it (tes.cost.compute_session_cost/compute_turn_cost's
-    # arithmetic, plus the tes._digest.SessionDigest/TurnDigest dataclasses
+    # arithmetic, plus the tes._digest.SessionDigest/TurnDigest dataclasses;
+    # tracegauge.cost/tracegauge._digest since tracegauge 0.16's rename
     # it operated on -- confirmed by grep, nothing else) are now ported
     # in-house at src/adk_tracegauge/_cost.py. See that module's docstring
     # for the full audit/rationale.
