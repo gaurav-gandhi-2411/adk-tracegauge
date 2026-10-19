@@ -32,6 +32,7 @@ from scripts.check_price_table_vs_vendor import (
     main,
     parse_anthropic_deprecations,
     parse_anthropic_markdown,
+    parse_google_alias_routes,
     parse_google_deprecations,
     parse_google_html,
     parse_openai_deprecations,
@@ -685,3 +686,63 @@ def test_a_recorded_deprecation_the_page_no_longer_lists_is_a_mismatch():
 def test_an_unfetched_deprecation_page_is_unverified_for_entries_of_that_vendor():
     rows = audit_deprecations(_PRICES, None, {}, {}, today=date(2026, 10, 7))
     assert {r.status for r in rows} == {"UNVERIFIED"}
+
+
+# --- endpoints Google routes to a successor and no longer prices itself (2026-10-19) -----------
+
+# Faithful to the live deprecations markup for gemini-3.5-flash / gemini-3.7-flash.
+_GOOGLE_DEP_ALIAS_HTML = """<table><tr><th>Model</th><th>Release date</th><th>Shutdown date</th><th>Recommended replacement</th></tr>
+<tr><td>gemini-3.7-flash</td><td>August 13, 2026</td><td>N/A</td><td>gemini-3.6-flash (not available to select in Google AI Studio; the endpoint is not shutting down and automatically routes API requests to gemini-3.6-flash )</td></tr>
+<tr><td>gemini-2.5-pro</td><td>June 17, 2025</td><td>No shutdown date announced</td><td></td></tr>
+<tr><td>gemini-3.1-flash-lite</td><td>May 7, 2026</td><td>May 7, 2027</td><td>gemini-3.5-flash-lite</td></tr></table>"""
+
+
+def _alias_prices(**overrides):
+    p = copy.deepcopy(_PRICES)
+    p["models"]["gemini-3.7-flash"] = {**p["models"]["gemini-3.6-flash"], **overrides}
+    return p
+
+
+def _alias_audit(prices, routes):
+    an, op, g = _vendor()
+    return {r.key: r for r in audit(prices, an, op, g, google_routes=routes)}
+
+
+def test_alias_routes_are_read_from_the_replacement_cell_only_when_it_says_so():
+    routes = parse_google_alias_routes(_GOOGLE_DEP_ALIAS_HTML)
+    assert routes == {"gemini-3.7-flash": "gemini-3.6-flash"}  # a plain replacement is not a route
+
+
+def test_a_priceless_alias_equal_to_its_routed_model_verifies_and_says_why():
+    rows = _alias_audit(_alias_prices(), parse_google_alias_routes(_GOOGLE_DEP_ALIAS_HTML))
+    row = rows["gemini-3.7-flash"]
+    assert row.status == "VERIFIED"
+    assert any("routes API requests to 'gemini-3.6-flash'" in d for d in row.detail)
+
+
+def test_a_priceless_alias_that_differs_from_its_routed_model_is_unverified_not_mismatch():
+    rows = _alias_audit(
+        _alias_prices(
+            input_usd_per_mtok=1.5, output_usd_per_mtok=9.0, promo_until=None, standard_rate=None
+        ),
+        parse_google_alias_routes(_GOOGLE_DEP_ALIAS_HTML),
+    )
+    row = rows["gemini-3.7-flash"]
+    # The billed rate of the alias is not published, so this is "cannot verify", not "the entry is wrong";
+    # it still fails the check, and both differences are listed.
+    assert row.status == "UNVERIFIED"
+    assert "not published" in row.detail[0]
+    assert any("input: ours $1.5 vs vendor $0.75" in d for d in row.detail)
+    assert any("output: ours $9 vs vendor $3.75" in d for d in row.detail)
+
+
+def test_without_a_documented_route_a_missing_slug_is_still_unverified_as_before():
+    for routes in (None, {}, {"gemini-3.7-flash": "gemini-9.9-nowhere"}):
+        row = _alias_audit(_alias_prices(), routes)["gemini-3.7-flash"]
+        assert row.status == "UNVERIFIED" and "not found/parseable" in row.detail[0]
+
+
+def test_an_entry_the_page_still_prices_ignores_a_route():
+    # gemini-3.6-flash has its own section here; a route entry for it must not redirect the check
+    row = _alias_audit(_PRICES, {"gemini-3.6-flash": "gemini-2.5-pro"})["gemini-3.6-flash"]
+    assert row.status == "VERIFIED" and not any("routes API" in d for d in row.detail)
