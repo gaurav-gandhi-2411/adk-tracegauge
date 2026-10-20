@@ -9,6 +9,8 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-10-20
+
 ### Added
 
 - **`gemini-3.8-flash` is priced.** Google's pricing page lists it ("Our most intelligent Flash model") and the table had
@@ -33,6 +35,8 @@ see `CONTRIBUTING.md`).
   were already `gemini-3.8-flash`'s.
 - **Calls served by `gemini-3.8-flash` were skipped and are now priced.** That includes every call sent to the
   `gemini-3.7-flash` alias, whose `model_version` is `gemini-3.8-flash`.
+
+- **The tested google-adk range moves to `>=2.6.0,<2.13.0`** (#129): the daily canary passed on google-adk 2.12.0 and a `bare-adk (2.12.0)` CI leg now exercises it, so the soft "newer than tested" line no longer prints for 2.12.
 
 ### Internal
 
