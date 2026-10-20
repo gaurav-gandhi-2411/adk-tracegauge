@@ -100,6 +100,7 @@ GOOGLE_MODEL_SLUGS: dict[str, str] = {
     "gemini-3.5-flash-lite": "gemini-3.5-flash-lite",
     "gemini-3.6-flash": "gemini-3.6-flash",
     "gemini-3.7-flash": "gemini-3.7-flash",
+    "gemini-3.8-flash": "gemini-3.8-flash",
     "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
     "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
 }
@@ -509,6 +510,9 @@ def audit(
             rows.append(AuditRow(key, "SKIPPED", "-", "-", [reason]))
             continue
         retired_by_date = is_retired(entry, today)
+        if "routed_to" in entry:
+            rows.append(_routed_row(key, entry, models, google_routes))
+            continue
         if not isinstance(entry.get("input_usd_per_mtok"), (int, float)):
             rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["entry has no input rate"]))
             continue
@@ -749,6 +753,62 @@ def _alias_row(
         row.status = "UNVERIFIED"
         row.detail = [note + ", and the entry differs from it:", *differences]
     return row
+
+
+def _routed_row(
+    key: str,
+    entry: dict[str, object],
+    models: dict[str, dict[str, object]],
+    google_routes: dict[str, str] | None,
+) -> AuditRow:
+    """An entry with no rates of its own that says ``routed_to`` another entry. The claim to verify is the
+    route itself: Google's deprecations page must still say this endpoint routes API requests to that model.
+    The target's rates are verified by the target's own row."""
+    target = str(entry["routed_to"])
+    if target not in models or "routed_to" in models[target]:
+        return AuditRow(
+            key,
+            "MISMATCH",
+            "-",
+            "-",
+            [f"routes to '{target}', which is not a priced entry of this table"],
+        )
+    if google_routes is None:
+        return AuditRow(
+            key,
+            "UNVERIFIED",
+            "-",
+            "-",
+            ["Google deprecations page not fetched, so the route cannot be checked"],
+        )
+    published = google_routes.get(key)
+    if published == target:
+        return AuditRow(
+            key,
+            "VERIFIED",
+            "-",
+            "-",
+            [
+                f"routed alias: Google says the endpoint routes API requests to '{target}', which is priced by its own row"
+            ],
+        )
+    if published is None:
+        return AuditRow(
+            key,
+            "UNVERIFIED",
+            "-",
+            "-",
+            [
+                f"Google's deprecations page no longer says '{key}' routes to '{target}': the alias may have been retired or changed"
+            ],
+        )
+    return AuditRow(
+        key,
+        "MISMATCH",
+        "-",
+        "-",
+        [f"the table routes '{key}' to '{target}' but Google now says '{published}'"],
+    )
 
 
 _ROUTES_TO = re.compile(r"automatically routes API requests to (gemini-[\w.\-]+)")
