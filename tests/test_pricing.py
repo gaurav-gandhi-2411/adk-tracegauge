@@ -89,7 +89,8 @@ def test_known_model_keys_is_sorted_and_nonempty():
         ("gemini-2.5-flash", 0.30, 2.50),
         ("gemini-2.5-flash-lite", 0.10, 0.40),
         ("gemini-2.0-flash", 0.10, 0.40),
-        ("gemini-3.5-flash", 1.50, 9.00),
+        # 2026-10-20: a routed alias resolves to the model that now serves it (gemini-3.6-flash).
+        ("gemini-3.5-flash", 0.75, 3.75),
         ("gemini-3.5-flash-lite", 0.30, 2.50),
         # CORRECTED 2026-08-14: table previously had the post-2026-12-31
         # rate ($1.50/$7.50) in effect early -- the actual standard rate as

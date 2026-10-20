@@ -746,3 +746,41 @@ def test_an_entry_the_page_still_prices_ignores_a_route():
     # gemini-3.6-flash has its own section here; a route entry for it must not redirect the check
     row = _alias_audit(_PRICES, {"gemini-3.6-flash": "gemini-2.5-pro"})["gemini-3.6-flash"]
     assert row.status == "VERIFIED" and not any("routes API" in d for d in row.detail)
+
+
+# --- entries marked `routed_to`: the route is what gets verified (2026-10-20) --------------------
+
+
+def _routed_audit(routes, target="gemini-3.6-flash", extra=None):
+    p = copy.deepcopy(_PRICES)
+    p["models"]["gemini-3.7-flash"] = {"routed_to": target}
+    p["models"].update(extra or {})
+    an, op, g = _vendor()
+    return {r.key: r for r in audit(p, an, op, g, google_routes=routes)}["gemini-3.7-flash"]
+
+
+def test_a_routed_alias_is_verified_when_google_still_says_it_routes_there():
+    row = _routed_audit({"gemini-3.7-flash": "gemini-3.6-flash"})
+    assert row.status == "VERIFIED" and "routes API requests to 'gemini-3.6-flash'" in row.detail[0]
+
+
+def test_a_routed_alias_google_no_longer_documents_is_unverified():
+    for routes in (None, {}, {"gemini-3.5-flash": "gemini-3.6-flash"}):
+        assert _routed_audit(routes).status == "UNVERIFIED"
+
+
+def test_a_routed_alias_whose_route_changed_is_a_mismatch():
+    row = _routed_audit({"gemini-3.7-flash": "gemini-3.8-flash"})
+    assert row.status == "MISMATCH" and "now says 'gemini-3.8-flash'" in row.detail[0]
+
+
+def test_a_route_to_a_missing_or_aliased_target_is_a_mismatch():
+    assert (
+        _routed_audit({"gemini-3.7-flash": "gemini-9.9"}, target="gemini-9.9").status == "MISMATCH"
+    )
+    chained = _routed_audit(
+        {"gemini-3.7-flash": "gemini-x"},
+        target="gemini-x",
+        extra={"gemini-x": {"routed_to": "gemini-3.6-flash"}},
+    )
+    assert chained.status == "MISMATCH"

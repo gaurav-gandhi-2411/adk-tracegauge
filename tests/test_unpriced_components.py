@@ -81,16 +81,16 @@ def _search(n: int = 2) -> genai_types.GroundingMetadata:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-3.5-flash"])
 async def test_builtin_google_search_is_flagged_on_2_5_and_3_x(mocker, model: str):
-    # 1,000 in x $0.30/M + 200 out x $2.50/M = $0.000800 on 2.5; 3.5-flash is $1.50/$9.00:
-    # 1,000 x 1.50/M + 200 x 9.00/M = $0.001500 + $0.001800 = $0.003300. The grounding fee is not
-    # in either figure -- that is exactly what must be flagged.
+    # 1,000 in x $0.30/M + 200 out x $2.50/M = $0.000800 on 2.5; 3.5-flash is priced as the model
+    # Google routes it to, $0.75/$3.75: 1,000 x 0.75/M + 200 x 3.75/M = $0.000750 + $0.000750 =
+    # $0.001500. The grounding fee is not in either figure -- that is exactly what must be flagged.
     store = UsageStore()
     await _capture(store, mocker, [_response(model=model, grounding=_search(2))])
 
     snap = build_snapshot(store)
 
     (record,) = snap.records
-    assert record.cost_usd == pytest.approx(0.0008 if model == "gemini-2.5-flash" else 0.0033)
+    assert record.cost_usd == pytest.approx(0.0008 if model == "gemini-2.5-flash" else 0.0015)
     assert [c["component"] for c in record.unpriced_components] == ["grounding_fee"]
     assert "grounding fee not included in total" in record.unpriced_components[0]["detail"]
     assert record.unpriced_components[0]["tokens"] == 2  # the two search queries
@@ -177,8 +177,8 @@ async def test_a_plain_call_and_an_empty_grounding_object_are_not_flagged(mocker
 @pytest.mark.asyncio
 async def test_audio_input_is_left_out_and_flagged_never_priced_at_the_text_rate(mocker):
     # gemini-3.5-flash publishes no separate audio rate, so audio stays flagged. 1,000 prompt
-    # tokens of which 400 audio. Priced part: 600 x $1.50/M = $0.000900 + 200 x $9.00/M =
-    # $0.001800 -> $0.002700; the 400 audio tokens are reported as unpriced.
+    # tokens of which 400 audio. Priced part: 600 x $0.75/M = $0.000450 + 200 x $3.75/M =
+    # $0.000750 -> $0.001200; the 400 audio tokens are reported as unpriced.
     store = UsageStore()
     await _capture(
         store,
@@ -189,7 +189,7 @@ async def test_audio_input_is_left_out_and_flagged_never_priced_at_the_text_rate
     snap = build_snapshot(store)
 
     (record,) = snap.records
-    assert record.cost_usd == pytest.approx(0.0027)
+    assert record.cost_usd == pytest.approx(0.0012)
     assert record.tokens_input == 600
     (component,) = record.unpriced_components
     assert component["component"] == "audio_input_tokens"
@@ -247,8 +247,8 @@ async def test_cached_audio_is_priced_at_the_audio_cached_rate(mocker):
 async def test_cached_audio_tokens_are_removed_from_the_cache_read_too(mocker):
     # gemini-3.5-flash has no audio rate, so audio stays flagged and is removed from the cache
     # read too. 1,000 prompt: 400 audio, 600 text; 500 cached, 200 of them audio. Priced: 300
-    # fresh x $1.50/M = 0.00045; 300 cached x $0.15/M = 0.000045; 200 out x $9.00/M = 0.0018
-    # -> $0.002295.
+    # fresh x $0.75/M = 0.000225; 300 cached x $0.075/M = 0.0000225; 200 out x $3.75/M = 0.00075
+    # -> $0.0009975.
     store = UsageStore()
     await _capture(
         store,
@@ -265,7 +265,7 @@ async def test_cached_audio_tokens_are_removed_from_the_cache_read_too(mocker):
 
     (record,) = build_snapshot(store).records
 
-    assert record.cost_usd == pytest.approx(0.002295)
+    assert record.cost_usd == pytest.approx(0.0009975)
     assert record.tokens_cache_read == 300
 
 

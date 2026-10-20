@@ -46,9 +46,8 @@
         "source": "https://web.archive.org/web/20260826211535/https://ai.google.dev/gemini-api/docs/pricing (retired; last Wayback capture that lists it)"
       },
       "gemini-3.5-flash": {
-        "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
-        "cell": "$1.50",
-        "source": "https://ai.google.dev/gemini-api/docs/pricing"
+        "basis": "not_applicable: routed alias with no price of its own; its rates are gemini-3.6-flash's, whose own record is below",
+        "source": "https://ai.google.dev/gemini-api/docs/deprecations"
       },
       "gemini-3.5-flash-lite": {
         "basis": "explicit: the page prices text, image and video input at one rate",
@@ -61,6 +60,10 @@
         "source": "https://ai.google.dev/gemini-api/docs/pricing"
       },
       "gemini-3.7-flash": {
+        "basis": "not_applicable: routed alias with no price of its own; its rates are gemini-3.8-flash's, whose own record is below",
+        "source": "https://ai.google.dev/gemini-api/docs/deprecations"
+      },
+      "gemini-3.8-flash": {
         "basis": "single_input_price_listed: the page lists one input price with no per-modality rate",
         "cell": "$0.75 through December 31, 2026. $1.50 starting January 1, 2027.",
         "source": "https://ai.google.dev/gemini-api/docs/pricing"
@@ -240,20 +243,10 @@
       "retired_source": "Confirmed fully absent from the free models.list() endpoint (verified live 2026-08-21, 50-model catalog, zero matches for any '2.0'-named model) -- also already hardcoded into check_price_table_vs_vendor.py's SKIP_ENTRIES before this field existed, for the same reason. This is the free-verifiable retirement class: full removal from the model catalog, not merely an account-eligibility gate (contrast gemini-2.5-flash-lite above)."
     },
     "gemini-3.5-flash": {
-      "input_usd_per_mtok": 1.50,
-      "output_usd_per_mtok": 9.00,
-      "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-10-07",
-      "note": "Standard tier. No context-length tiering or time-limited promotional rate published for this model.",
-      "cached_input_usd_per_mtok": 0.15,
-      "grounding": {
-        "google_search": {
-          "unit": "per_search_query",
-          "usd_per_1k": 14.0,
-          "free_allowance": "5,000 free search requests per month (shared across all Gemini 3.x models), then $14 per 1,000 requests",
-          "priced_by_adapter": false
-        }
-      }
+      "routed_to": "gemini-3.6-flash",
+      "source_url": "https://ai.google.dev/gemini-api/docs/deprecations",
+      "fetched_on": "2026-10-20",
+      "note": "ROUTED ALIAS, no price of its own (2026-10-20). Google no longer lists a pricing section for gemini-3.5-flash; its deprecations page says the gemini-3.5-flash endpoint is not shutting down and 'automatically routes API requests to gemini-3.6-flash'. A real ADK call to gemini-3.5-flash on 2026-10-20 came back with model_version 'gemini-3.6-flash' and usage {prompt_token_count: 24, candidates_token_count: 1, thoughts_token_count: 111}, so the API reports (and bills by) the served model: adk-tracegauge already prices the response under gemini-3.6-flash. This entry exists so that the string 'gemini-3.5-flash' still resolves, to gemini-3.6-flash's entry and rates. A response whose model_version is literally 'gemini-3.5-flash' (none seen since the routing began) is therefore priced at gemini-3.6-flash's published rate, not at the rate the model had before it was routed."
     },
     "gemini-3.5-flash-lite": {
       "input_usd_per_mtok": 0.30,
@@ -294,17 +287,23 @@
       }
     },
     "gemini-3.7-flash": {
+      "routed_to": "gemini-3.8-flash",
+      "source_url": "https://ai.google.dev/gemini-api/docs/deprecations",
+      "fetched_on": "2026-10-20",
+      "note": "ROUTED ALIAS, no price of its own (2026-10-20). Google no longer lists a pricing section for gemini-3.7-flash; its deprecations page says the gemini-3.7-flash endpoint is not shutting down and 'automatically routes API requests to gemini-3.8-flash'. A real ADK call to gemini-3.7-flash on 2026-10-20 came back with model_version 'gemini-3.8-flash' and usage {prompt_token_count: 24, candidates_token_count: 1, thoughts_token_count: 113}, so the API reports (and bills by) the served model: adk-tracegauge already prices the response under gemini-3.8-flash. This entry exists so that the string 'gemini-3.7-flash' still resolves, to gemini-3.8-flash's entry and rates. A response whose model_version is literally 'gemini-3.7-flash' (none seen since the routing began) is therefore priced at gemini-3.8-flash's published rate, not at the rate the model had before it was routed."
+    },
+    "gemini-3.8-flash": {
       "input_usd_per_mtok": 0.75,
       "output_usd_per_mtok": 3.75,
       "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
-      "fetched_on": "2026-10-07",
+      "fetched_on": "2026-10-20",
       "promo_until": "2026-12-31",
       "standard_rate": {
         "input_usd_per_mtok": 1.5,
         "output_usd_per_mtok": 7.5,
         "cached_input_usd_per_mtok": 0.15
       },
-      "note": "NEW 2026-08-14 (Phase 2 W1 P0 fix): missing from the table entirely. Standard rate $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after -- same promotional-period caveat as gemini-3.6-flash; RE-VERIFIED live 2026-08-14 (Phase 3 B2), same confirmed post-promo figures. promo_until/standard_rate added so _pricing.py's resolver auto-switches to the standard rate once 2026-12-31 has passed -- no manual table edit required.",
+      "note": "NEW 2026-10-20: Google's pricing page lists gemini-3.8-flash ('Our most intelligent Flash model') and the table had no entry, so a call served by it (which is also what a request to the gemini-3.7-flash alias now returns as model_version) was skipped as an unknown model. Standard tier, read from the raw page 2026-10-20T03:12:44Z (sha256 prefix 7ec651e0cd7d8864): input $0.75 through December 31, 2026 and $1.50 starting January 1, 2027; output $3.75 then $7.50; context caching $0.075 then $0.15, storage $0.50 then $1.00 per 1M tokens per hour (storage is not priced). One input price with no per-modality rate, no audio rate. Same promotional-period caveat as gemini-3.6-flash: promo_until/standard_rate switch the rate automatically on 2027-01-01. No prefix pattern is registered on purpose: gemini-3.8-flash-tts, -live and similar variants are different, differently priced models and must stay unknown rather than be priced as this one.",
       "cached_input_usd_per_mtok": 0.075,
       "grounding": {
         "google_search": {

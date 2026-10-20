@@ -9,6 +9,38 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+### Added
+
+- **`gemini-3.8-flash` is priced.** Google's pricing page lists it ("Our most intelligent Flash model") and the table had
+  no entry, so every call served by it was skipped as an unknown model (found 2026-10-20 with a real call). Standard
+  tier, read from the raw page 2026-10-20T03:12:44Z (sha256 prefix `7ec651e0cd7d8864`): input $0.75 / output $3.75 per
+  1M tokens through 2026-12-31, then $1.50 / $7.50; cached $0.075, then $0.15. The promotional-rate switch is
+  automatic like the other 3.x entries. No prefix pattern is registered on purpose: `gemini-3.8-flash-tts`,
+  `gemini-3.8-live` and the like are different, differently priced models and stay unknown.
+
+### Changed
+
+- **`gemini-3.5-flash` and `gemini-3.7-flash` are routed aliases with no price of their own.** Google dropped their
+  pricing sections; its deprecations page says each endpoint "is not shutting down and automatically routes API
+  requests to" `gemini-3.6-flash` and `gemini-3.8-flash`. One real ADK call per alias (2026-10-20, free-tier key):
+  the response's `model_version` named the served model (`gemini-3.6-flash`, `gemini-3.8-flash`), with
+  `usage_metadata` of prompt 24, candidates 1, thoughts 111 / 113 tokens. adk-tracegauge prices by `model_version`, so
+  real responses were already priced under the served model, and still are ($0.000438 for the 3.5 call, $0.0004455
+  for the 3.7 call, hand-checked in `tests/test_routed_aliases.py`). The two table entries now say `routed_to`
+  instead of carrying rates, so the string `gemini-3.5-flash` resolves to `gemini-3.6-flash`'s entry and rates (it
+  was $1.50 / $9.00, which no Google page publishes any more). Effect: only a response whose `model_version` is
+  literally `gemini-3.5-flash` changes price, and none has been seen since the routing began. The 3.7 entry's rates
+  were already `gemini-3.8-flash`'s.
+- **Calls served by `gemini-3.8-flash` were skipped and are now priced.** That includes every call sent to the
+  `gemini-3.7-flash` alias, whose `model_version` is `gemini-3.8-flash`.
+
+### Internal
+
+- `scripts/check_price_table_vs_vendor.py` (the weekly vendor check) verifies a `routed_to` entry by checking that
+  Google's deprecations page still says the endpoint routes to that model, and compares any priced entry whose
+  pricing section has disappeared with the model Google routes it to. A live run reads
+  `OK: 38 entries audited (2 SKIPPED, 36 VERIFIED)`.
+
 ## [0.10.1] — 2026-10-08
 
 ### Added
