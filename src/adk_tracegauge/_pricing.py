@@ -384,6 +384,10 @@ def effective_prices(prices: dict[str, Any] | None = None) -> dict[str, Any]:
 
     effective_models: dict[str, Any] = {}
     for model_key, entry in prices["models"].items():
+        if "routed_to" in entry:
+            # A routed alias has no rates of its own; resolve_model hands out its target's entry.
+            effective_models[model_key] = dict(entry)
+            continue
         input_rate, output_rate, _, _ = _effective_rates(entry)
         new_entry = dict(entry)
         new_entry["input_usd_per_mtok"] = input_rate
@@ -516,14 +520,32 @@ def resolve_model(model_version: str, prices: dict[str, Any] | None = None) -> R
     models: dict[str, Any] = prices["models"]
 
     if cleaned in models:
-        return _entry_to_resolved(cleaned, models[cleaned])
+        return _resolve_entry(cleaned, models)
 
     for pattern in prices.get("model_patterns", []):
         if cleaned.startswith(pattern["prefix"]):
-            model_key = pattern["model_key"]
-            return _entry_to_resolved(model_key, models[model_key])
+            return _resolve_entry(pattern["model_key"], models)
 
     return None
+
+
+def _resolve_entry(model_key: str, models: dict[str, Any]) -> ResolvedModel:
+    """The ResolvedModel for ``model_key``, following one ``routed_to`` hop.
+
+    A routed alias (an endpoint Google keeps alive but no longer prices, and serves with another model)
+    carries no rates; it resolves to its target's entry and rates, and the result's ``model_key`` is the
+    TARGET's, so everything downstream (the cost arithmetic, the report) sees the model that served the call.
+    A target that is itself an alias is a table error, not something to chase."""
+    entry = models[model_key]
+    target = entry.get("routed_to")
+    if target is None:
+        return _entry_to_resolved(model_key, entry)
+    routed = models[target]
+    if "routed_to" in routed:
+        raise ValueError(
+            f"price table: alias {model_key!r} routes to {target!r}, which is itself an alias"
+        )
+    return _entry_to_resolved(target, routed)
 
 
 def resolve_model_for_call(

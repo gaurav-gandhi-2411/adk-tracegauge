@@ -100,6 +100,7 @@ GOOGLE_MODEL_SLUGS: dict[str, str] = {
     "gemini-3.5-flash-lite": "gemini-3.5-flash-lite",
     "gemini-3.6-flash": "gemini-3.6-flash",
     "gemini-3.7-flash": "gemini-3.7-flash",
+    "gemini-3.8-flash": "gemini-3.8-flash",
     "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
     "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
 }
@@ -490,8 +491,12 @@ def audit(
     openai: dict[str, Rate] | None,
     google_html: str | None,
     today: date | None = None,
+    google_routes: dict[str, str] | None = None,
 ) -> list[AuditRow]:
     """One AuditRow per table entry. ``None`` for a vendor means its page could not be fetched.
+
+    ``google_routes`` maps a Gemini endpoint that Google no longer prices on its pricing page to the
+    model its deprecations page says now serves it (see ``parse_google_alias_routes``).
 
     An entry retired only by DATE (``retired_on`` has arrived, no ``retired`` flag) is skipped when
     its page no longer lists it and verified as usual while the page still does, so a shutdown the
@@ -505,6 +510,9 @@ def audit(
             rows.append(AuditRow(key, "SKIPPED", "-", "-", [reason]))
             continue
         retired_by_date = is_retired(entry, today)
+        if "routed_to" in entry:
+            rows.append(_routed_row(key, entry, models, google_routes))
+            continue
         if not isinstance(entry.get("input_usd_per_mtok"), (int, float)):
             rows.append(AuditRow(key, "UNVERIFIED", "-", "-", ["entry has no input rate"]))
             continue
@@ -534,6 +542,12 @@ def audit(
                 continue
             slug = GOOGLE_MODEL_SLUGS.get(key) or GOOGLE_LONG_CONTEXT_KEYS[key]
             model = parse_google_html(google_html, slug)
+            if model is None and not retired_by_date and key in GOOGLE_MODEL_SLUGS:
+                routed = (google_routes or {}).get(slug)
+                routed_model = parse_google_html(google_html, routed) if routed else None
+                if routed_model is not None:
+                    rows.append(_alias_row(key, entry, slug, routed, routed_model, cache_mult))
+                    continue
             if model is None:
                 rows.append(
                     _retired_gone_row(key, entry)
@@ -712,6 +726,107 @@ def _gemini_row(
             f"explicit-cache storage ${model.storage_usd_per_mtok_hour:g}/Mtok/hour is NOT priced"
         )
     return row
+
+
+def _alias_row(
+    key: str,
+    entry: dict[str, object],
+    slug: str,
+    routed: str,
+    routed_model: GoogleModel,
+    cache_mult: float,
+) -> AuditRow:
+    """A Gemini endpoint Google no longer prices on its own (no pricing section) but whose deprecations
+    page says it now routes to ``routed``. The entry is compared with ``routed``'s published rate. The
+    rate billed for the alias itself is not published anywhere, so a difference is UNVERIFIED (still a
+    failing row, listing both rates), never a claim that the entry is wrong; equality stays VERIFIED."""
+    row = _gemini_row(key, entry, routed_model, cache_mult)
+    note = (
+        f"Google lists no pricing section for '{slug}'; its deprecations page says the endpoint "
+        f"routes API requests to '{routed}', so the entry is compared with '{routed}'s published "
+        "rate. The rate billed for the alias itself is not published"
+    )
+    if row.status == "VERIFIED":
+        row.detail.append(note)
+    else:
+        differences = list(row.detail)
+        row.status = "UNVERIFIED"
+        row.detail = [note + ", and the entry differs from it:", *differences]
+    return row
+
+
+def _routed_row(
+    key: str,
+    entry: dict[str, object],
+    models: dict[str, dict[str, object]],
+    google_routes: dict[str, str] | None,
+) -> AuditRow:
+    """An entry with no rates of its own that says ``routed_to`` another entry. The claim to verify is the
+    route itself: Google's deprecations page must still say this endpoint routes API requests to that model.
+    The target's rates are verified by the target's own row."""
+    target = str(entry["routed_to"])
+    if target not in models or "routed_to" in models[target]:
+        return AuditRow(
+            key,
+            "MISMATCH",
+            "-",
+            "-",
+            [f"routes to '{target}', which is not a priced entry of this table"],
+        )
+    if google_routes is None:
+        return AuditRow(
+            key,
+            "UNVERIFIED",
+            "-",
+            "-",
+            ["Google deprecations page not fetched, so the route cannot be checked"],
+        )
+    published = google_routes.get(key)
+    if published == target:
+        return AuditRow(
+            key,
+            "VERIFIED",
+            "-",
+            "-",
+            [
+                f"routed alias: Google says the endpoint routes API requests to '{target}', which is priced by its own row"
+            ],
+        )
+    if published is None:
+        return AuditRow(
+            key,
+            "UNVERIFIED",
+            "-",
+            "-",
+            [
+                f"Google's deprecations page no longer says '{key}' routes to '{target}': the alias may have been retired or changed"
+            ],
+        )
+    return AuditRow(
+        key,
+        "MISMATCH",
+        "-",
+        "-",
+        [f"the table routes '{key}' to '{target}' but Google now says '{published}'"],
+    )
+
+
+_ROUTES_TO = re.compile(r"automatically routes API requests to (gemini-[\w.\-]+)")
+
+
+def parse_google_alias_routes(html: str) -> dict[str, str]:
+    """{endpoint: model it now routes to}, from rows of Google's deprecations page whose replacement
+    cell says 'the endpoint is not shutting down and automatically routes API requests to <model>'."""
+    parser = _HtmlRows()
+    parser.feed(html)
+    found: dict[str, str] = {}
+    for cells in parser.rows:
+        if not cells or not re.fullmatch(r"gemini-[\w.\-]+", cells[0]):
+            continue
+        m = _ROUTES_TO.search(" ".join(cells[1:]))
+        if m:
+            found.setdefault(cells[0], m.group(1))
+    return found
 
 
 class _HtmlRows(HTMLParser):
@@ -917,7 +1032,15 @@ def main() -> int:
         errors.append(str(e))
         google_html = None
 
-    rows = audit(prices, anthropic, openai, google_html)
+    try:
+        google_routes: dict[str, str] | None = parse_google_alias_routes(
+            _fetch(GOOGLE_DEPRECATIONS_URL)
+        )
+    except FetchError:
+        google_routes = (
+            None  # the deprecations fetch below reports the failure; no alias is then verifiable
+        )
+    rows = audit(prices, anthropic, openai, google_html, google_routes=google_routes)
 
     def deprecations(url: str, parse, what: str):  # type: ignore[no-untyped-def]
         try:

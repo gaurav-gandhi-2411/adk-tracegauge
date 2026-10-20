@@ -75,6 +75,8 @@ def test_a_promo_entrys_cached_rate_follows_the_promo_switch():
 
 def test_every_bundled_entry_that_can_be_cached_carries_a_verified_rate():
     for key, entry in load_gemini_prices()["models"].items():
-        if key == "__local_zero_cost__" or entry.get("retired"):
+        if (
+            key == "__local_zero_cost__" or entry.get("retired") or entry.get("routed_to")
+        ):  # an alias has no rates
             continue
         assert "cached_input_usd_per_mtok" in entry, key
