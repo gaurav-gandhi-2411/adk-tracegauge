@@ -1,0 +1,15 @@
+adk_tracegauge: google-adk==2.12.0 is newer than the newest release this adk-tracegauge version was tested against (tested: 2.6.0 <= version < 2.12.0). Continuing; this is expected to work, and CI checks the newest google-adk daily. If something misbehaves, upgrade adk-tracegauge or report it at https://github.com/gaurav-gandhi-2411/adk-tracegauge/issues
+adk-tracegauge quickstart -- no API key, no network call, no ADK app of your own.
+Running a deterministic, in-memory demo agent through a real InMemoryRunner,
+twice (32 toy cases each), with a deliberate cost regression injected
+into the second run, then firing the real `adk-tracegauge check` gate.
+
+adk-tracegauge check: mode=paired (key=session_id, 32 overlapping session_ids matched between baseline and current)
+adk-tracegauge check [method=paired]: n_baseline=32 n_current=32 (min_n=30)
+  mean_baseline=$0.005306  mean_current=$0.007106
+  achieved power: minimum reliably-detectable effect at 80% power, given this run's observed variance/n, is ~$0.000000 (+0.00% of mean baseline) [normal approximation to the bootstrap CI -- see _regression.py module docstring for validated accuracy]
+  observed effect: +0.001800 USD (+33.93%), 98% CI [+0.001800, +0.001800] (n_boot=10000, seed=42)
+  statistically_significant=True practically_significant=True (floors: min_effect_usd=0.000100 OR min_effect_pct=5.00%)
+  REGRESSION: cost increased significantly (CI excludes zero) AND the increase clears the configured practical-significance floor.
+
+This ran entirely from what shipped in the installed package -- no files were read from your machine. Next: wire TraceGaugeUsagePlugin into your own agent (see README, 'Use with agent') and run this same `check` command against your own two snapshots.
