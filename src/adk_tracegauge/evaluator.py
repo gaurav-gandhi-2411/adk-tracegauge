@@ -88,6 +88,15 @@ Phase 2 W2 redesign, because it's load-bearing and not obvious from the code:
   between "documented in README/tests" and "a user actually sees this
   before hitting an unexplained AssertionError."
 
+- **Fixed upstream in google-adk 2.13.0.** google/adk-python#6739 (landed as
+  commit `5bf7f12`, first shipped in 2.13.0) makes
+  `_process_metrics_and_get_failures` infer each metric's direction from
+  its per-invocation `(score, eval_status)` pairs and compare with `<=` for
+  a lower-is-better metric, so `AgentEvaluator.evaluate()`'s verdict for
+  this metric is correct from 2.13.0 on. Everything above describes
+  google-adk < 2.13.0 only; the runtime warning is gated to those versions
+  (`_ADK_HONORS_EVAL_STATUS_FROM`).
+
 - Requires TraceGaugeUsagePlugin to be wired into the agent/App this
   evaluator runs against (see README, "What this actually is"). Without it,
   every invocation reports "no usage captured", not a cost of zero.
@@ -594,6 +603,21 @@ def _installed_adk_version() -> str:
     return getattr(_google_adk, "__version__", "unknown")
 
 
+_ADK_HONORS_EVAL_STATUS_FROM = (2, 13, 0)
+"""First google-adk release whose ``AgentEvaluator`` takes each metric's direction from its own
+``eval_status`` (google/adk-python#6739, commit ``5bf7f12``). From here on the directionality
+warning below would be false, so it is not emitted."""
+
+
+def _adk_agent_evaluator_is_polarity_aware() -> bool:
+    """True when the installed google-adk is at or above ``_ADK_HONORS_EVAL_STATUS_FROM``.
+
+    An unreadable or unparseable version returns False, i.e. keeps the warning: it is advisory,
+    and saying nothing on a version we cannot place is the riskier of the two mistakes."""
+    parsed = _compat._parse_version(_installed_adk_version())
+    return parsed is not None and parsed >= _ADK_HONORS_EVAL_STATUS_FROM
+
+
 def _install_agent_evaluator_marker() -> None:
     """Best-effort: wraps ``AgentEvaluator.evaluate`` to set
     ``_RUNNING_UNDER_AGENT_EVALUATOR`` for the duration of the call, so
@@ -726,8 +750,13 @@ def _warn_if_running_under_agent_evaluator() -> None:
     as a reason to skip the check on every call: the whole point is to fire
     every time this evaluator is actually driven through the affected
     harness, and reading a ``ContextVar`` is effectively free.
+
+    Silent on google-adk >= 2.13.0, where the harness honors ``eval_status``
+    (see ``_ADK_HONORS_EVAL_STATUS_FROM``).
     """
     if not _RUNNING_UNDER_AGENT_EVALUATOR.get():
+        return
+    if _adk_agent_evaluator_is_polarity_aware():
         return
     installed = _installed_adk_version()
     warnings.warn(
@@ -742,7 +771,8 @@ def _warn_if_running_under_agent_evaluator() -> None:
         "real threshold. Trust `adk eval`/LocalEvalService, or this "
         "evaluator's own eval_status (call evaluate_invocations() directly), "
         "for real pass/fail -- never AgentEvaluator.evaluate()'s own "
-        "assert/no-assert outcome for this metric. See README "
+        "assert/no-assert outcome for this metric. google-adk 2.13.0 fixes "
+        "this; upgrading removes the problem and this warning. See README "
         "'Known limitations'.",
         stacklevel=3,
     )

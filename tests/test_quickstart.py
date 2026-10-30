@@ -9,6 +9,9 @@ verified the real deterministic numbers below.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from adk_tracegauge._quickstart import run_quickstart
 
 
@@ -40,6 +43,12 @@ def test_quickstart_fires_a_real_regression_and_returns_exit_code_1(capsys):
     assert "observed effect: +0.001800 USD (+33.93%)" in out
     assert "$0.010611" not in out  # the doubled figure the 0.6.1 quickstart printed
     assert "This ran entirely from what shipped in the installed package" in out
+    # The closing hint names a README section; it must exist (it named "Use with agent", which the
+    # README has not had since 0.2.0, until 2026-10-30).
+    named = re.search(r"see README, '([^']+)'", out)
+    assert named, out
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    assert f"\n## {named.group(1)}\n" in readme, f"README has no section '{named.group(1)}'"
 
 
 def test_quickstart_reported_cost_equals_independently_computed_true_cost(capsys):

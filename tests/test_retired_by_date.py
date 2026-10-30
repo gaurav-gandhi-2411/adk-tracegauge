@@ -63,6 +63,21 @@ def test_the_four_openai_models_are_retired_by_date_and_not_by_flag():
         assert is_retired(entry, _SHUTDOWN) is True
 
 
+def test_gpt_5_and_o3_retire_on_their_2026_12_11_shutdown():
+    """OpenAI's deprecations page lists gpt-5 and o3 for removal on 2026-12-11 (replacement
+    gpt-5.6-sol); the weekly check went red on 2026-10-26 because the table had no date for them."""
+    shutdown = date(2026, 12, 11)
+    models = load_gemini_prices()["models"]
+    for key in ("gpt-5", "o3"):
+        entry = models[key]
+        assert "retired" not in entry, key
+        assert entry["retired_on"] == entry["deprecation"]["shutdown_on"] == "2026-12-11"
+        assert entry["deprecation"]["replacement"] == "gpt-5.6-sol"
+        assert date.fromisoformat(entry["vendor_page_last_listed"]) <= shutdown
+        assert is_retired(entry, date(2026, 12, 10)) is False
+        assert is_retired(entry, shutdown) is True
+
+
 # --- the weekly vendor check ----------------------------------------------------------------------
 
 

@@ -18,6 +18,12 @@ scalar via `mean(scores) >= threshold` -- the wrong direction for a
 lower-is-better metric -- bypassing this evaluator's own real `eval_status`
 entirely. See `evaluator.py`'s module docstring. `adk eval`/`LocalEvalService`
 are unaffected (see `test_integration.py`/manual CLI proof in the W2 commit).
+
+google-adk 2.13.0 fixed that limitation (google/adk-python#6739, commit
+`5bf7f12`): the harness now infers each metric's direction from its own
+`eval_status`. The tests below that depend on the verdict branch on
+`POLARITY_AWARE`, so every CI leg (2.6.0 .. 2.12.0 on the old behaviour, 2.13.0+
+on the new) proves the behaviour of the release it installs.
 """
 
 from __future__ import annotations
@@ -44,6 +50,10 @@ from google.genai import types as genai_types
 # makes this file's own warning-related tests deterministic regardless of
 # pytest's collection order or which other test files ran first.
 import adk_tracegauge  # noqa: F401
+from adk_tracegauge.evaluator import _adk_agent_evaluator_is_polarity_aware
+
+POLARITY_AWARE = _adk_agent_evaluator_is_polarity_aware()
+"""True on google-adk >= 2.13.0, where AgentEvaluator honors this metric's eval_status."""
 
 _FIXED_COST_USD = 2.80
 """1M input + 1M output tokens on gemini-2.5-flash: 1M*$0.30/Mtok + 1M*$2.50/Mtok."""
@@ -140,6 +150,68 @@ def _write_eval_fixture(tmp_path: Path, threshold_usd: float) -> Path:
     return eval_set_path
 
 
+async def _evaluate(threshold_usd: float) -> None:
+    """One real AgentEvaluator.evaluate() run of the fixed-cost ($2.80) agent at this budget."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_path = Path(tmp_dir_str)
+        module_name = _write_agent_module(tmp_path)
+        eval_set_path = _write_eval_fixture(tmp_path, threshold_usd=threshold_usd)
+
+        import sys
+
+        sys.path.insert(0, str(tmp_path))
+        try:
+            await AgentEvaluator.evaluate(
+                agent_module=module_name,
+                eval_dataset_file_path_or_dir=str(eval_set_path),
+                num_runs=1,
+                print_detailed_results=False,
+            )
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop(module_name, None)
+            sys.modules.pop(module_name.rsplit(".", 1)[0], None)
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [
+        ("2.6.0", True),
+        ("2.12.0", True),
+        ("2.12.9", True),
+        ("2.13.0", False),
+        ("2.13.0rc1", False),
+        ("2.14.2", False),
+        ("3.0.0", False),
+        ("unknown", True),
+    ],
+)
+def test_directionality_warning_is_gated_to_google_adk_below_2_13(monkeypatch, installed, expected):
+    """The version gate itself, on every leg regardless of which google-adk is installed: the
+    warning fires under AgentEvaluator only below 2.13.0, and an unplaceable version keeps it.
+    (``2.13.0rc1`` parses to (2, 13, 0) -- ``_compat._parse_version`` stops at the first non-digit
+    -- so a 2.13 pre-release is treated as fixed; the fix was already on main when 2.13 was cut.)"""
+    import warnings as warnings_module
+
+    from adk_tracegauge import evaluator as ev
+
+    monkeypatch.setattr(ev, "_installed_adk_version", lambda: installed)
+    token = ev._RUNNING_UNDER_AGENT_EVALUATOR.set(True)
+    try:
+        with warnings_module.catch_warnings(record=True) as records:
+            warnings_module.simplefilter("always")
+            ev._warn_if_running_under_agent_evaluator()
+    finally:
+        ev._RUNNING_UNDER_AGENT_EVALUATOR.reset(token)
+
+    fired = [r for r in records if "_process_metrics_and_get_failures" in str(r.message)]
+    assert bool(fired) is expected, f"google-adk=={installed}: {fired}"
+    if expected:
+        assert f"google-adk=={installed}" in str(fired[0].message)
+
+
 def test_install_agent_evaluator_marker_is_idempotent():
     """`_install_agent_evaluator_marker` is called exactly once for real, as an
     `adk_tracegauge` import side effect (see `__init__.py`) -- this exercises the
@@ -192,44 +264,38 @@ async def test_agent_evaluator_evaluate_warns_naming_the_adk_behavior_and_versio
     the installed `google-adk` version, so a reader doesn't have to
     cross-reference anything else to know what's happening or which
     installed version it was observed on.
+
+    On google-adk >= 2.13.0 the opposite: the harness is fixed, so the same
+    real run (here at a $1000 budget, which completes there) must emit NO
+    directionality warning -- a false warning would tell users to distrust a
+    correct verdict.
     """
-    import tempfile
+    import warnings as warnings_module
 
     import google.adk as google_adk
 
     installed_version = getattr(google_adk, "__version__", "unknown")
 
-    with tempfile.TemporaryDirectory() as tmp_dir_str:
-        tmp_path = Path(tmp_dir_str)
-        module_name = _write_agent_module(tmp_path)
-        eval_set_path = _write_eval_fixture(tmp_path, threshold_usd=0.01)
+    if POLARITY_AWARE:
+        with warnings_module.catch_warnings(record=True) as records:
+            warnings_module.simplefilter("always")
+            await _evaluate(threshold_usd=1_000.0)
+        silent = [r for r in records if "_process_metrics_and_get_failures" in str(r.message)]
+        assert not silent, f"google-adk=={installed_version} is fixed; got: {silent}"
+        return
 
-        import sys
+    with pytest.warns(UserWarning, match="AgentEvaluator.evaluate\\(\\)") as records:
+        await _evaluate(threshold_usd=0.01)
 
-        sys.path.insert(0, str(tmp_path))
-        try:
-            with pytest.warns(UserWarning, match="AgentEvaluator.evaluate\\(\\)") as records:
-                await AgentEvaluator.evaluate(
-                    agent_module=module_name,
-                    eval_dataset_file_path_or_dir=str(eval_set_path),
-                    num_runs=1,
-                    print_detailed_results=False,
-                )
-        finally:
-            sys.path.remove(str(tmp_path))
-            sys.modules.pop(module_name, None)
-            sys.modules.pop(module_name.rsplit(".", 1)[0], None)
-
-        directionality_warnings = [
-            r for r in records if "_process_metrics_and_get_failures" in str(r.message)
-        ]
-        assert directionality_warnings, (
-            "expected a warning naming agent_evaluator.py's "
-            "_process_metrics_and_get_failures function"
-        )
-        message = str(directionality_warnings[0].message)
-        assert "mean(scores) >= threshold" in message
-        assert f"google-adk=={installed_version}" in message
+    directionality_warnings = [
+        r for r in records if "_process_metrics_and_get_failures" in str(r.message)
+    ]
+    assert directionality_warnings, (
+        "expected a warning naming agent_evaluator.py's _process_metrics_and_get_failures function"
+    )
+    message = str(directionality_warnings[0].message)
+    assert "mean(scores) >= threshold" in message
+    assert f"google-adk=={installed_version}" in message
 
 
 @pytest.mark.asyncio
@@ -279,66 +345,33 @@ async def test_agent_evaluator_evaluate_completes_without_assertionerror():
     "regardless of the actual computed cost or the threshold you configure")
     no longer holds: a threshold now exists that avoids it, which was never
     true before this redesign.
+
+    On google-adk >= 2.13.0 the harness is fixed, so the run that completes is
+    the genuinely under-budget one ($1000 against a real $2.80).
     """
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp_dir_str:
-        tmp_path = Path(tmp_dir_str)
-        module_name = _write_agent_module(tmp_path)
-        eval_set_path = _write_eval_fixture(tmp_path, threshold_usd=0.01)
-
-        import sys
-
-        sys.path.insert(0, str(tmp_path))
-        try:
-            # No pytest.raises -- an AssertionError here IS the test failing.
-            await AgentEvaluator.evaluate(
-                agent_module=module_name,
-                eval_dataset_file_path_or_dir=str(eval_set_path),
-                num_runs=1,
-                print_detailed_results=False,
-            )
-        finally:
-            sys.path.remove(str(tmp_path))
-            sys.modules.pop(module_name, None)
-            sys.modules.pop(module_name.rsplit(".", 1)[0], None)
+    # No pytest.raises -- an AssertionError here IS the test failing.
+    await _evaluate(threshold_usd=1_000.0 if POLARITY_AWARE else 0.01)
 
 
 @pytest.mark.asyncio
 async def test_agent_evaluator_still_misclassifies_a_well_under_budget_run():
-    """Documents the residual, ADK-side-only limitation (not this package's bug).
+    """Pins AgentEvaluator's verdict direction for this metric, per google-adk version.
 
-    A generous threshold ($1000, real cost $2.80 -- genuinely PASSED per this
-    evaluator's own correct eval_status) still trips AgentEvaluator's own
+    google-adk < 2.13.0 (the residual ADK-side limitation, not this package's
+    bug): a generous threshold ($1000, real cost $2.80 -- genuinely PASSED per
+    this evaluator's own correct eval_status) still trips AgentEvaluator's own
     backward reclassification (2.80 >= 1000.0 is False), raising
     AssertionError for a run that is, by this package's own correct
-    accounting, well under budget. If google-adk ever fixes
-    `_process_metrics_and_get_failures` to honor each Evaluator's own
-    eval_status, this test starts failing -- which would be good news,
-    worth revisiting this module's docstring over.
+    accounting, well under budget.
+
+    google-adk >= 2.13.0 (fixed upstream by google/adk-python#6739): the
+    verdict follows eval_status, so the over-budget run ($0.01 budget) is the
+    one that raises -- and the under-budget one completes (asserted in
+    `test_agent_evaluator_evaluate_completes_without_assertionerror`). The
+    name is kept so the test's history stays in one place.
     """
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp_dir_str:
-        tmp_path = Path(tmp_dir_str)
-        module_name = _write_agent_module(tmp_path)
-        eval_set_path = _write_eval_fixture(tmp_path, threshold_usd=1_000.0)
-
-        import sys
-
-        sys.path.insert(0, str(tmp_path))
-        try:
-            with pytest.raises(AssertionError, match="adk_tracegauge_cost_usd"):
-                await AgentEvaluator.evaluate(
-                    agent_module=module_name,
-                    eval_dataset_file_path_or_dir=str(eval_set_path),
-                    num_runs=1,
-                    print_detailed_results=False,
-                )
-        finally:
-            sys.path.remove(str(tmp_path))
-            sys.modules.pop(module_name, None)
-            sys.modules.pop(module_name.rsplit(".", 1)[0], None)
+    with pytest.raises(AssertionError, match="adk_tracegauge_cost_usd"):
+        await _evaluate(threshold_usd=0.01 if POLARITY_AWARE else 1_000.0)
 
 
 def test_the_documented_first_call_gap_is_real_not_a_hypothetical_caveat():
@@ -358,7 +391,14 @@ def test_the_documented_first_call_gap_is_real_not_a_hypothetical_caveat():
     file) is required here because every other test in this session may have
     already imported `adk_tracegauge` and installed the wrap -- only a genuinely
     fresh interpreter reproduces "nothing has imported it yet."
+
+    Skipped on google-adk >= 2.13.0: the warning is never emitted there (the
+    harness is fixed), so a count of 0 would pass without proving anything about
+    the gap. The < 2.13.0 CI legs still run it.
     """
+    if POLARITY_AWARE:
+        pytest.skip("google-adk >= 2.13.0 emits no directionality warning; the gap is moot")
+
     import subprocess
     import sys
     import tempfile

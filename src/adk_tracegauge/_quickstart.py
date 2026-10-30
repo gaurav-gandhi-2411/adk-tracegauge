@@ -97,7 +97,7 @@ async def _run_variant(app_name: str, regression_bump: int, store: UsageStore) -
         # plugin method declares callback_context as keyword-only (see
         # _plugin.py's own after_model_callback docstring for why -- it's
         # the one hook proven to fire during `adk eval`/AgentEvaluator, the
-        # documented wiring this repo's own README/"Use with agent" section
+        # documented wiring this repo's own README/"See what your ADK agent costs" section
         # recommends). Python itself has no issue calling it this way at
         # runtime (verified live: this exact wiring is what
         # examples/05_hand_rolled_session_id_pairing.py already runs) --
@@ -160,7 +160,7 @@ def run_quickstart() -> int:
         print(
             "\nThis ran entirely from what shipped in the installed package -- no files "
             "were read from your machine. Next: wire TraceGaugeUsagePlugin into your own "
-            "agent (see README, 'Use with agent') and run this same `check` command "
+            "agent (see README, 'See what your ADK agent costs') and run this same `check` command "
             "against your own two snapshots."
         )
         return exit_code
