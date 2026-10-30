@@ -18,6 +18,9 @@ see `CONTRIBUTING.md`).
   correctly FAILS a $0.01 budget and PASSES a $1000 one. The warning told users that verdict was backward "at ANY real
   threshold" and to never trust it. It now fires only below 2.13.0 (or when the installed version cannot be read), and
   its text says that upgrading google-adk fixes the problem. README "Known limitations" says the same.
+- **`adk-tracegauge quickstart`'s closing hint names a README section that exists.** It said "see README, 'Use with
+  agent'", a section the README has not had since 0.2.0; it now names "See what your ADK agent costs". A test checks
+  that the named section is a heading in the README.
 
 ### Changed
 
