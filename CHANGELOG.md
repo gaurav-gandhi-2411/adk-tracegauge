@@ -26,6 +26,17 @@ see `CONTRIBUTING.md`).
   installed release: the old one below 2.13.0 and the correct one from 2.13.0. The first-call-gap subprocess test is
   skipped from 2.13.0, where the warning it checks no longer exists. They had turned the daily canary red since
   2026-10-24 (4 failed on google-adk 2.13.0).
+- **`gpt-5` and `o3` retire on 2026-12-11.** OpenAI's deprecations page lists both for removal on that date
+  (replacement `gpt-5.6-sol`; raw page fetched 2026-10-30T13:01:16Z, sha256 prefix `3fddf4c625d689e4`, section
+  "2026-06-11: GPT-5 and o3 model deprecations"). Both entries now carry the `deprecation` block plus `retired_on`, as
+  `o1` does, so from that day the report marks them as priced at their last published rate. Their rates are unchanged
+  and verified (gpt-5 $1.25 / $10 / cached $0.125, o3 $2 / $8 / $0.5). The weekly vendor check had been red since
+  2026-10-26 on the missing date (2 MISMATCH).
+- **Every priced entry re-verified on 2026-10-30.** All six vendor pages were re-read raw (curl and the checker's own
+  fetch, no summarizer). Every rate matched, so the 30 verifiable entries' `fetched_on` (and the deprecation blocks'
+  `checked_on`) move to 2026-10-30, and `vendor_pages` records the new page hashes. No rate changed. The retired
+  `gemini-2.0-flash` and the synthetic local entry are not vendor-verifiable and keep their dates. Live check:
+  `OK: 40 entries audited (2 SKIPPED, 38 VERIFIED)`.
 
 ## [0.10.2] — 2026-10-20
 
