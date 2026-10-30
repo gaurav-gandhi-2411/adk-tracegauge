@@ -9,6 +9,17 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-10-30
+
+### Added
+
+- **`gemini-3.8-flash` is priced.** Google's pricing page lists it ("Our most intelligent Flash model") and the table had
+  no entry, so every call served by it was skipped as an unknown model (found 2026-10-20 with a real call). Standard
+  tier, read from the raw page 2026-10-20T03:12:44Z (sha256 prefix `7ec651e0cd7d8864`): input $0.75 / output $3.75 per
+  1M tokens through 2026-12-31, then $1.50 / $7.50; cached $0.075, then $0.15. The promotional-rate switch is
+  automatic like the other 3.x entries. No prefix pattern is registered on purpose: `gemini-3.8-flash-tts`,
+  `gemini-3.8-live` and the like are different, differently priced models and stay unknown.
+
 ### Fixed
 
 - **The `AgentEvaluator.evaluate()` directionality warning is no longer emitted on google-adk 2.13.0 and later, where
@@ -21,36 +32,6 @@ see `CONTRIBUTING.md`).
 - **`adk-tracegauge quickstart`'s closing hint names a README section that exists.** It said "see README, 'Use with
   agent'", a section the README has not had since 0.2.0; it now names "See what your ADK agent costs". A test checks
   that the named section is a heading in the README.
-
-### Changed
-
-- **The tested google-adk range moves to `>=2.6.0,<2.14.0`**, with a `bare-adk (2.13.0)` CI leg. The four
-  `tests/test_agent_evaluator_integration.py` tests that pinned the old backward verdict now check the verdict of the
-  installed release: the old one below 2.13.0 and the correct one from 2.13.0. The first-call-gap subprocess test is
-  skipped from 2.13.0, where the warning it checks no longer exists. They had turned the daily canary red since
-  2026-10-24 (4 failed on google-adk 2.13.0).
-- **`gpt-5` and `o3` retire on 2026-12-11.** OpenAI's deprecations page lists both for removal on that date
-  (replacement `gpt-5.6-sol`; raw page fetched 2026-10-30T13:01:16Z, sha256 prefix `3fddf4c625d689e4`, section
-  "2026-06-11: GPT-5 and o3 model deprecations"). Both entries now carry the `deprecation` block plus `retired_on`, as
-  `o1` does, so from that day the report marks them as priced at their last published rate. Their rates are unchanged
-  and verified (gpt-5 $1.25 / $10 / cached $0.125, o3 $2 / $8 / $0.5). The weekly vendor check had been red since
-  2026-10-26 on the missing date (2 MISMATCH).
-- **Every priced entry re-verified on 2026-10-30.** All six vendor pages were re-read raw (curl and the checker's own
-  fetch, no summarizer). Every rate matched, so the 30 verifiable entries' `fetched_on` (and the deprecation blocks'
-  `checked_on`) move to 2026-10-30, and `vendor_pages` records the new page hashes. No rate changed. The retired
-  `gemini-2.0-flash` and the synthetic local entry are not vendor-verifiable and keep their dates. Live check:
-  `OK: 40 entries audited (2 SKIPPED, 38 VERIFIED)`.
-
-## [0.10.2] — 2026-10-20
-
-### Added
-
-- **`gemini-3.8-flash` is priced.** Google's pricing page lists it ("Our most intelligent Flash model") and the table had
-  no entry, so every call served by it was skipped as an unknown model (found 2026-10-20 with a real call). Standard
-  tier, read from the raw page 2026-10-20T03:12:44Z (sha256 prefix `7ec651e0cd7d8864`): input $0.75 / output $3.75 per
-  1M tokens through 2026-12-31, then $1.50 / $7.50; cached $0.075, then $0.15. The promotional-rate switch is
-  automatic like the other 3.x entries. No prefix pattern is registered on purpose: `gemini-3.8-flash-tts`,
-  `gemini-3.8-live` and the like are different, differently priced models and stay unknown.
 
 ### Changed
 
@@ -67,8 +48,23 @@ see `CONTRIBUTING.md`).
   were already `gemini-3.8-flash`'s.
 - **Calls served by `gemini-3.8-flash` were skipped and are now priced.** That includes every call sent to the
   `gemini-3.7-flash` alias, whose `model_version` is `gemini-3.8-flash`.
-
-- **The tested google-adk range moves to `>=2.6.0,<2.13.0`** (#129): the daily canary passed on google-adk 2.12.0 and a `bare-adk (2.12.0)` CI leg now exercises it, so the soft "newer than tested" line no longer prints for 2.12.
+- **The tested google-adk range moves to `>=2.6.0,<2.14.0`**, with `bare-adk (2.12.0)` (#129) and
+  `bare-adk (2.13.0)` (#141) CI legs, so the soft "newer than tested" line no longer prints for 2.12 or 2.13. The four
+  `tests/test_agent_evaluator_integration.py` tests that pinned the old backward verdict now check the verdict of the
+  installed release: the old one below 2.13.0 and the correct one from 2.13.0. The first-call-gap subprocess test is
+  skipped from 2.13.0, where the warning it checks no longer exists. They had turned the daily canary red since
+  2026-10-24 (4 failed on google-adk 2.13.0).
+- **`gpt-5` and `o3` retire on 2026-12-11.** OpenAI's deprecations page lists both for removal on that date
+  (replacement `gpt-5.6-sol`; raw page fetched 2026-10-30T13:01:16Z, sha256 prefix `3fddf4c625d689e4`, section
+  "2026-06-11: GPT-5 and o3 model deprecations"). Both entries now carry the `deprecation` block plus `retired_on`, as
+  `o1` does, so from that day the report marks them as priced at their last published rate. Their rates are unchanged
+  and verified (gpt-5 $1.25 / $10 / cached $0.125, o3 $2 / $8 / $0.5). The weekly vendor check had been red since
+  2026-10-26 on the missing date (2 MISMATCH).
+- **Every priced entry re-verified on 2026-10-30.** All six vendor pages were re-read raw (curl and the checker's own
+  fetch, no summarizer). Every rate matched, so the 30 verifiable entries' `fetched_on` (and the deprecation blocks'
+  `checked_on`) move to 2026-10-30, and `vendor_pages` records the new page hashes. No rate changed. The retired
+  `gemini-2.0-flash` and the synthetic local entry are not vendor-verifiable and keep their dates. Live check:
+  `OK: 40 entries audited (2 SKIPPED, 38 VERIFIED)`.
 
 ### Internal
 
