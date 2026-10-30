@@ -9,6 +9,24 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `AgentEvaluator.evaluate()` directionality warning is no longer emitted on google-adk 2.13.0 and later, where
+  it was false.** google-adk 2.13.0 (PyPI 2026-10-23) is the first release with google/adk-python#6739 (commit
+  `5bf7f12`, contained in the `v2.13.0` tag; the published wheel's `agent_evaluator.py` is byte-identical to the tag):
+  `_process_metrics_and_get_failures` now infers each metric's direction from its own `eval_status`, so a $2.80 run
+  correctly FAILS a $0.01 budget and PASSES a $1000 one. The warning told users that verdict was backward "at ANY real
+  threshold" and to never trust it. It now fires only below 2.13.0 (or when the installed version cannot be read), and
+  its text says that upgrading google-adk fixes the problem. README "Known limitations" says the same.
+
+### Changed
+
+- **The tested google-adk range moves to `>=2.6.0,<2.14.0`**, with a `bare-adk (2.13.0)` CI leg. The four
+  `tests/test_agent_evaluator_integration.py` tests that pinned the old backward verdict now check the verdict of the
+  installed release: the old one below 2.13.0 and the correct one from 2.13.0. The first-call-gap subprocess test is
+  skipped from 2.13.0, where the warning it checks no longer exists. They had turned the daily canary red since
+  2026-10-24 (4 failed on google-adk 2.13.0).
+
 ## [0.10.2] — 2026-10-20
 
 ### Added
