@@ -11,14 +11,13 @@ dynamic = ["version"]
 # live in the README's "Also: a real PASS/FAIL cost metric inside adk eval" section.
 description = "See what your Google ADK agent costs: per-invocation token cost in USD, plus a CI cost-regression gate. A model it cannot price is reported as unknown, never guessed."
 authors = [{ name = "Gaurav Gandhi", email = "gaurav.gandhi2411@gmail.com" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"  # 3.10 reached end of life 2026-10-01 (PEP 619); 0.10.x is its last series
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -125,22 +124,13 @@ version = { attr = "adk_tracegauge.__version__" }
 [tool.setuptools.package-data]
 "adk_tracegauge" = ["data/gemini_prices.json", "py.typed"]
 
-[tool.uv]
-# Lock-only (dev/CI environments; the published wheel never sees it). Every patched filelock
-# (4.2.1+) needs Python >= 3.11, so on 3.10 the lock otherwise takes 4.1.0, which six more
-# advisories cover (GHSA ranges starting at 3.32.6, 4.0.0 and 4.1.0) than the 3.32 line does:
-# 17 open Dependabot alerts at 4.1.0 vs 12 below 3.32.6 (counted 2026-10-30). Drop this once
-# 3.10 support goes or filelock ships a 3.10-compatible fix.
-constraint-dependencies = ["filelock<3.32.6; python_version < '3.11'"]
-
 [tool.ruff]
 line-length = 100
-# Matches requires-python's real floor (>=3.10), not a rounded-up convenience value --
-# a higher target-version here would let ruff's pyupgrade rules (UP*) suggest 3.11+-only
-# syntax (e.g. datetime.UTC) that breaks on the 3.10 floor this package claims to support.
-# Found while verifying the CI 3.10-3.13 matrix (W6): ruff previously flagged exactly this
-# on snapshot.py -- see PLAN.md's W6 entry for the full trace.
-target-version = "py310"
+# Matches requires-python's real floor (>=3.11), not a rounded-up convenience value --
+# a higher target-version here would let ruff's pyupgrade rules (UP*) suggest syntax newer
+# than the floor this package claims to support (on the old 3.10 floor that was datetime.UTC
+# on snapshot.py, found while verifying the CI matrix in W6 -- see PLAN.md's W6 entry).
+target-version = "py311"
 src = ["src"]
 
 [tool.ruff.lint]
