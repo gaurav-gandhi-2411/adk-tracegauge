@@ -126,12 +126,11 @@ version = { attr = "adk_tracegauge.__version__" }
 
 [tool.ruff]
 line-length = 100
-# Matches requires-python's real floor (>=3.10), not a rounded-up convenience value --
-# a higher target-version here would let ruff's pyupgrade rules (UP*) suggest 3.11+-only
-# syntax (e.g. datetime.UTC) that breaks on the 3.10 floor this package claims to support.
-# Found while verifying the CI 3.10-3.13 matrix (W6): ruff previously flagged exactly this
-# on snapshot.py -- see PLAN.md's W6 entry for the full trace.
-target-version = "py310"
+# Matches requires-python's real floor (>=3.11), not a rounded-up convenience value --
+# a higher target-version here would let ruff's pyupgrade rules (UP*) suggest syntax newer
+# than the floor this package claims to support (on the old 3.10 floor that was datetime.UTC
+# on snapshot.py, found while verifying the CI matrix in W6 -- see PLAN.md's W6 entry).
+target-version = "py311"
 src = ["src"]
 
 [tool.ruff.lint]

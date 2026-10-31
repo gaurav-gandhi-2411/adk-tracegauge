@@ -151,7 +151,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -491,7 +491,7 @@ def build_snapshot(
 
     return Snapshot(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         records=records,
         skipped=skipped,
         missing=missing,
