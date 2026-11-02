@@ -32,7 +32,11 @@ Vendor pages (verified live 2026-09-20):
   data" table only (the page repeats every model under Batch/Flex/Fast; reading past the Standard
   table silently checks the wrong tier -- a real bug this script's first version had).
 - Google: server-rendered HTML, ``<h2 id="MODEL">`` then a ``pricing-table``; parsed with
-  ``html.parser`` (not regex) so ``&lt;=`` and nested markup survive.
+  ``html.parser`` (not regex) so ``&lt;=`` and nested markup survive. Since 2026-11 (seen
+  2026-11-02) ``ai.google.dev/gemini-api/docs/*`` redirects to ``aistudio.google.com/docs/*``,
+  which ships the page as HTML-escaped Markdoc source (``## Name {% id="MODEL" %}``, then
+  ``{% table %}`` with ``* cell`` items and ``---`` row breaks) and renders it client-side. Both
+  forms are read into the same rows; a page in neither form still parses to nothing (a failure).
 
 0.10.0 verifies more rate classes, each per entry against the raw page:
 - the entry's OWN cached-input rate (``cached_input_usd_per_mtok``), not a global multiplier;
@@ -58,6 +62,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
+from html import unescape as _html_unescape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -71,13 +76,14 @@ _USER_AGENT = "Mozilla/5.0 (compatible; adk-tracegauge-price-vendor-check/1.0)"
 _TIMEOUT_SECONDS = 20
 
 ANTHROPIC_MD_URL = "https://platform.claude.com/docs/en/about-claude/pricing.md"
-GOOGLE_HTML_URL = "https://ai.google.dev/gemini-api/docs/pricing"
+#: The ai.google.dev/gemini-api/docs/* addresses redirect here since 2026-11 (seen 2026-11-02).
+GOOGLE_HTML_URL = "https://aistudio.google.com/docs/pricing"
 OPENAI_MD_URL = "https://developers.openai.com/api/docs/pricing.md"
 OPENAI_DEPRECATIONS_URL = "https://developers.openai.com/api/docs/deprecations.md"
 ANTHROPIC_DEPRECATIONS_URL = (
     "https://platform.claude.com/docs/en/about-claude/model-deprecations.md"
 )
-GOOGLE_DEPRECATIONS_URL = "https://ai.google.dev/gemini-api/docs/deprecations"
+GOOGLE_DEPRECATIONS_URL = "https://aistudio.google.com/docs/deprecations"
 
 #: OpenAI o-series keys: they do not start with "gpt-", so a prefix test alone leaves them
 #: unmapped (UNVERIFIED), which is how a new family silently stays unchecked.
@@ -372,16 +378,97 @@ def _parse_cell_prices(text: str) -> _Cell | None:
     return _Cell(prices[0], storage=storage)  # first price is text/image/video; audio is ignored
 
 
-def parse_google_html(html: str, slug: str) -> GoogleModel | None:
-    """Parses the Standard-tier pricing table after ``<h2 id="{slug}">``. None (a parse failure,
-    not a value) if the slug or the Input/Output rows are missing."""
-    idx = html.find(f'id="{slug}"')
+_MARKDOC_TAG_RE = re.compile(r"\{%.*?%\}", re.S)
+_MARKDOC_TABLE_RE = re.compile(r"\{%\s*table\s*%\}(.*?)\{%\s*/table\s*%\}", re.S)
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def _markdoc_cell(lines: list[str]) -> str:
+    """One cell's text as the HTML page's ``<td>`` text reads: Markdoc tags dropped (``{% sup %}*``
+    keeps its ``*``, as ``<sup>*</sup>`` does), links reduced to their text, backticks removed."""
+    text = _MARKDOC_TAG_RE.sub("", " ".join(lines))
+    text = _MARKDOWN_LINK_RE.sub(r"\1", text).replace("`", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _markdoc_tables(text: str) -> list[list[list[str]]]:
+    """Every ``{% table %}`` in Markdoc source as rows of cell texts. A row is a run of ``* cell``
+    items ended by a ``---`` line; an indented line that is not a new item continues the cell."""
+    tables: list[list[list[str]]] = []
+    for body in _MARKDOC_TABLE_RE.findall(text):
+        rows: list[list[str]] = []
+        for chunk in re.split(r"^\s*---\s*$", body, flags=re.M):
+            cells: list[list[str]] = []
+            for line in chunk.splitlines():
+                s = line.strip()
+                if s == "*" or s.startswith("* "):
+                    cells.append([s[1:].strip()])
+                elif s and cells:
+                    cells[-1].append(s)
+            if cells:
+                rows.append([_markdoc_cell(c) for c in cells])
+        tables.append(rows)
+    return tables
+
+
+def _markdoc_source(page: str) -> str | None:
+    """The page's Markdoc source, unescaped, or None when the page carries none (a plain HTML page,
+    or a page in a third form, which then parses to nothing rather than being guessed at)."""
+    text = _html_unescape(page)
+    return text if _MARKDOC_TABLE_RE.search(text) else None
+
+
+def _markdoc_pricing_rows(page: str, slug: str) -> dict[str, str] | None:
+    """{row label: paid-tier cell} of the Standard-tier table in the ``{% id="{slug}" %}``
+    section of Markdoc source, the same rows ``_GoogleTable`` reads from the HTML page. The section
+    ends at the next ``#``/``##`` heading, so a model without a table never borrows the next one."""
+    text = _markdoc_source(page)
+    if text is None:
+        return None
+    idx = text.find(f'{{% id="{slug}" %}}')
     if idx == -1:
         return None
-    parser = _GoogleTable()
-    parser.feed(html[idx : idx + 12000])
+    end = re.search(r"^#{1,2} ", text[idx:], flags=re.M)
+    section = text[idx : idx + end.start()] if end else text[idx:]
+    standard = re.search(r'\{%\s*tab\s+title="Standard"\s*%\}', section)
+    if standard:
+        section = section[standard.end() :]
+    tables = _markdoc_tables(section)
+    if not tables:
+        return None
+    rows: dict[str, str] = {}
+    for cells in tables[0]:
+        if len(cells) >= 3 and cells[0]:
+            rows.setdefault(cells[0], cells[-1])
+    return rows
+
+
+def _page_rows(page: str) -> list[list[str]]:
+    """Every table row of a page as cell texts: HTML ``<tr>`` rows, else Markdoc table rows."""
+    parser = _HtmlRows()
+    parser.feed(page)
+    if parser.rows:
+        return parser.rows
+    text = _markdoc_source(page)
+    return [row for table in _markdoc_tables(text) for row in table] if text else []
+
+
+def parse_google_html(html: str, slug: str) -> GoogleModel | None:
+    """Parses the Standard-tier pricing table after ``<h2 id="{slug}">`` (HTML page) or after
+    ``{% id="{slug}" %}`` (Markdoc page). None (a parse failure, not a value) if the slug or the
+    Input/Output rows are missing."""
+    idx = html.find(f'id="{slug}"')
+    if idx != -1:
+        parser = _GoogleTable()
+        parser.feed(html[idx : idx + 12000])
+        page_rows: dict[str, str] = parser.rows
+    else:
+        markdoc_rows = _markdoc_pricing_rows(html, slug)
+        if markdoc_rows is None:
+            return None
+        page_rows = markdoc_rows
     cells: dict[str, _Cell] = {}
-    for label, text in parser.rows.items():
+    for label, text in page_rows.items():
         for want in ("Input price", "Output price", "Context caching price"):
             if label.startswith(want):
                 cell = _parse_cell(text)
@@ -391,7 +478,7 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
         return None
     i, o, c = cells["Input price"], cells["Output price"], cells.get("Context caching price")
     grounding = None
-    for label, text in parser.rows.items():
+    for label, text in page_rows.items():
         if label.startswith("Grounding with Google Search"):
             g = _GROUNDING_RE.search(text)
             if g:
@@ -817,10 +904,8 @@ _ROUTES_TO = re.compile(r"automatically routes API requests to (gemini-[\w.\-]+)
 def parse_google_alias_routes(html: str) -> dict[str, str]:
     """{endpoint: model it now routes to}, from rows of Google's deprecations page whose replacement
     cell says 'the endpoint is not shutting down and automatically routes API requests to <model>'."""
-    parser = _HtmlRows()
-    parser.feed(html)
     found: dict[str, str] = {}
-    for cells in parser.rows:
+    for cells in _page_rows(html):
         if not cells or not re.fullmatch(r"gemini-[\w.\-]+", cells[0]):
             continue
         m = _ROUTES_TO.search(" ".join(cells[1:]))
@@ -908,11 +993,9 @@ def parse_anthropic_deprecations(md: str) -> dict[str, date]:
 def parse_google_deprecations(html: str) -> dict[str, date | None]:
     """{exact model name: shutdown date, or None for 'No shutdown date announced'}, read from the
     'Shutdown date' column of every deprecations table (never the release-date column)."""
-    parser = _HtmlRows()
-    parser.feed(html)
     found: dict[str, date | None] = {}
     col: int | None = None
-    for cells in parser.rows:
+    for cells in _page_rows(html):
         if cells and cells[0] == "Model":
             col = next((i for i, c in enumerate(cells) if c.lower().startswith("shutdown")), None)
             continue
