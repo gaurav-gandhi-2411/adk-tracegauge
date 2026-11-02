@@ -60,6 +60,15 @@ see `CONTRIBUTING.md`).
   `o1` does, so from that day the report marks them as priced at their last published rate. Their rates are unchanged
   and verified (gpt-5 $1.25 / $10 / cached $0.125, o3 $2 / $8 / $0.5). The weekly vendor check had been red since
   2026-10-26 on the missing date (2 MISMATCH).
+- **`gemini-2.5-pro` and `gemini-2.5-flash` shut down on 2026-12-01.** Google's deprecations page (read raw
+  2026-11-02T18:46Z, six fetches, all the same text) now lists both with that shutdown date: "Effective December 1,
+  2026, all API requests to `gemini-2.5-pro` will automatically route to `gemini-3.8-flash` and be billed at Gemini
+  3.8 Flash rates", and `gemini-2.5-flash` the same with `gemini-3.5-flash-lite`. Both entries now carry the
+  `deprecation` block (replacement = the routed model). Their rates are unchanged and verified. They are **not**
+  given `retired_on`: a retired entry is priced at its last rate, while Google bills these at the successor's rate,
+  so how calls after 2026-12-01 are priced is a separate decision. Until it is made, the vendor check fails from
+  2026-12-02 ("shutdown has passed and the entry is not marked retired"). `gemini-2.5-flash-lite` is "not
+  deprecated" on the same page and is unchanged.
 - **Every priced entry re-verified on 2026-10-30.** All six vendor pages were re-read raw (curl and the checker's own
   fetch, no summarizer). Every rate matched, so the 30 verifiable entries' `fetched_on` (and the deprecation blocks'
   `checked_on`) move to 2026-10-30, and `vendor_pages` records the new page hashes. No rate changed. The retired
