@@ -70,7 +70,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from adk_tracegauge._pricing import is_retired, load_gemini_prices  # noqa: E402
+from adk_tracegauge._pricing import is_retired, is_routed, load_gemini_prices  # noqa: E402
 
 _USER_AGENT = "Mozilla/5.0 (compatible; adk-tracegauge-price-vendor-check/1.0)"
 _TIMEOUT_SECONDS = 20
@@ -597,7 +597,7 @@ def audit(
             rows.append(AuditRow(key, "SKIPPED", "-", "-", [reason]))
             continue
         retired_by_date = is_retired(entry, today)
-        if "routed_to" in entry:
+        if is_routed(entry, today):
             rows.append(_routed_row(key, entry, models, google_routes))
             continue
         if not isinstance(entry.get("input_usd_per_mtok"), (int, float)):
@@ -707,7 +707,39 @@ def audit(
                     ],
                 )
             )
+    for row in rows:
+        entry = models.get(row.key, {})
+        if "routed_to" in entry and not is_routed(entry, today):
+            _check_pending_route(row, entry, google_routes)
     return rows
+
+
+def _check_pending_route(
+    row: AuditRow, entry: dict[str, object], google_routes: dict[str, str] | None
+) -> None:
+    """An entry still priced at its own rates whose route starts on a later ``routed_from`` date. Its
+    rates were verified above; the announced route is a claim too, so the deprecations page must
+    still name the same target (the date is compared in audit_deprecations)."""
+    target = str(entry["routed_to"])
+    when = entry.get("routed_from")
+    published = None if google_routes is None else google_routes.get(row.key)
+    if google_routes is None:
+        row.status = "UNVERIFIED"
+        row.detail.append(
+            f"routes to '{target}' from {when}: Google deprecations page not fetched, so the route cannot be checked"
+        )
+    elif published is None:
+        row.status = "UNVERIFIED"
+        row.detail.append(
+            f"routes to '{target}' from {when}, but Google's deprecations page no longer announces a route for '{row.key}'"
+        )
+    elif published != target:
+        row.status = "MISMATCH"
+        row.detail.append(
+            f"the table routes '{row.key}' to '{target}' from {when} but Google now says '{published}'"
+        )
+    elif row.status == "VERIFIED":
+        row.detail.append(f"own rates until {when}; Google says it then routes to '{target}'")
 
 
 def _audio_checks(row: AuditRow, entry: dict[str, object], model: GoogleModel) -> None:
@@ -899,18 +931,30 @@ def _routed_row(
 
 
 _ROUTES_TO = re.compile(r"automatically routes API requests to (gemini-[\w.\-]+)")
+# The announced form (2026-11-02, gemini-2.5-pro/-flash): "effective December 1, 2026, API requests
+# to gemini-2.5-pro will automatically route to gemini-3.8-flash". The date itself is the row's
+# Shutdown column, which audit_deprecations compares with the entry's routed_from.
+_WILL_ROUTE_TO = re.compile(
+    r"API requests to (gemini-[\w.\-]+) will automatically route to (gemini-[\w.\-]+)"
+)
 
 
 def parse_google_alias_routes(html: str) -> dict[str, str]:
-    """{endpoint: model it now routes to}, from rows of Google's deprecations page whose replacement
-    cell says 'the endpoint is not shutting down and automatically routes API requests to <model>'."""
+    """{endpoint: model it routes to}, from rows of Google's deprecations page whose replacement cell
+    says 'the endpoint is not shutting down and automatically routes API requests to <model>' (routed
+    now) or 'API requests to <endpoint> will automatically route to <model>' (announced for a date)."""
     found: dict[str, str] = {}
     for cells in _page_rows(html):
         if not cells or not re.fullmatch(r"gemini-[\w.\-]+", cells[0]):
             continue
-        m = _ROUTES_TO.search(" ".join(cells[1:]))
+        text = " ".join(cells[1:])
+        m = _ROUTES_TO.search(text)
         if m:
-            found.setdefault(cells[0], m.group(1))
+            found.setdefault(cells[0], m.group(1).rstrip("."))
+            continue
+        m = _WILL_ROUTE_TO.search(text)
+        if m and m.group(1).rstrip(".") == cells[0]:
+            found.setdefault(cells[0], m.group(2).rstrip("."))
     return found
 
 
@@ -1067,13 +1111,24 @@ def audit_deprecations(
         elif ours != listed.isoformat():
             row.status = "MISMATCH"
             row.detail.append(f"shutdown_on: ours {ours} vs vendor {listed.isoformat()}")
-        if listed is not None and listed < today and not retired:
+        routed_from = entry.get("routed_from")
+        if listed is not None and routed_from and str(routed_from) != listed.isoformat():
+            row.status = "MISMATCH"
+            row.detail.append(f"routed_from: ours {routed_from} vs vendor {listed.isoformat()}")
+        # A routed entry (routed_to, routed_from arrived) is the decided end state for a shutdown the
+        # vendor replaces with a route: calls are priced at the target's rates, nothing to retire.
+        routed = is_routed(entry, today)
+        if listed is not None and listed < today and not retired and not routed:
             row.status = "MISMATCH"
             row.detail.append(
                 f"vendor shutdown {listed.isoformat()} has passed and the entry is not marked "
                 "retired -- mark it retired (retired/retired_on/retired_source)"
             )
-        if row.status == "VERIFIED":
+        if row.status == "VERIFIED" and routed and listed is not None and listed < today:
+            row.detail.append(
+                f"shutdown {ours} has passed, listed by {vendor_name}; routed to '{entry['routed_to']}'"
+            )
+        elif row.status == "VERIFIED":
             row.detail.append(f"shutdown {ours}, listed by {vendor_name}")
         rows.append(row)
     return rows
