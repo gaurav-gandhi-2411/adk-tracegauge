@@ -384,8 +384,8 @@ def effective_prices(prices: dict[str, Any] | None = None) -> dict[str, Any]:
 
     effective_models: dict[str, Any] = {}
     for model_key, entry in prices["models"].items():
-        if "routed_to" in entry:
-            # A routed alias has no rates of its own; resolve_model hands out its target's entry.
+        if is_routed(entry):
+            # A routed alias has no rates in use; resolve_model hands out its target's entry.
             effective_models[model_key] = dict(entry)
             continue
         input_rate, output_rate, _, _ = _effective_rates(entry)
@@ -535,10 +535,11 @@ def _resolve_entry(model_key: str, models: dict[str, Any]) -> ResolvedModel:
     A routed alias (an endpoint Google keeps alive but no longer prices, and serves with another model)
     carries no rates; it resolves to its target's entry and rates, and the result's ``model_key`` is the
     TARGET's, so everything downstream (the cost arithmetic, the report) sees the model that served the call.
-    A target that is itself an alias is a table error, not something to chase."""
+    An entry whose route starts on a later ``routed_from`` date is priced at its own rates until then
+    (see ``is_routed``). A target that is itself an alias is a table error, not something to chase."""
     entry = models[model_key]
     target = entry.get("routed_to")
-    if target is None:
+    if target is None or not is_routed(entry):
         return _entry_to_resolved(model_key, entry)
     routed = models[target]
     if "routed_to" in routed:
@@ -630,6 +631,26 @@ def is_retired(entry: dict[str, Any], today: date | None = None) -> bool:
         return False
 
 
+def is_routed(entry: dict[str, Any], today: date | None = None) -> bool:
+    """True when the entry is a routed alias on ``today``: it has ``routed_to``, and either no
+    ``routed_from`` (routed already, like gemini-3.5-flash) or a ``routed_from`` date that has arrived.
+
+    ``routed_from`` exists for a route the vendor has announced for a future day (gemini-2.5-pro and
+    gemini-2.5-flash from 2026-12-01): until then the entry keeps its own verified rates, from that day
+    a call resolves to the target and is priced at the target's rates, without a table edit.
+    An unparseable ``routed_from`` is NOT routed, so the entry keeps its own rates and stays under
+    verification; tests/test_routed_aliases.py requires every ``routed_from`` in the table to parse."""
+    if "routed_to" not in entry:
+        return False
+    raw = entry.get("routed_from")
+    if not raw:
+        return True
+    try:
+        return date.fromisoformat(str(raw)) <= (today or _today())
+    except ValueError:
+        return False
+
+
 __all__ = [
     "ASSUME_LOCAL_ENV_VAR",
     "LOCAL_MODEL_KEY",
@@ -640,6 +661,7 @@ __all__ = [
     "is_local_model",
     "is_local_model_asserted",
     "is_retired",
+    "is_routed",
     "known_model_keys",
     "load_gemini_prices",
     "resolve_model",
