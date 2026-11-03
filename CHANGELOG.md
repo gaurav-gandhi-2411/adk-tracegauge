@@ -92,6 +92,13 @@ see `CONTRIBUTING.md`).
   model; from that date it verifies the route. `routed_from` must equal the shutdown date Google lists, and a routed
   entry is not flagged by the "shutdown has passed" rule. Live run with "today" frozen at 2026-11-03, 11-30, 12-01 and
   12-02: `OK: 42 entries audited (6 SKIPPED, 36 VERIFIED)` each time.
+- The weekly `Price table freshness` workflow gains a `refresh-fetched-on` job
+  (`scripts/refresh_price_fetched_on.py`). It re-runs the live vendor audit and opens a PR that moves `fetched_on` to
+  that day for every entry that re-verified, plus the `vendor_pages` hashes when the whole audit is clean. It never
+  changes a rate: a MISMATCH or UNVERIFIED entry keeps its date and is listed in the PR body. Why: the release gate
+  allows a `fetched_on` at most 30 days old, so with every entry fetched 2026-10-30 releases (and the test suite)
+  would have failed from 2026-11-30 with no price changed. The workflow now declares `permissions: {}` at the top and
+  `contents: read` on the audit job; only the new job can write (`contents`, `pull-requests`).
 
 ## [0.10.1] — 2026-10-08
 
