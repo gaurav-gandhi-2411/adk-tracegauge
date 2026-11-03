@@ -1147,13 +1147,24 @@ def _print_table(rows: list[AuditRow]) -> None:
             print(f"{'':<50} vendor: {r.vendor}")
 
 
-def main() -> int:
+def collect() -> tuple[list[AuditRow], list[str], dict[str, str]]:
+    """Fetch every vendor page and audit the whole table: (rows, fetch/parse errors, page bodies).
+
+    ``bodies`` maps each URL that was fetched to the text the audit read (parsed or not). The weekly
+    ``fetched_on`` refresh (scripts/refresh_price_fetched_on.py) hashes these, so the hash it records
+    is of the exact page this audit checked."""
     prices = load_gemini_prices()
     errors: list[str] = []
+    bodies: dict[str, str] = {}
+
+    def get(url: str) -> str:
+        body = _fetch(url)
+        bodies[url] = body
+        return body
 
     def fetch_parse(url: str, parse, what: str):  # type: ignore[no-untyped-def]
         try:
-            body = _fetch(url)
+            body = get(url)
             parsed = parse(body)
             if not parsed:
                 raise FetchError(f"{url}: {what} table not found")
@@ -1165,14 +1176,14 @@ def main() -> int:
     anthropic = fetch_parse(ANTHROPIC_MD_URL, parse_anthropic_markdown, "'## Model pricing'")
     openai = fetch_parse(OPENAI_MD_URL, parse_openai_markdown, "'Standard pricing data'")
     try:
-        google_html: str | None = _fetch(GOOGLE_HTML_URL)
+        google_html: str | None = get(GOOGLE_HTML_URL)
     except FetchError as e:
         errors.append(str(e))
         google_html = None
 
     try:
         google_routes: dict[str, str] | None = parse_google_alias_routes(
-            _fetch(GOOGLE_DEPRECATIONS_URL)
+            get(GOOGLE_DEPRECATIONS_URL)
         )
     except FetchError:
         google_routes = (
@@ -1182,7 +1193,7 @@ def main() -> int:
 
     def deprecations(url: str, parse, what: str):  # type: ignore[no-untyped-def]
         try:
-            body = _fetch(url)
+            body = get(url)
             parsed = parse(body)
             if not parsed:
                 raise FetchError(f"{url}: {what} not found")
@@ -1199,6 +1210,11 @@ def main() -> int:
         ),
         deprecations(GOOGLE_DEPRECATIONS_URL, parse_google_deprecations, "model rows"),
     )
+    return rows, errors, bodies
+
+
+def main() -> int:
+    rows, errors, _ = collect()
     _print_table(rows)
 
     counts: dict[str, int] = {}
