@@ -188,22 +188,37 @@ def test_an_edit_that_would_touch_anything_else_is_refused():
 
 
 def test_on_the_real_table_a_clean_audit_moves_the_release_gate_30_days_out():
+    # The refresh day is derived from the table, not fixed: a fixed day stops testing anything once
+    # a refresh dates the table at or after it (found on the first bot PR, #158).
     text = PRICES_PATH.read_text(encoding="utf-8")
     prices = json.loads(text)
+    latest = max(date.fromisoformat(e["fetched_on"]) for e in prices["models"].values())
+    day = date.fromordinal(latest.toordinal() + 7)
     rows = [AuditRow(k, "VERIFIED", "-", "-") for k in prices["models"]]
     bodies = {url: f"page {url}" for url in PAGE_FETCH_URL.values()}
-    plan = make_plan(prices, rows, [], bodies, TODAY)
+    plan = make_plan(prices, rows, [], bodies, day)
+    assert plan.refreshed  # something is planned, so the assertions below test the refresh
     got = json.loads(apply_plan(text, plan, AT))
-    last_ok = date.fromordinal(TODAY.toordinal() + RELEASE_MAX_AGE_DAYS)
+    last_ok = date.fromordinal(day.toordinal() + RELEASE_MAX_AGE_DAYS)
     after = date.fromordinal(last_ok.toordinal() + 1)
     assert _check_staleness(got["models"], last_ok, RELEASE_MAX_AGE_DAYS) == []
     assert _check_staleness(got["models"], after, RELEASE_MAX_AGE_DAYS) != []
 
 
-def test_main_re_runs_the_audit_after_a_fetch_error(tmp_path, monkeypatch):
+@pytest.fixture
+def fixture_table(tmp_path, monkeypatch):
+    """main() pointed at a copy of the fixture (fetched_on 2026-10-30, always in the past), so its
+    outcome does not depend on the real table's dates or on today's date."""
+    copy_path = tmp_path / "prices.json"
+    copy_path.write_text(_text(), encoding="utf-8")
+    monkeypatch.setattr("scripts.refresh_price_fetched_on.PRICES_PATH", copy_path)
+    rows = _rows()
+    return copy_path, rows
+
+
+def test_main_re_runs_the_audit_after_a_fetch_error(tmp_path, monkeypatch, fixture_table):
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
-    prices = json.loads(PRICES_PATH.read_text(encoding="utf-8"))
-    rows = [AuditRow(k, "VERIFIED", "-", "-") for k in prices["models"]]
+    _, rows = fixture_table
     calls = [(rows, ["https://x: timed out after 20s"], {}), (rows, [], {})]
     with patch("scripts.refresh_price_fetched_on.collect", side_effect=calls) as fake:
         assert main(["--body-file", str(tmp_path / "body.md")]) == 0
@@ -211,14 +226,13 @@ def test_main_re_runs_the_audit_after_a_fetch_error(tmp_path, monkeypatch):
     assert "COULD NOT FETCH" not in (tmp_path / "body.md").read_text(encoding="utf-8")
 
 
-def test_main_dry_run_writes_nothing_and_emits_outputs(tmp_path, monkeypatch):
+def test_main_dry_run_writes_nothing_and_emits_outputs(tmp_path, monkeypatch, fixture_table):
     out = tmp_path / "gh_output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    before = PRICES_PATH.read_bytes()
-    prices = json.loads(PRICES_PATH.read_text(encoding="utf-8"))
-    rows = [AuditRow(k, "VERIFIED", "-", "-") for k in prices["models"]]
+    copy_path, rows = fixture_table
+    before, real_before = copy_path.read_bytes(), PRICES_PATH.read_bytes()
     with patch("scripts.refresh_price_fetched_on.collect", return_value=(rows, [], {})):
         assert main(["--body-file", str(tmp_path / "body.md")]) == 0
-    assert PRICES_PATH.read_bytes() == before
-    assert "changed=true" in out.read_text()
+    assert copy_path.read_bytes() == before and PRICES_PATH.read_bytes() == real_before
+    assert "changed=true" in out.read_text() and "refreshed=3" in out.read_text()
     assert "## NOT updated (needs a human)" in (tmp_path / "body.md").read_text(encoding="utf-8")
