@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from scripts.check_price_freshness import RELEASE_MAX_AGE_DAYS, _check_staleness
@@ -30,8 +31,10 @@ from scripts.refresh_price_fetched_on import (
     PRICES_PATH,
     RefreshError,
     apply_plan,
+    main,
     make_plan,
     page_hash,
+    render_body,
 )
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "price_refresh_table.json"
@@ -82,6 +85,9 @@ def test_a_mismatch_keeps_its_date_is_reported_and_freezes_the_page_hashes():
     assert "gpt-5.6-sol" not in plan.refreshed
     assert [r.key for r in plan.held] == ["gpt-5.6-sol"]
     assert plan.page_hashes is None and "not clean" in plan.page_hash_note
+    body = render_body(plan, prices)
+    assert "**MISMATCH** `gpt-5.6-sol`" in body and "ours: ours" in body
+    assert "NOT auto-updated" in body and "No rate is changed by this PR" in body
 
 
 def test_unverified_and_a_failing_deprecation_row_are_not_refreshed():
@@ -109,7 +115,7 @@ def test_a_fetch_error_freezes_hashes_and_is_reported():
     prices = json.loads(_text())
     plan = make_plan(prices, _rows(), ["https://x: HTTP 500"], BODIES, TODAY)
     assert plan.page_hashes is None
-    assert plan.errors == ["https://x: HTTP 500"]
+    assert "COULD NOT FETCH/PARSE: https://x: HTTP 500" in render_body(plan, prices)
 
 
 def test_a_vendor_page_with_no_fetched_body_leaves_the_hashes_alone():
@@ -192,3 +198,27 @@ def test_on_the_real_table_a_clean_audit_moves_the_release_gate_30_days_out():
     after = date.fromordinal(last_ok.toordinal() + 1)
     assert _check_staleness(got["models"], last_ok, RELEASE_MAX_AGE_DAYS) == []
     assert _check_staleness(got["models"], after, RELEASE_MAX_AGE_DAYS) != []
+
+
+def test_main_re_runs_the_audit_after_a_fetch_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    prices = json.loads(PRICES_PATH.read_text(encoding="utf-8"))
+    rows = [AuditRow(k, "VERIFIED", "-", "-") for k in prices["models"]]
+    calls = [(rows, ["https://x: timed out after 20s"], {}), (rows, [], {})]
+    with patch("scripts.refresh_price_fetched_on.collect", side_effect=calls) as fake:
+        assert main(["--body-file", str(tmp_path / "body.md")]) == 0
+    assert fake.call_count == 2
+    assert "COULD NOT FETCH" not in (tmp_path / "body.md").read_text(encoding="utf-8")
+
+
+def test_main_dry_run_writes_nothing_and_emits_outputs(tmp_path, monkeypatch):
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    before = PRICES_PATH.read_bytes()
+    prices = json.loads(PRICES_PATH.read_text(encoding="utf-8"))
+    rows = [AuditRow(k, "VERIFIED", "-", "-") for k in prices["models"]]
+    with patch("scripts.refresh_price_fetched_on.collect", return_value=(rows, [], {})):
+        assert main(["--body-file", str(tmp_path / "body.md")]) == 0
+    assert PRICES_PATH.read_bytes() == before
+    assert "changed=true" in out.read_text()
+    assert "## NOT updated (needs a human)" in (tmp_path / "body.md").read_text(encoding="utf-8")
