@@ -14,6 +14,7 @@ is skipped silently.
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import date
 from unittest.mock import patch
 
@@ -784,3 +785,232 @@ def test_a_route_to_a_missing_or_aliased_target_is_a_mismatch():
         extra={"gemini-x": {"routed_to": "gemini-3.6-flash"}},
     )
     assert chained.status == "MISMATCH"
+
+
+# --- Google's Markdoc pages (aistudio.google.com/docs, seen 2026-11-02) ------------------------
+# The ai.google.dev pages now redirect to aistudio.google.com/docs, which ships HTML-escaped
+# Markdoc source and renders it client-side. With only the HTML parser, every Gemini row went
+# UNVERIFIED ("slug not found") and every Gemini deprecation row "page not fetched", which fails
+# the weekly check and release.yml's preflight-prices. Excerpts below keep the live escaping
+# (&quot;, &lt;=, &gt;), {% sup %} tags, links, backticks and the Standard tab before Batch.
+
+_GOOGLE_MARKDOC = """<div>
+## Gemini 2.5 Pro  {% id=&quot;gemini-2.5-pro&quot; %}
+  *[`gemini-2.5-pro`](/docs/models/gemini-2.5-pro)*
+{% tabs %}
+  {% tab title=&quot;Standard&quot; %}
+  {% table %}
+  * Feature
+  * Free Tier
+  * Paid Tier, per 1M tokens in USD
+  ---
+  * Input price
+  * Free of charge
+  * $1.25, prompts &lt;= 200k tokens
+  $2.50, prompts &gt; 200k tokens
+  ---
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $10.00, prompts &lt;= 200k tokens
+  $15.00, prompts &gt; 200k
+  ---
+  * Context caching price
+  * Not available
+  * $0.125, prompts &lt;= 200k tokens
+  $0.25, prompts &gt; 200k
+  $4.50 / 1,000,000 tokens per hour (storage price)
+  ---
+  * Grounding with Google Search
+  * Not available
+  * 1,500 RPD (free), then $35 / 1,000 grounded prompts
+  ---
+  * Used to improve our products
+  * [Yes](/docs/terms)
+  * [No](/docs/terms)
+  {% /table %}
+  {% /tab %}
+  {% tab title=&quot;Batch&quot; %}
+  {% table %}
+  * Input price
+  * Not available
+  * $0.625, prompts &lt;= 200k tokens
+  ---
+  * Output price (including thinking tokens)
+  * Not available
+  * $5.00, prompts &lt;= 200k tokens
+  {% /table %}
+  {% /tab %}
+{% /tabs %}
+
+## Gemini Without Table  {% id=&quot;gemini-without-table&quot; %}
+A model whose section has prose only.
+
+## Gemini 2.5 Flash-Lite  {% id=&quot;gemini-2.5-flash-lite&quot; %}
+{% table %}
+  * Input price (text, image, video)
+  * Free of charge
+  * $0.10 (text / image / video)
+  $0.30 (audio)
+  ---
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $0.40
+  ---
+  * Context caching price
+  * Not available
+  * $0.01 (text / image / video)
+  $0.03 (audio)
+  $1.00 / 1,000,000 tokens per hour (storage price)
+{% /table %}
+
+## Gemini 3.6 Flash  {% id=&quot;gemini-3.6-flash&quot; %}
+{% table %}
+  * Input price
+  * Free of charge
+  * $0.75 through December 31, 2026.
+  $1.50 starting January 1, 2027.
+  ---
+  * Output price (including thinking tokens)
+  * Free of charge
+  * $3.75 through December 31, 2026.
+  $7.50 starting January 1, 2027.
+  ---
+  * Context caching price
+  * Free of charge
+  * $0.075 through December 31, 2026.
+  $0.15 starting January 1, 2027.
+  $0.50 / 1,000,000 tokens per hour (storage price) through December 31, 2026.
+  $1.00 / 1,000,000 tokens per hour (storage price) starting January 1, 2027.
+  ---
+  * Grounding with Google Search{% sup %}*{% /sup %}
+  * Not available{% sup %}**{% /sup %}
+  * 5,000 free search requests per month (shared across all Gemini 3 and newer models),
+  then $14 per 1,000 requests (subject to a [daily cap](/docs/pricing#pricing-for-tools)).
+{% /table %}
+
+## Gemini No Cache  {% id=&quot;gemini-no-cache&quot; %}
+{% table %}
+  * Input price
+  * -
+  * $1.00
+  ---
+  * Output price
+  * -
+  * $2.00
+  ---
+  * Context caching price
+  * -
+  * Not available
+{% /table %}
+</div>"""
+
+_GOOGLE_DEP_MARKDOC = """<div>
+{% table %}
+  * Model
+  * Release date
+  * Shutdown date
+  * Recommended replacement
+  ---
+  * `gemini-3.7-flash`
+  * August 13, 2026
+  * N/A
+  * `gemini-3.6-flash` (not available to select in Google AI Studio; the endpoint is not shutting down and automatically routes API requests to `gemini-3.6-flash`)
+  ---
+  * `gemini-2.5-pro`
+  * June 17, 2025
+  * No shutdown date announced
+  *
+  ---
+  * `gemini-3.1-flash-lite`
+  * May 7, 2026
+  * May 7, 2027
+  * `gemini-3.5-flash-lite`
+{% /table %}
+</div>"""
+
+
+@pytest.mark.parametrize(
+    "slug", ["gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-3.6-flash", "gemini-no-cache"]
+)
+def test_google_markdoc_page_parses_to_the_same_model_as_the_html_page(slug):
+    # Every rate class the HTML path reads (standard, long-context tier, promo window and
+    # post-promo rate, storage, audio, image/video split) must come out identical, so nothing the
+    # audit compares depends on which form Google served. Grounding is compared in its own test:
+    # the HTML excerpt has no grounding row and this one does.
+    html_model = parse_google_html(_GOOGLE_HTML, slug)
+    markdoc_model = parse_google_html(_GOOGLE_MARKDOC, slug)
+    assert html_model is not None and markdoc_model is not None
+    assert replace(markdoc_model, grounding=None) == html_model
+
+
+def test_google_markdoc_reads_the_standard_tab_not_batch():
+    model = parse_google_html(_GOOGLE_MARKDOC, "gemini-2.5-pro")
+    assert model is not None
+    assert model.standard == Rate(1.25, 10.0, 0.125)  # NOT Batch's $0.625 / $5.00
+
+
+def test_google_markdoc_grounding_rows_keep_their_footnote_and_allowance():
+    pro = parse_google_html(_GOOGLE_MARKDOC, "gemini-2.5-pro")
+    flash = parse_google_html(_GOOGLE_MARKDOC, "gemini-3.6-flash")
+    assert pro is not None and pro.grounding == ("per_grounded_prompt", 35.0, "1,500")
+    assert flash is not None and flash.grounding == ("per_search_query", 14.0, "5,000")
+
+
+def test_google_markdoc_section_without_a_table_does_not_borrow_the_next_models_table():
+    assert parse_google_html(_GOOGLE_MARKDOC, "gemini-without-table") is None
+    assert parse_google_html(_GOOGLE_MARKDOC, "gemini-2.5-flash-lite") is not None
+
+
+def test_google_markdoc_missing_slug_or_unknown_page_form_returns_none():
+    assert parse_google_html(_GOOGLE_MARKDOC, "gemini-does-not-exist") is None
+    # a page in a third form (neither <h2 id> nor Markdoc tables) is a parse failure, not a guess
+    assert (
+        parse_google_html("<div id='app'></div><script>render()</script>", "gemini-2.5-pro") is None
+    )
+    assert parse_google_deprecations("<div id='app'></div>") == {}
+    assert parse_google_alias_routes("<div id='app'></div>") == {}
+
+
+def test_google_markdoc_deprecations_and_routes_match_the_html_page():
+    assert parse_google_deprecations(_GOOGLE_DEP_MARKDOC) == {
+        "gemini-3.7-flash": None,
+        "gemini-2.5-pro": None,
+        "gemini-3.1-flash-lite": date(2027, 5, 7),
+    }
+    assert parse_google_alias_routes(_GOOGLE_DEP_MARKDOC) == parse_google_alias_routes(
+        _GOOGLE_DEP_ALIAS_HTML
+    )
+
+
+def _run_main_on_markdoc(prices, capsys):
+    pages = {GOOGLE_HTML_URL: _GOOGLE_MARKDOC, GOOGLE_DEPRECATIONS_URL: _GOOGLE_DEP_MARKDOC}
+    with (
+        patch(
+            "scripts.check_price_table_vs_vendor._fetch",
+            side_effect=lambda url: pages.get(url) or _fake_fetch(url),
+        ),
+        patch("scripts.check_price_table_vs_vendor.load_gemini_prices", return_value=prices),
+    ):
+        code = main()
+    captured = capsys.readouterr()
+    return code, captured.out + captured.err  # the table is on stdout, the verdict lines on stderr
+
+
+def test_main_is_green_when_google_serves_markdoc(capsys):
+    prices = copy.deepcopy(_PRICES)
+    per_prompt = {"unit": "per_grounded_prompt", "usd_per_1k": 35.0, "free_allowance": "1,500 RPD"}
+    per_query = {"unit": "per_search_query", "usd_per_1k": 14.0, "free_allowance": "5,000/month"}
+    for key in ("gemini-2.5-pro", "gemini-2.5-pro-long-context"):
+        prices["models"][key]["grounding"] = {"google_search": per_prompt}
+    prices["models"]["gemini-3.6-flash"]["grounding"] = {"google_search": per_query}
+    code, out = _run_main_on_markdoc(prices, capsys)
+    assert code == 0, out
+    assert "OK: 9 entries audited (2 SKIPPED, 7 VERIFIED)" in out
+
+
+def test_main_catches_a_real_mismatch_on_a_markdoc_page(capsys):
+    # The Markdoc path feeds the same audit: grounding the page lists and the entry lacks still
+    # fails, so a green run on Markdoc is not an artefact of rows being silently dropped.
+    code, out = _run_main_on_markdoc(_PRICES, capsys)
+    assert code == 1
+    assert "gemini-3.6-flash: grounding: page lists $14/1k (per_search_query)" in out
