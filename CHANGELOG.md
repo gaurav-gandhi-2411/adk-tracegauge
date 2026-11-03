@@ -64,11 +64,17 @@ see `CONTRIBUTING.md`).
   2026-11-02T18:46Z, six fetches, all the same text) now lists both with that shutdown date: "Effective December 1,
   2026, all API requests to `gemini-2.5-pro` will automatically route to `gemini-3.8-flash` and be billed at Gemini
   3.8 Flash rates", and `gemini-2.5-flash` the same with `gemini-3.5-flash-lite`. Both entries now carry the
-  `deprecation` block (replacement = the routed model). Their rates are unchanged and verified. They are **not**
-  given `retired_on`: a retired entry is priced at its last rate, while Google bills these at the successor's rate,
-  so how calls after 2026-12-01 are priced is a separate decision. Until it is made, the vendor check fails from
-  2026-12-02 ("shutdown has passed and the entry is not marked retired"). `gemini-2.5-flash-lite` is "not
-  deprecated" on the same page and is unchanged.
+  `deprecation` block (replacement = the routed model). Their rates are unchanged and verified.
+- **From 2026-12-01, `gemini-2.5-pro` and `gemini-2.5-flash` are priced as routed aliases of their successors.**
+  Each entry now says `routed_to` (`gemini-3.8-flash` / `gemini-3.5-flash-lite`) and a new `routed_from: 2026-12-01`.
+  Until 2026-11-30 a call is priced at the entry's own verified rates, as before (`gemini-2.5-pro` keeps its >200k
+  long-context tier). From 2026-12-01 the model resolves to the successor and is priced at its rates, the way
+  `gemini-3.5-flash` and `gemini-3.7-flash` already are. The switch is the date itself, with no table edit. They
+  are not given `retired_on`, which would keep pricing later calls at their own last rates while Google bills the
+  successor's. For `gemini-2.5-flash` nothing changes in text-token cost, because `gemini-3.5-flash-lite` has the
+  same rates ($0.30 / $2.50, cached $0.03); `gemini-2.5-pro` calls drop from $1.25 / $10 to `gemini-3.8-flash`'s
+  rates (promotional until 2026-12-31). An entry with a `routed_to` and no `routed_from` behaves exactly as before.
+  `gemini-2.5-flash-lite` is "not deprecated" on the same page and is unchanged.
 - **Every priced entry re-verified on 2026-10-30.** All six vendor pages were re-read raw (curl and the checker's own
   fetch, no summarizer). Every rate matched, so the 30 verifiable entries' `fetched_on` (and the deprecation blocks'
   `checked_on`) move to 2026-10-30, and `vendor_pages` records the new page hashes. No rate changed. The retired
@@ -81,6 +87,11 @@ see `CONTRIBUTING.md`).
   Google's deprecations page still says the endpoint routes to that model, and compares any priced entry whose
   pricing section has disappeared with the model Google routes it to. A live run reads
   `OK: 38 entries audited (2 SKIPPED, 36 VERIFIED)`.
+- The vendor check also reads Google's announced form ("API requests to X will automatically route to Y"). Before
+  an entry's `routed_from` date it verifies the entry's own rates *and* that the announced route still names the same
+  model; from that date it verifies the route. `routed_from` must equal the shutdown date Google lists, and a routed
+  entry is not flagged by the "shutdown has passed" rule. Live run with "today" frozen at 2026-11-03, 11-30, 12-01 and
+  12-02: `OK: 42 entries audited (6 SKIPPED, 36 VERIFIED)` each time.
 
 ## [0.10.1] — 2026-10-08
 

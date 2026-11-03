@@ -78,31 +78,47 @@ def test_gpt_5_and_o3_retire_on_their_2026_12_11_shutdown():
         assert is_retired(entry, shutdown) is True
 
 
-def test_gemini_2_5_pro_and_flash_record_the_2026_12_01_shutdown_but_are_not_retired():
-    """Google's deprecations page (2026-11-02) lists both for 2026-12-01, after which their API
-    requests route to the replacement and are billed at ITS rate. retired_on would price them at
-    their own last rate instead, so it is deliberately absent until that pricing is decided; the
-    vendor check's passed-shutdown rule then fails from 2026-12-02 instead of passing silently."""
+def test_gemini_2_5_pro_and_flash_are_routed_from_their_2026_12_01_shutdown_not_retired():
+    """Google's deprecations page lists both for 2026-12-01, after which their API requests route to
+    the replacement and are billed at ITS rate. retired_on would price them at their own last rate, so
+    they are routed aliases from that date instead (GG decision 2026-11-03; tests/test_routed_from_date.py
+    covers the pricing). The passed-shutdown rule accepts a routed entry, so the check stays green."""
     models = load_gemini_prices()["models"]
     expected = {"gemini-2.5-pro": "gemini-3.8-flash", "gemini-2.5-flash": "gemini-3.5-flash-lite"}
     for key, successor in expected.items():
         entry = models[key]
-        assert entry["deprecation"]["shutdown_on"] == "2026-12-01", key
-        assert entry["deprecation"]["replacement"] == successor, key
+        assert entry["deprecation"]["shutdown_on"] == entry["routed_from"] == "2026-12-01", key
+        assert entry["deprecation"]["replacement"] == entry["routed_to"] == successor, key
         assert successor in models, successor
         assert "retired" not in entry and "retired_on" not in entry, key
         assert is_retired(entry, date(2026, 12, 2)) is False
     assert "deprecation" not in models["gemini-2.5-pro-long-context"]  # not listed by Google
     assert "deprecation" not in models["gemini-2.5-flash-lite"]  # "not deprecated" on the page
+    for today in (date(2026, 11, 30), date(2026, 12, 1), date(2026, 12, 2)):
+        rows = audit_deprecations(
+            {"models": {k: models[k] for k in expected}},
+            {},
+            {},
+            dict.fromkeys(expected, date(2026, 12, 1)),
+            today=today,
+        )
+        assert {r.status for r in rows} == {"VERIFIED"}, (today, [r.detail for r in rows])
+
+
+def test_the_passed_shutdown_rule_still_fails_an_entry_that_is_neither_retired_nor_routed():
+    # The control for the exemption above: the same entry without its route is a MISMATCH from 12-02.
+    entry = dict(load_gemini_prices()["models"]["gemini-2.5-pro"])
+    entry.pop("routed_to")
+    entry.pop("routed_from")
     rows = audit_deprecations(
-        {"models": {k: models[k] for k in expected}},
+        {"models": {"gemini-2.5-pro": entry}},
         {},
         {},
-        dict.fromkeys(expected, date(2026, 12, 1)),
+        {"gemini-2.5-pro": date(2026, 12, 1)},
         today=date(2026, 12, 2),
     )
-    assert {r.status for r in rows} == {"MISMATCH"}
-    assert all("has passed" in r.detail[-1] for r in rows)
+    assert [r.status for r in rows] == ["MISMATCH"]
+    assert "has passed" in rows[0].detail[-1]
 
 
 # --- the weekly vendor check ----------------------------------------------------------------------
