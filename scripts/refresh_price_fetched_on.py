@@ -30,7 +30,10 @@ give exactly the old table with only the intended fields changed, or the script 
 
 from __future__ import annotations
 
+import copy
 import hashlib
+import json
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date
@@ -71,6 +74,10 @@ PAGE_FETCH_URL: dict[str, str] = {
     ),
     "https://ai.google.dev/gemini-api/docs/deprecations": GOOGLE_DEPRECATIONS_URL,
 }
+
+
+class RefreshError(Exception):
+    """The edit could not be made exactly as planned; nothing is written."""
 
 
 @dataclass
@@ -138,3 +145,74 @@ def make_plan(
     else:
         plan.page_hash_note = "unchanged (every page hashes as before)"
     return plan
+
+
+_ENTRY_HEADER = re.compile(r'^    "(?P<key>[^"]+)": \{$', re.M)
+
+
+def _section(text: str, name: str) -> tuple[int, int]:
+    """(start, end) offsets of top-level object ``name`` (two-space indent)."""
+    m = re.search(rf'^  "{re.escape(name)}": \{{$', text, re.M)
+    if m is None:
+        raise RefreshError(f"top-level {name!r} object not found")
+    end = re.search(r"^  \}", text[m.end() :], re.M)
+    if end is None:
+        raise RefreshError(f"end of {name!r} not found")
+    return m.end(), m.end() + end.start()
+
+
+def _replace_once(text: str, start: int, end: int, old: str, new: str, what: str) -> str:
+    span = text[start:end]
+    if span.count(old) != 1:
+        raise RefreshError(f"{what}: expected exactly one {old!r}, found {span.count(old)}")
+    return text[:start] + span.replace(old, new) + text[end:]
+
+
+def apply_plan(text: str, plan: Plan, fetched_at_utc: str) -> str:
+    """Return the edited file text, or raise RefreshError. Verified by re-parsing."""
+    original = json.loads(text)
+    expected = copy.deepcopy(original)
+    new_date = plan.today.isoformat()
+
+    m_start, m_end = _section(text, "models")
+    headers = list(_ENTRY_HEADER.finditer(text, m_start, m_end))
+    spans = {
+        h.group("key"): (h.end(), headers[i + 1].start() if i + 1 < len(headers) else m_end)
+        for i, h in enumerate(headers)
+    }
+    # Edit from the end so earlier offsets stay valid.
+    for key in sorted(plan.refreshed, key=lambda k: spans.get(k, (0, 0))[0], reverse=True):
+        if key not in spans:
+            raise RefreshError(f"entry {key!r} not found in the models object")
+        start, end = spans[key]
+        old = plan.refreshed[key]
+        text = _replace_once(
+            text, start, end, f'"fetched_on": "{old}"', f'"fetched_on": "{new_date}"', key
+        )
+        expected["models"][key]["fetched_on"] = new_date
+
+    if plan.page_hashes is not None:
+        v_start, v_end = _section(text, "vendor_pages")
+        old_at = original["vendor_pages"]["fetched_at_utc"]
+        text = _replace_once(
+            text,
+            v_start,
+            v_end,
+            f'"fetched_at_utc": "{old_at}"',
+            f'"fetched_at_utc": "{fetched_at_utc}"',
+            "vendor_pages.fetched_at_utc",
+        )
+        expected["vendor_pages"]["fetched_at_utc"] = fetched_at_utc
+        for page, new_hash in plan.page_hashes.items():
+            old_hash = original["vendor_pages"]["pages"][page]
+            if old_hash == new_hash:
+                continue
+            v_start, v_end = _section(text, "vendor_pages")
+            text = _replace_once(
+                text, v_start, v_end, f'"{page}": "{old_hash}"', f'"{page}": "{new_hash}"', page
+            )
+            expected["vendor_pages"]["pages"][page] = new_hash
+
+    if json.loads(text) != expected:
+        raise RefreshError("re-parsed table differs from the intended edit; refusing to write")
+    return text
