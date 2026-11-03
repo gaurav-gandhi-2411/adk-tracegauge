@@ -44,7 +44,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -322,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         if not errors:
             break
         print(f"audit attempt {attempt}/{AUDIT_ATTEMPTS}: {len(errors)} fetch error(s): {errors}")
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)  # not datetime.UTC: that is 3.11+, and 3.10 is supported
     plan = make_plan(prices, rows, errors, bodies, now.date())
     print(_summary(plan))
     for key, reason in sorted(plan.not_refreshed.items()):
