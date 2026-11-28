@@ -291,7 +291,9 @@
       "standard_rate": {
         "input_usd_per_mtok": 1.5,
         "output_usd_per_mtok": 7.5,
-        "cached_input_usd_per_mtok": 0.15
+        "cached_input_usd_per_mtok": 0.15,
+        "effective_from": "2027-01-01",
+        "verified_on": "2026-11-28"
       },
       "note": "CORRECTED 2026-08-14 (Phase 2 W1 P0 fix): prior table entry ($1.50/$7.50) was the POST-promotion rate, not the rate actually in effect. Google's published standard rate is $0.75 input / $3.75 output through 2026-12-31, rising to $1.50/$7.50 after. RE-VERIFIED live 2026-08-14 (Phase 3 B2): ai.google.dev states '$0.75 through December 31, 2026' / '$1.50 starting January 1, 2027' -- a confirmed, published post-promo rate, not provisional. promo_until/standard_rate added so _pricing.py's resolver auto-switches to the standard rate once 2026-12-31 has passed -- no manual table edit required.",
       "cached_input_usd_per_mtok": 0.075,
@@ -319,7 +321,9 @@
       "standard_rate": {
         "input_usd_per_mtok": 1.5,
         "output_usd_per_mtok": 7.5,
-        "cached_input_usd_per_mtok": 0.15
+        "cached_input_usd_per_mtok": 0.15,
+        "effective_from": "2027-01-01",
+        "verified_on": "2026-11-28"
       },
       "note": "NEW 2026-10-20: Google's pricing page lists gemini-3.8-flash ('Our most intelligent Flash model') and the table had no entry, so a call served by it (which is also what a request to the gemini-3.7-flash alias now returns as model_version) was skipped as an unknown model. Standard tier, read from the raw page 2026-10-20T03:12:44Z (sha256 prefix 7ec651e0cd7d8864): input $0.75 through December 31, 2026 and $1.50 starting January 1, 2027; output $3.75 then $7.50; context caching $0.075 then $0.15, storage $0.50 then $1.00 per 1M tokens per hour (storage is not priced). One input price with no per-modality rate, no audio rate. Same promotional-period caveat as gemini-3.6-flash: promo_until/standard_rate switch the rate automatically on 2027-01-01. No prefix pattern is registered on purpose: gemini-3.8-flash-tts, -live and similar variants are different, differently priced models and must stay unknown rather than be priced as this one.",
       "cached_input_usd_per_mtok": 0.075,

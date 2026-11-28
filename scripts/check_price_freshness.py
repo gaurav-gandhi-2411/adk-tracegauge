@@ -21,6 +21,10 @@ Two INDEPENDENT checks, either of which fails the run (exit 1):
    "already expired, standard_rate should now be effective") -- an entry can
    fail this check without ever being stale (fetched_on can be recent even
    while promo_until is imminent), so this is not folded into check 1.
+   Exception (GG decision, 2026-11-28): a promotion inside the window does not
+   refuse when the entry carries a vendor-verified, fresh successor rate
+   effective the day after promo_until -- see ``_verified_successor``. An
+   already-expired promotion still refuses.
 
 Pure date arithmetic against the bundled JSON file -- no network calls, no paid
 API calls, zero cost. Both checks are deliberately evaluated against "today" as
@@ -38,7 +42,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
@@ -106,14 +110,68 @@ def _check_staleness(
     return stale
 
 
+def _verified_successor(
+    entry: dict[str, object], promo_until: date, today: date, max_age_days: int
+) -> str | None:
+    """A one-line description of the entry's verified post-promotion rate, or None if it has none.
+
+    Rule change 2026-11-28 (GG decision): a promotion ending within PROMO_EXPIRY_WARNING_DAYS no
+    longer refuses when the entry already carries the rate that replaces it, verified against the
+    vendor and fresh. The refusal existed to make a human confirm that rate before it takes effect;
+    once confirmed, the refusal only blocked releases for the promotion's last two weeks. All of
+    these must hold, or the old refusal stands (fail closed):
+
+    * ``standard_rate`` has numeric ``input_usd_per_mtok`` and ``output_usd_per_mtok``;
+    * ``standard_rate.effective_from`` is the day after ``promo_until`` (the vendor audit,
+      check_price_table_vs_vendor.py, marks MISMATCH when it is not the vendor page's
+      "starting <date>");
+    * ``standard_rate.verified_on`` is no more than ``max_age_days`` old and not in the future
+      (the same limit ``fetched_on`` has; refresh_price_fetched_on.py moves it only when the
+      entry's whole audit row, successor rate included, is VERIFIED).
+
+    An already-expired promotion is NOT covered: that still refuses until the table is edited."""
+    std = entry.get("standard_rate")
+    if not isinstance(std, dict):
+        return None
+    for field in ("input_usd_per_mtok", "output_usd_per_mtok"):
+        value = std.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+    try:
+        effective_from = date.fromisoformat(str(std.get("effective_from") or ""))
+        verified_on = date.fromisoformat(str(std.get("verified_on") or ""))
+    except ValueError:
+        return None
+    if effective_from != promo_until + timedelta(days=1):
+        return None
+    age_days = (today - verified_on).days
+    if age_days < 0 or age_days > max_age_days:
+        return None
+    return (
+        f"successor rate in ${std['input_usd_per_mtok']:g} / out ${std['output_usd_per_mtok']:g} "
+        f"effective {effective_from.isoformat()}, verified {verified_on.isoformat()} "
+        f"({age_days} day(s) ago)"
+    )
+
+
+def _promo_until_date(entry: dict[str, object]) -> date | None:
+    try:
+        return date.fromisoformat(str(entry.get("promo_until")))
+    except ValueError:
+        return None
+
+
 def _check_promo_expiry(
-    models: dict[str, dict[str, object]], today: date
+    models: dict[str, dict[str, object]],
+    today: date,
+    max_age_days: int = STALE_THRESHOLD_DAYS,
 ) -> tuple[list[tuple[str, str, int | None, str]], list[tuple[str, str, int | None, str]]]:
     """Returns (expiring_soon, already_expired) -- two distinct lists, per
     Phase 3 B2 2.4's requirement to report both conditions distinctly. The
     days-left element is None only for an unparseable promo_until (distinct
     from a real 0-or-negative day count, which is a legitimate value, not a
-    sentinel)."""
+    sentinel). A promotion inside the warning window whose entry carries a
+    verified, fresh successor rate (_verified_successor) is not listed."""
     expiring_soon: list[tuple[str, str, int | None, str]] = []
     already_expired: list[tuple[str, str, int | None, str]] = []
     for model_key, entry in models.items():
@@ -131,9 +189,29 @@ def _check_promo_expiry(
         days_left = (promo_until_date - today).days
         if days_left < 0:
             already_expired.append((model_key, str(promo_until), days_left, source_url))
-        elif days_left <= PROMO_EXPIRY_WARNING_DAYS:
+        elif days_left <= PROMO_EXPIRY_WARNING_DAYS and not _verified_successor(
+            entry, promo_until_date, today, max_age_days
+        ):
             expiring_soon.append((model_key, str(promo_until), days_left, source_url))
     return expiring_soon, already_expired
+
+
+def _waived_promos(
+    models: dict[str, dict[str, object]], today: date, max_age_days: int
+) -> list[tuple[str, int, str]]:
+    """(key, days left, successor description) for each promotion inside the warning window that
+    _check_promo_expiry did not list because a verified successor rate is in place."""
+    waived: list[tuple[str, int, str]] = []
+    for model_key, entry in models.items():
+        promo_until = _promo_until_date(entry) if entry.get("promo_until") else None
+        if promo_until is None:
+            continue
+        days_left = (promo_until - today).days
+        if 0 <= days_left <= PROMO_EXPIRY_WARNING_DAYS:
+            successor = _verified_successor(entry, promo_until, today, max_age_days)
+            if successor:
+                waived.append((model_key, days_left, successor))
+    return sorted(waived)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -153,14 +231,20 @@ def main(argv: list[str] | None = None) -> int:
     today = date.today()
 
     stale = _check_staleness(models, today, max_age_days)
-    expiring_soon, already_expired = _check_promo_expiry(models, today)
+    expiring_soon, already_expired = _check_promo_expiry(models, today, max_age_days)
+    for model_key, days_left, successor in _waived_promos(models, today, max_age_days):
+        print(
+            f"promotion ending in {days_left} day(s), not refused: {model_key} carries a "
+            f"vendor-verified {successor}."
+        )
 
     if not stale and not expiring_soon and not already_expired:
         checked = sum(1 for entry in models.values() if not entry.get("retired"))
         print(
             f"OK: all {checked} non-retired price entries fetched within "
             f"{max_age_days} days of {today.isoformat()}, and no "
-            f"promotional entry expires within {PROMO_EXPIRY_WARNING_DAYS} days."
+            f"promotional entry expires within {PROMO_EXPIRY_WARNING_DAYS} days without a "
+            "verified successor rate."
         )
         return 0
 
