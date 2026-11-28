@@ -207,6 +207,21 @@ def test_is_stale_fails_closed_on_unparseable_date():
     assert garbled.is_stale
 
 
+def test_synthetic_and_retired_entries_are_never_stale():
+    # Their fetched_on cannot be refreshed: no vendor page (synthetic), or the vendor no longer
+    # lists the rate (retired). Without the exemption both went stale on 2026-11-12 (fetched
+    # 2026-08-14 + 90 days) and every user pricing a local model got a false PRICE TABLE STALE
+    # warning; scripts/check_price_freshness.py already exempted both.
+    old = (date.today() - timedelta(days=STALE_THRESHOLD_DAYS + 30)).isoformat()
+    for key in (LOCAL_MODEL_KEY, "gemini-2.0-flash"):
+        resolved = resolve_model(key)
+        assert resolved is not None and resolved.staleness_exempt, key
+        assert not replace(resolved, fetched_on=old).is_stale, key
+    live = resolve_model("claude-sonnet-5")
+    assert live is not None and not live.staleness_exempt
+    assert replace(live, fetched_on=old).is_stale
+
+
 def test_bundled_table_is_not_currently_stale():
     # The live signal item 2 asks for: once every entry in the shipped table
     # crosses STALE_THRESHOLD_DAYS, this test starts failing in CI, forcing
