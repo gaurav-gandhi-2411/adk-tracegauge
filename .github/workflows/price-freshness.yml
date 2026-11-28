@@ -107,12 +107,18 @@ jobs:
   # still refreshes the entries that did verify.
   #
   # Same owner step as tested-range-bump.yml: CI does not start on a PR opened by the Actions bot,
-  # so close and reopen it as a maintainer. One PR per day (branch chore/price-fetched-on-<date>).
+  # so close and reopen it as a maintainer (or `gh pr update-branch` it). One PR per day (branch
+  # chore/price-fetched-on-<date>); opening one closes every older open refresh PR as superseded.
+  # Dispatching ci.yml on the branch from here was tried and does NOT replace the owner step
+  # (2026-11-28, throwaway PR #171): the dispatch run's 16 checks all passed on the PR's head SHA,
+  # but GitHub does not attach workflow_dispatch check suites to the PR, so branch protection
+  # reported the required checks missing (mergeStateStatus BLOCKED) and merge_gate.py gate 2 failed
+  # with all 12 required checks "absent".
   refresh-fetched-on:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the refresh branch
-      pull-requests: write # open the PR
+      contents: write # push the refresh branch; delete a superseded refresh PR's branch
+      pull-requests: write # open the PR; close superseded refresh PRs
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -164,5 +170,16 @@ jobs:
           git add src/adk_tracegauge/data/gemini_prices.json
           git commit -m "$title"
           git push origin "$branch"
-          gh pr create --repo "$REPO" --base main --head "$branch" --title "$title" \
-            --body-file "$RUNNER_TEMP/pr_body.md"
+          url=$(gh pr create --repo "$REPO" --base main --head "$branch" --title "$title" \
+            --body-file "$RUNNER_TEMP/pr_body.md")
+          echo "opened $url"
+          # An older refresh PR is superseded: this one re-verified every entry from today's main. Left
+          # open, they piled up unmerged (#162/#164/#165, 2026-11-09..11-23). Only bot-opened PRs on
+          # a chore/price-fetched-on-* branch are touched.
+          older=$(gh pr list --repo "$REPO" --state open --limit 100 \
+            --json number,headRefName,author \
+            --jq ".[] | select(.author.login == \"app/github-actions\" and (.headRefName | startswith(\"chore/price-fetched-on-\")) and .headRefName != \"$branch\") | .number")
+          for n in $older; do
+            gh pr close "$n" --repo "$REPO" --delete-branch --comment "Superseded by $url, which re-verified every entry from a newer main."
+            echo "closed #$n (superseded)"
+          done
