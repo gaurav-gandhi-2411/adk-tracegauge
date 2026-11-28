@@ -641,6 +641,22 @@ def test_deprecation_parsers_read_exact_names_and_the_shutdown_column_only():
     assert google == {"gemini-2.5-pro": None, "gemini-3.1-flash-lite": date(2027, 5, 7)}
 
 
+def test_openai_deprecations_parse_bold_dates():
+    # The live page bolded its dates in Nov 2026 (`**Dec 11, 2026**`); unparsed, every row was
+    # dropped and 11 deprecation rows went UNVERIFIED on the 11-16 and 11-23 weekly refreshes.
+    md = (
+        "| Shutdown date    | Affected model         | Status     | Recommended replacement |\n"
+        "| ---------------- | ---------------------- | ---------- | ----------------------- |\n"
+        "| **Dec 11, 2026** | `gpt-5`, `gpt-5-2025-08-07` | Deprecated | `gpt-6.1-sol` |\n"
+        "| __Apr 1, 2027__  | `gpt-5.1`              | Deprecated | `gpt-6-sol`             |\n"
+    )
+    assert parse_openai_deprecations(md) == {
+        "gpt-5": date(2026, 12, 11),
+        "gpt-5-2025-08-07": date(2026, 12, 11),
+        "gpt-5.1": date(2027, 4, 1),
+    }
+
+
 def _dep_audit(prices, today=date(2026, 10, 7)):
     return {
         r.key: r
