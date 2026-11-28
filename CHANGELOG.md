@@ -22,6 +22,12 @@ see `CONTRIBUTING.md`).
 
 ### Fixed
 
+- **No false "PRICE TABLE STALE" warning for local models or retired entries.** The synthetic local-model entry
+  (`__local_zero_cost__`) and retired entries such as `gemini-2.0-flash` cannot have their `fetched_on` refreshed (no
+  vendor page; no longer listed). They crossed the 90-day threshold on 2026-11-12. From then on, every call priced
+  through them (an asserted local model, or an old session on a retired model) warned the user to re-verify a rate
+  that cannot be re-verified. Rates were never affected. `ResolvedModel.is_stale` now exempts both, as the release
+  freshness gate already did.
 - **The `AgentEvaluator.evaluate()` directionality warning is no longer emitted on google-adk 2.13.0 and later, where
   it was false.** google-adk 2.13.0 (PyPI 2026-10-23) is the first release with google/adk-python#6739 (commit
   `5bf7f12`, contained in the `v2.13.0` tag; the published wheel's `agent_evaluator.py` is byte-identical to the tag):
