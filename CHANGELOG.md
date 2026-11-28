@@ -25,18 +25,16 @@ see `CONTRIBUTING.md`).
 
 ### Changed
 
-- **The dev/CI lock now resolves google-adk 2.13.0** (was 2.11.0), google-cloud-aiplatform 2.7.0 (was 1.164.0), litellm
-  1.96.2 (was 1.85.7 below Python 3.14) and filelock 4.2.4 only (3.32.5 was the 3.10 entry).
-  - **Why:** the 3.10 entry held the whole lock at google-adk 2.11.0, because google-adk 2.12+ declare
-    `requires_python >=3.11`. The pre-2.13 verdict path stays covered by the `full-suite-floor (2.6.0)` and
-    `bare-adk` 2.6.0, 2.9.2 and 2.11.0 legs.
-  - **Effect on Dependabot:** checked mechanically against each open alert's vulnerable range on 2026-10-31, 14 of the
+- **The dev/CI lock is single-version: google-adk 2.15.1, google-cloud-aiplatform 2.10.0, litellm 1.109.5 and filelock
+  4.2.4 only.** The 3.10 entries are gone: google-adk 2.11.0, google-cloud-aiplatform 1.165.1, litellm 1.85.7 and
+  filelock 3.32.5. They were held there because google-adk 2.12+ declare `requires_python >=3.11`. The pre-2.12 verdict
+  path stays covered by the `full-suite-floor (2.6.0)` and `bare-adk` 2.6.0, 2.9.2 and 2.11.0 legs.
+  - **Effect on Dependabot:** checked mechanically against each open alert's vulnerable range on 2026-11-28, 14 of the
     16 open alerts fall outside every locked version.
-    - The 12 filelock alerts are #18, #19, #20 and #33-#41; filelock is now 4.2.4.
-    - The other two are litellm #6 (`< 1.88.6`) and #25 (`< 1.95.0`).
-    - Still open: litellm #24 (GHSA-7hp6-4w63-5g45, `>= 1.91.0, < 1.100.4`). google-cloud-aiplatform 2.7.0, the
-      newest release, caps litellm below 1.97.0.
-    - Also still open: opentelemetry-api #17 (`<= 1.45.0`); google-adk 2.13.0 caps it at `<= 1.44`.
+    - The 12 filelock alerts are #18, #19, #20 and #33-#41; filelock is now 4.2.4 only.
+    - The other two are litellm #6 (`< 1.88.6`) and #25 (`< 1.95.0`); litellm is now 1.109.5 only.
+    - Still open: opentelemetry-api #17 (`<= 1.45.0`) and #54 (`<= 1.45.1`), locked at 1.42.1. google-adk 2.15.1
+      allows up to 1.45.2. Upgrading it is a separate lock change.
     - Whether Dependabot closes the 14 on its next scan is unverified until it does.
 - ruff's `target-version` is `py311`, matching the new floor. Its two UP017 fixes (`datetime.timezone.utc` to
   `datetime.UTC`) are behaviour-preserving.
