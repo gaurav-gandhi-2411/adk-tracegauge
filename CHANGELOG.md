@@ -9,6 +9,36 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
+## [0.11.0] — unreleased
+
+### Breaking
+
+- **Python 3.10 is no longer supported: `requires-python = ">=3.11"`.**
+  - **Why:** 3.10 reached end of life on 2026-10-01 ([PEP 619](https://peps.python.org/pep-0619/): "As of 2026-10-01,
+    3.10 has reached the end-of-life phase of its release cycle"), and google-adk 2.12+ already need 3.11+.
+  - **On 3.10:** 0.10.x is the last series that installs there. `requires-python` is in the package metadata, so
+    `pip install adk-tracegauge` on 3.10 resolves the newest 0.10.x by itself, with no error. pypistats `python_minor`
+    over the ~180 days to 2026-10-30 counted 79 downloads on 3.10, against 220 on 3.11. How many were real users is
+    unverified.
+  - **Also removed:** the 3.10 classifier and the CI 3.10 leg. Gone too is the lock-only
+    `filelock<3.32.6; python_version < '3.11'` constraint added in #146.
+
+### Changed
+
+- **The dev/CI lock is single-version: google-adk 2.15.1, google-cloud-aiplatform 2.10.0, litellm 1.109.5 and filelock
+  4.2.4 only.** The 3.10 entries are gone: google-adk 2.11.0, google-cloud-aiplatform 1.165.1, litellm 1.85.7 and
+  filelock 3.32.5. They were held there because google-adk 2.12+ declare `requires_python >=3.11`. The pre-2.12 verdict
+  path stays covered by the `full-suite-floor (2.6.0)` and `bare-adk` 2.6.0, 2.9.2 and 2.11.0 legs.
+  - **Effect on Dependabot:** checked mechanically against each open alert's vulnerable range on 2026-11-28, 14 of the
+    16 open alerts fall outside every locked version.
+    - The 12 filelock alerts are #18, #19, #20 and #33-#41; filelock is now 4.2.4 only.
+    - The other two are litellm #6 (`< 1.88.6`) and #25 (`< 1.95.0`); litellm is now 1.109.5 only.
+    - Still open: opentelemetry-api #17 (`<= 1.45.0`) and #54 (`<= 1.45.1`), locked at 1.42.1. google-adk 2.15.1
+      allows up to 1.45.2. Upgrading it is a separate lock change.
+    - Whether Dependabot closes the 14 on its next scan is unverified until it does.
+- ruff's `target-version` is `py311`, matching the new floor. Its two UP017 fixes (`datetime.timezone.utc` to
+  `datetime.UTC`) are behaviour-preserving.
+
 ## [0.10.2] — 2026-10-30
 
 ### Added
