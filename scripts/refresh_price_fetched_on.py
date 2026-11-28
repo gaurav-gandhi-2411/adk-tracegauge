@@ -10,7 +10,9 @@ What it does, and only this:
 1. Runs the full vendor audit (``check_price_table_vs_vendor.collect``: every vendor pricing and
    deprecation page, fetched live).
 2. For every entry whose audit row is VERIFIED -- and whose deprecation row, if it has one, is not
-   failing -- sets ``fetched_on`` to today. Nothing else in the entry changes.
+   failing -- sets ``fetched_on`` to today, and ``standard_rate.verified_on`` too when the entry
+   carries one (the VERIFIED row covered the post-promotion rate and its ``effective_from``).
+   Nothing else in the entry changes.
 3. Only when the WHOLE audit is clean (no fetch error, no MISMATCH, no UNVERIFIED), also updates
    ``vendor_pages.pages`` (SHA-256 prefix of each page as the audit read it) and
    ``vendor_pages.fetched_at_utc``. On a partial audit those stay as they were, because they
@@ -200,6 +202,19 @@ def apply_plan(text: str, plan: Plan, fetched_at_utc: str) -> str:
             text, start, end, f'"fetched_on": "{old}"', f'"fetched_on": "{new_date}"', key
         )
         expected["models"][key]["fetched_on"] = new_date
+        # A VERIFIED row includes the post-promotion rate and its effective_from (vendor audit), so
+        # the successor rate was re-verified too; check_price_freshness.py reads this date.
+        std = original["models"][key].get("standard_rate")
+        if isinstance(std, dict) and "verified_on" in std:
+            text = _replace_once(
+                text,
+                start,
+                end,
+                f'"verified_on": "{std["verified_on"]}"',
+                f'"verified_on": "{new_date}"',
+                f"{key}.standard_rate.verified_on",
+            )
+            expected["models"][key]["standard_rate"]["verified_on"] = new_date
 
     if plan.page_hashes is not None:
         v_start, v_end = _section(text, "vendor_pages")

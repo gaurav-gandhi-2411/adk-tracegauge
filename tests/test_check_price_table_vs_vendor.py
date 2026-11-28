@@ -339,6 +339,26 @@ def test_post_promo_standard_rate_mismatch_is_caught():
     assert "standard_rate" in rows["gemini-3.6-flash"].detail[0]
 
 
+def test_google_parses_the_date_the_post_promo_rate_starts():
+    model = parse_google_html(_GOOGLE_HTML, "gemini-3.6-flash")
+    assert model is not None
+    assert model.after_promo_from == date(2027, 1, 1)
+
+
+def test_successor_effective_from_mismatch_is_caught():
+    # check_price_freshness.py waives the promo-expiry refusal on this date, so it must be the
+    # vendor's "starting <date>", not just any date in the table.
+    rows = _mutated(
+        lambda p: p["models"]["gemini-3.6-flash"]["standard_rate"].update(
+            effective_from="2027-01-02"
+        )
+    )
+    assert rows["gemini-3.6-flash"].status == "MISMATCH"
+    assert "effective_from: ours 2027-01-02 vs vendor 2027-01-01" in " ".join(
+        rows["gemini-3.6-flash"].detail
+    )
+
+
 def test_a_promo_the_vendor_lists_but_the_entry_lacks_is_a_mismatch():
     def drop_promo(p):
         e = p["models"]["gemini-3.6-flash"]

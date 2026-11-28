@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from scripts.check_price_freshness import _check_promo_expiry
+from scripts.check_price_freshness import RELEASE_MAX_AGE_DAYS, _check_promo_expiry
 
 from adk_tracegauge import _pricing
 from adk_tracegauge._pricing import effective_prices, load_gemini_prices, resolve_model
@@ -85,18 +85,19 @@ def test_gemini_2_5_pro_routed_to_3_8_flash_follows_the_switch(frozen) -> None:
 @pytest.mark.parametrize(
     ("today", "expiring_soon", "already_expired"),
     [
-        # Last day the release gate's promo check passes: 15 days left, outside the 14-day window.
+        # 15 days left, outside the 14-day window.
         (date(2026, 12, 16), [], []),
-        # From here the gate refuses by design (PROMO_EXPIRY_WARNING_DAYS = 14) ...
-        (date(2026, 12, 17), list(_PROMO_MODELS), []),
-        (_LAST_PROMO_DAY, list(_PROMO_MODELS), []),
-        # ... and keeps refusing after the switch until a table edit retires the two promotions.
+        # Inside the window: no refusal, because both entries carry a vendor-verified successor rate
+        # effective 2027-01-01 (rule change 2026-11-28; tests/test_promo_gate_verified_successor.py
+        # covers the rule itself and the weekly refresh that keeps verified_on fresh).
+        (date(2026, 12, 17), [], []),
+        # After the switch the old rule still applies: refuses until the promotions are retired.
         (_FIRST_STANDARD_DAY, [], list(_PROMO_MODELS)),
     ],
 )
 def test_release_gate_promo_check_around_the_switch(
     today: date, expiring_soon: list[str], already_expired: list[str]
 ) -> None:
-    soon, expired = _check_promo_expiry(load_gemini_prices()["models"], today)
+    soon, expired = _check_promo_expiry(load_gemini_prices()["models"], today, RELEASE_MAX_AGE_DAYS)
     assert sorted(k for k, *_ in soon) == expiring_soon
     assert sorted(k for k, *_ in expired) == already_expired

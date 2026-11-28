@@ -149,6 +149,7 @@ class GoogleModel:
     long_context: Rate | None = None  # the ``prompts > 200k tokens`` tier, if the page has one
     promo_until: date | None = None  # standard rate is a promo through this date...
     after_promo: Rate | None = None  # ...and this rate applies afterwards
+    after_promo_from: date | None = None  # ...from this date ("$1.50 starting January 1, 2027")
     storage_usd_per_mtok_hour: float | None = None  # explicit-cache storage; parsed, never priced
     image_video_split: bool = False  # the input row prices image or video apart from text
     audio_input: float | None = None  # a SEPARATE audio input rate, only when the page lists one
@@ -300,7 +301,9 @@ class _GoogleTable(HTMLParser):
 
 
 _PROMO_RE = re.compile(
-    r"\$([\d.]+) through ([A-Z][a-z]+ \d{1,2}, \d{4})\.?\s*\$([\d.]+) starting", re.S
+    r"\$([\d.]+) through ([A-Z][a-z]+ \d{1,2}, \d{4})\.?\s*\$([\d.]+) starting"
+    r"(?:\s+([A-Z][a-z]+ \d{1,2}, \d{4}))?",
+    re.S,
 )
 _STORAGE_RE = re.compile(r"\$([\d.]+)\s*/\s*1,000,000 tokens per hour")
 
@@ -318,6 +321,7 @@ class _Cell:
     long_context: float | None = None
     after_promo: float | None = None
     promo_until: date | None = None
+    after_promo_from: date | None = None
     storage: float | None = None
     image_video_split: bool = False
     audio: float | None = None
@@ -367,6 +371,7 @@ def _parse_cell_prices(text: str) -> _Cell | None:
             float(promo.group(1)),
             after_promo=float(promo.group(3)),
             promo_until=_parse_date(promo.group(2)),
+            after_promo_from=_parse_date(promo.group(4)) if promo.group(4) else None,
             storage=storage,
         )
     prices = [float(p) for p in re.findall(r"\$([\d.]+)", text)]
@@ -493,6 +498,7 @@ def parse_google_html(html: str, slug: str) -> GoogleModel | None:
             else None
         ),
         promo_until=i.promo_until,
+        after_promo_from=i.after_promo_from,
         after_promo=(
             Rate(i.after_promo, o.after_promo, c.after_promo if c else None)
             if i.after_promo is not None and o.after_promo is not None
@@ -833,6 +839,18 @@ def _gemini_row(
                 row.detail.append(
                     f"standard_rate cached: ours ${ours_std_cached} vs vendor after promo "
                     f"${model.after_promo.cached:g}"
+                )
+                row.status = "MISMATCH"
+            # check_price_freshness.py waives the promo-expiry refusal only for a successor rate
+            # whose effective_from is the day after promo_until, so the date must be the vendor's.
+            ours_from = std_dict.get("effective_from")
+            vendor_from = model.after_promo_from
+            if ours_from is not None and (
+                vendor_from is None or str(ours_from) != vendor_from.isoformat()
+            ):
+                row.detail.append(
+                    f"standard_rate effective_from: ours {ours_from} vs vendor "
+                    f"{vendor_from.isoformat() if vendor_from else '(no starting date listed)'}"
                 )
                 row.status = "MISMATCH"
     elif model.promo_until is not None:

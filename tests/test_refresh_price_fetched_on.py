@@ -205,6 +205,29 @@ def test_on_the_real_table_a_clean_audit_moves_the_release_gate_30_days_out():
     assert _check_staleness(got["models"], after, RELEASE_MAX_AGE_DAYS) != []
 
 
+def test_a_verified_row_moves_the_successor_rate_verified_on_and_a_failing_row_does_not():
+    # check_price_freshness.py waives a promotion's expiry on standard_rate.verified_on, so it may
+    # only move when the entry's whole audit row (successor rate included) is VERIFIED.
+    text = PRICES_PATH.read_text(encoding="utf-8")
+    prices = json.loads(text)
+    latest = max(date.fromisoformat(e["fetched_on"]) for e in prices["models"].values())
+    day = date.fromordinal(latest.toordinal() + 7)
+    rows = [
+        AuditRow(k, "MISMATCH" if k == "gemini-3.8-flash" else "VERIFIED", "-", "-")
+        for k in prices["models"]
+    ]
+    plan = make_plan(prices, rows, [], {}, day)
+    got = json.loads(apply_plan(text, plan, AT))
+    std_ok = got["models"]["gemini-3.6-flash"]["standard_rate"]
+    std_held = got["models"]["gemini-3.8-flash"]["standard_rate"]
+    assert std_ok["verified_on"] == day.isoformat()
+    assert std_held == prices["models"]["gemini-3.8-flash"]["standard_rate"]
+    before = prices["models"]["gemini-3.6-flash"]["standard_rate"]
+    assert {k: v for k, v in std_ok.items() if k != "verified_on"} == {
+        k: v for k, v in before.items() if k != "verified_on"
+    }
+
+
 @pytest.fixture
 def fixture_table(tmp_path, monkeypatch):
     """main() pointed at a copy of the fixture (fetched_on 2026-10-30, always in the past), so its
