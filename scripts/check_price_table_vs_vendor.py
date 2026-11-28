@@ -987,9 +987,12 @@ class _HtmlRows(HTMLParser):
 
 
 def _any_date(text: str) -> date | None:
+    # Markdown emphasis is stripped: OpenAI's deprecations page started bolding its dates
+    # (`**Dec 11, 2026**`) in Nov 2026, which made every row unparseable.
+    text = text.strip().strip("*_").strip()
     for fmt in ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d"):
         try:
-            return datetime.strptime(text.strip(), fmt).date()
+            return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
     return None
