@@ -96,7 +96,7 @@ if EVAL_REGISTRATION_SKIPPED_REASON is not None and _running_under_adk_eval():
 # this package breaks.
 _install_agent_evaluator_marker()
 
-__version__ = "0.10.2"
+__version__ = "0.11.0"
 
 __all__ = [
     "DoubleRegistrationError",

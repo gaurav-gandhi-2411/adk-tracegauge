@@ -9,7 +9,7 @@ see `CONTRIBUTING.md`).
 
 ## [Unreleased]
 
-## [0.11.0] — unreleased
+## [0.11.0] — 2026-11-28
 
 ### Breaking
 
@@ -29,17 +29,38 @@ see `CONTRIBUTING.md`).
   4.2.4 only.** The 3.10 entries are gone: google-adk 2.11.0, google-cloud-aiplatform 1.165.1, litellm 1.85.7 and
   filelock 3.32.5. They were held there because google-adk 2.12+ declare `requires_python >=3.11`. The pre-2.12 verdict
   path stays covered by the `full-suite-floor (2.6.0)` and `bare-adk` 2.6.0, 2.9.2 and 2.11.0 legs.
-  - **Effect on Dependabot:** checked mechanically against each open alert's vulnerable range on 2026-11-28, 14 of the
-    16 open alerts fall outside every locked version.
-    - The 12 filelock alerts are #18, #19, #20 and #33-#41; filelock is now 4.2.4 only.
-    - The other two are litellm #6 (`< 1.88.6`) and #25 (`< 1.95.0`); litellm is now 1.109.5 only.
-    - Still open: opentelemetry-api #17 (`<= 1.45.0`) and #54 (`<= 1.45.1`), locked at 1.42.1. google-adk 2.15.1
-      allows up to 1.45.2. Upgrading it is a separate lock change.
-    - Whether Dependabot closes the 14 on its next scan is unverified until it does.
-- ruff's `target-version` is `py311`, matching the new floor. Its two UP017 fixes (`datetime.timezone.utc` to
-  `datetime.UTC`) are behaviour-preserving.
+  - **Effect on Dependabot (#148):** Dependabot marked 14 of the 16 open alerts fixed on 2026-11-28 at 14:52Z. These
+    are filelock #18, #19, #20 and #33-#41 (filelock is now 4.2.4 only), and litellm #6 (`< 1.88.6`) and #25 (`< 1.95.0`)
+    (litellm is now 1.109.5 only).
+- **The dev/CI lock takes opentelemetry-api and opentelemetry-sdk 1.45.2** (were 1.42.1) and
+  opentelemetry-semantic-conventions 0.66b2 (#174). google-adk 2.15.1 allows `opentelemetry-api<=1.45.2`. Dependabot
+  marked the last two open alerts, #17 (`<= 1.45.0`) and #54 (`<= 1.45.1`), fixed at 15:03Z. No Dependabot alert is
+  open.
+- **Release gate: a promotion with a vendor-verified successor rate no longer refuses (#175).**
+  - `release.yml`'s `preflight-prices` refused any promotion whose `promo_until` was within 14 days, even when the rate
+    replacing it was verified. For gemini-3.6-flash and gemini-3.8-flash (promotions to 2026-12-31), that blocked every
+    release from 2026-12-17.
+  - It now lets the promotion through only when the entry's `standard_rate` has an `effective_from` equal to the day
+    after `promo_until` and a `verified_on` no older than the release's 30-day limit.
+  - The weekly vendor audit marks a MISMATCH when `effective_from` is not the vendor page's "starting" date. The weekly
+    refresh moves `verified_on` only on a fully VERIFIED row.
+  - An already-expired promotion still refuses. Both Gemini entries carry `effective_from` 2027-01-01, verified
+    2026-11-28.
+- **The weekly price refresh closes older open refresh PRs** when it opens a new one (#172). Three had piled up unmerged.
+- ruff's `target-version` is `py311`, matching the new floor. Its UP017 fixes (`datetime.timezone.utc` to
+  `datetime.UTC`, in `snapshot.py`, `scripts/refresh_price_fetched_on.py` and one test) are behaviour-preserving.
 
-## [0.10.2] — 2026-10-30
+### Tests
+
+- The gemini-3.6/3.8-flash promotion switch is pinned to its real dates with a frozen clock (#173): the promotional rate
+  through 2026-12-31 and the standard rate ($1.50 / $7.50, cached $0.15) from 2027-01-01. gemini-2.5-pro, which routes to
+  gemini-3.8-flash, is included.
+
+### Tested range
+
+- Unchanged: `>=2.6.0,<2.16.0` (full suite on google-adk 2.15.1, the newest release on 2026-11-28).
+
+## [0.10.2] — 2026-11-28
 
 ### Added
 
