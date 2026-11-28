@@ -282,10 +282,17 @@ class ResolvedModel:
     """The published post-promo rate, if known, regardless of whether it is
     currently in effect -- None when standard_rate_unknown (or the entry
     isn't promotional at all)."""
+    staleness_exempt: bool = False
+    """True for an entry whose fetched_on cannot be refreshed: a synthetic entry (key starting
+    ``__``, no vendor page) or a retired one (is_retired: the vendor no longer lists a rate to
+    re-verify). The same two exemptions scripts/check_price_freshness.py makes."""
 
     @property
     def is_stale(self) -> bool:
-        """True when this entry's fetched_on is older than STALE_THRESHOLD_DAYS."""
+        """True when this entry's fetched_on is older than STALE_THRESHOLD_DAYS (never for a
+        staleness_exempt entry)."""
+        if self.staleness_exempt:
+            return False
         try:
             fetched = date.fromisoformat(self.fetched_on)
         except ValueError:
@@ -429,6 +436,7 @@ def _entry_to_resolved(model_key: str, entry: dict[str, Any]) -> ResolvedModel:
         standard_rate_unknown=standard_rate_unknown,
         standard_rate_input_usd_per_mtok=(standard_rate or {}).get("input_usd_per_mtok"),
         standard_rate_output_usd_per_mtok=(standard_rate or {}).get("output_usd_per_mtok"),
+        staleness_exempt=model_key.startswith("__") or is_retired(entry),
     )
 
 

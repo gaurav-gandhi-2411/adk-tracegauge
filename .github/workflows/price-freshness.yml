@@ -45,6 +45,14 @@ on:
   schedule:
     - cron: "0 7 * * 1" # every Monday 07:00 UTC
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "refresh-fetched-on: only report what would change; open no branch or PR"
+        type: boolean
+        default: true
+
+# No default token scope; each job states what it needs (the audit job only reads).
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}
@@ -53,8 +61,12 @@ concurrency:
 jobs:
   price-freshness:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -84,3 +96,73 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: uv run python scripts/check_model_retirement_gemini.py
+
+  # Added 2026-11-03. release.yml's preflight-prices (and the test suite) fail once any entry's
+  # fetched_on is more than 30 days old, even when no price changed; every entry had been fetched
+  # 2026-10-30, so both would have gone red on 2026-11-30. This job re-runs the full live vendor
+  # audit and opens a PR that moves fetched_on to today for every entry that re-verified, and the
+  # page hashes when the whole audit is clean (scripts/refresh_price_fetched_on.py). It NEVER
+  # changes a rate: a MISMATCH or UNVERIFIED row keeps its date and is listed in the PR body. It
+  # never merges: the PR goes through merge_gate.py. Independent of the job above, so a red audit
+  # still refreshes the entries that did verify.
+  #
+  # Same owner step as tested-range-bump.yml: CI does not start on a PR opened by the Actions bot,
+  # so close and reopen it as a maintainer. One PR per day (branch chore/price-fetched-on-<date>).
+  refresh-fetched-on:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the refresh branch
+      pull-requests: write # open the PR
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          # kept (the default): the "Open the PR" step pushes the branch with this token
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Re-verify every entry and refresh fetched_on
+        id: refresh
+        run: |
+          uv run python scripts/refresh_price_fetched_on.py --write \
+            --body-file "$RUNNER_TEMP/pr_body.md"
+
+      - name: Show the diff
+        if: steps.refresh.outputs.changed == 'true'
+        run: git --no-pager diff --stat && git --no-pager diff && cat "$RUNNER_TEMP/pr_body.md"
+
+      - name: Open the PR
+        if: steps.refresh.outputs.changed == 'true' && env.DRY_RUN != 'true'
+        env:
+          REFRESHED: ${{ steps.refresh.outputs.refreshed }}
+        run: |
+          set -euo pipefail
+          branch="chore/price-fetched-on-$(date -u +%Y-%m-%d)"
+          if [ -n "$(gh pr list --repo "$REPO" --head "$branch" --state all --json number --jq '.[].number')" ]; then
+            echo "a PR for $branch already exists; nothing to do"; exit 0
+          fi
+          title="chore(pricing): re-verified fetched_on for ${REFRESHED} entries ($(date -u +%Y-%m-%d))"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add src/adk_tracegauge/data/gemini_prices.json
+          git commit -m "$title"
+          git push origin "$branch"
+          gh pr create --repo "$REPO" --base main --head "$branch" --title "$title" \
+            --body-file "$RUNNER_TEMP/pr_body.md"

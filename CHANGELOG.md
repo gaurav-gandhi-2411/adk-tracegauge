@@ -22,6 +22,12 @@ see `CONTRIBUTING.md`).
 
 ### Fixed
 
+- **No false "PRICE TABLE STALE" warning for local models or retired entries.** The synthetic local-model entry
+  (`__local_zero_cost__`) and retired entries such as `gemini-2.0-flash` cannot have their `fetched_on` refreshed (no
+  vendor page; no longer listed). They crossed the 90-day threshold on 2026-11-12. From then on, every call priced
+  through them (an asserted local model, or an old session on a retired model) warned the user to re-verify a rate
+  that cannot be re-verified. Rates were never affected. `ResolvedModel.is_stale` now exempts both, as the release
+  freshness gate already did.
 - **The `AgentEvaluator.evaluate()` directionality warning is no longer emitted on google-adk 2.13.0 and later, where
   it was false.** google-adk 2.13.0 (PyPI 2026-10-23) is the first release with google/adk-python#6739 (commit
   `5bf7f12`, contained in the `v2.13.0` tag; the published wheel's `agent_evaluator.py` is byte-identical to the tag):
@@ -92,6 +98,13 @@ see `CONTRIBUTING.md`).
   model; from that date it verifies the route. `routed_from` must equal the shutdown date Google lists, and a routed
   entry is not flagged by the "shutdown has passed" rule. Live run with "today" frozen at 2026-11-03, 11-30, 12-01 and
   12-02: `OK: 42 entries audited (6 SKIPPED, 36 VERIFIED)` each time.
+- The weekly `Price table freshness` workflow gains a `refresh-fetched-on` job
+  (`scripts/refresh_price_fetched_on.py`). It re-runs the live vendor audit and opens a PR that moves `fetched_on` to
+  that day for every entry that re-verified, plus the `vendor_pages` hashes when the whole audit is clean. It never
+  changes a rate: a MISMATCH or UNVERIFIED entry keeps its date and is listed in the PR body. Why: the release gate
+  allows a `fetched_on` at most 30 days old, so with every entry fetched 2026-10-30 releases (and the test suite)
+  would have failed from 2026-11-30 with no price changed. The workflow now declares `permissions: {}` at the top and
+  `contents: read` on the audit job; only the new job can write (`contents`, `pull-requests`).
 
 ## [0.10.1] — 2026-10-08
 
